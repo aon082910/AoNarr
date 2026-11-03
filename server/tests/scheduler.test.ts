@@ -5280,3 +5280,146 @@ describe("Round 20 — a warned download that vanished at the client is cleaned 
     expect(await blocklistedTitles(movie.id)).toEqual([]);
   });
 });
+
+describe("a season pack that replaces files of the same quality (SR7)", () => {
+  const candidate = (mediaItemId: number, episodeId: number) => ({
+    mediaItemId,
+    episodeId,
+    currentQuality: "WEBDL-1080p",
+    cutoff: "Bluray-1080p",
+    profileName: "P",
+    target: "T",
+  });
+  async function showWithFiles(name: string) {
+    setSetting("autoUpgradeEnabled", "1");
+    await insertClient();
+    const adapter = urlKeyedAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const showId = await insertSeries(name);
+    await db.prepare("UPDATE media_items SET quality_profile_id = ? WHERE id = ?").run(await insertProfile(["WEBDL-1080p", "Bluray-1080p"], "Bluray-1080p"), showId);
+    const ids: number[] = [];
+    for (let n = 1; n <= 3; n++) {
+      const id = await insertEpisode(showId, 1, n);
+      await giveFile("episodes", id, "WEBDL-1080p");
+      await db.prepare("UPDATE episodes SET file_release_title = ?, file_format_score = 0 WHERE id = ?").run(`${name.replace(/ /g, ".")}.S01E0${n}.1080p.WEB-DL-GRP`, id);
+      ids.push(id);
+    }
+    findUpgradeCandidates.mockResolvedValue(ids.map((id) => candidate(showId, id)));
+    return { adapter, showId };
+  }
+
+  it("takes a PROPER pack of the group's own release for files that meet the profile's upgrade rules", async () => {
+    const { adapter } = await showWithFiles("Revised Season");
+    searchAllIndexers.mockImplementation(async (_i: unknown, query: string) =>
+      query === "Revised Season S01" ? [fakeResult({ title: "Revised.Season.S01.PROPER.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=proper-pack" })] : []
+    );
+
+    await runAutoUpgrade();
+
+    expect(adapter.addDownload.mock.calls.map((c) => c[1])).toEqual(["magnet:?xt=proper-pack"]);
+  });
+
+  it("leaves a plain pack of the same quality alone", async () => {
+    const { adapter } = await showWithFiles("Plain Season");
+    searchAllIndexers.mockImplementation(async (_i: unknown, query: string) =>
+      query === "Plain Season S01" ? [fakeResult({ title: "Plain.Season.S01.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=plain-pack" })] : []
+    );
+
+    await runAutoUpgrade();
+
+    expect(adapter.addDownload).not.toHaveBeenCalledWith(expect.anything(), "magnet:?xt=plain-pack", expect.anything(), expect.anything(), expect.anything());
+    expect(adapter.addDownload.mock.calls.map((c) => c[1])).not.toContain("magnet:?xt=plain-pack");
+  });
+
+  it("looks for a pack when the files reached the quality cutoff but are under the format-score cutoff", async () => {
+    setSetting("autoUpgradeEnabled", "1");
+    await insertClient();
+    const adapter = urlKeyedAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    const showId = await insertSeries("Scored Season");
+    const profileId = await insertProfile(["WEBDL-1080p", "Bluray-1080p"], "Bluray-1080p");
+    await db.prepare("UPDATE quality_profiles SET cutoff_format_score = 5000 WHERE id = ?").run(profileId);
+    await db.prepare("UPDATE media_items SET quality_profile_id = ? WHERE id = ?").run(profileId, showId);
+    const ids: number[] = [];
+    for (let n = 1; n <= 3; n++) {
+      const id = await insertEpisode(showId, 1, n);
+      await giveFile("episodes", id, "Bluray-1080p");
+      await db.prepare("UPDATE episodes SET file_release_title = ?, file_format_score = 0 WHERE id = ?").run(`Scored.Season.S01E0${n}.1080p.BluRay-GRP`, id);
+      ids.push(id);
+    }
+    findUpgradeCandidates.mockResolvedValue(ids.map((id) => ({ mediaItemId: showId, episodeId: id, currentQuality: "Bluray-1080p", cutoff: "Bluray-1080p", profileName: "P", target: "T" })));
+    searchAllIndexers.mockImplementation(async (_i: unknown, query: string) =>
+      query === "Scored Season S01" ? [fakeResult({ title: "Scored.Season.S01.PROPER.1080p.BluRay-GRP", downloadUrl: "magnet:?xt=scored-pack" })] : []
+    );
+
+    await runAutoUpgrade();
+
+    expect(adapter.addDownload.mock.calls.map((c) => c[1])).toEqual(["magnet:?xt=scored-pack"]);
+  });
+});
+
+describe("what the client says about a download is kept on its row (DL12)", () => {
+  async function insertRow(clientId: number) {
+    const movie = await insertMovie({ title: `Movie ${Math.random()}`, sort_title: "x" });
+    const result = await db
+      .prepare(`INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, progress) VALUES (?, 'Some.Release.2020.1080p-GRP', ?, 'dl-1', 'downloading', 0.1)`)
+      .run(movie.id, clientId);
+    return Number(result.lastInsertRowid);
+  }
+  const rowOf = async (id: number) => (await db.prepare("SELECT eta_seconds, size_left, client_state, status_message, status FROM queue WHERE id = ?").get(id)) as any;
+
+  it("stores the remaining time and size, and a plain downloading state", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(
+      fakeAdapter({ getStatus: vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 0.4, status: "downloading", etaSeconds: 5400, sizeLeft: 3_000_000_000 }]) })
+    );
+    const id = await insertRow(client.id);
+
+    await pollQueue();
+
+    expect(await rowOf(id)).toMatchObject({ client_state: "downloading", status_message: null });
+    expect(Number((await rowOf(id)).eta_seconds)).toBe(5400);
+    expect(Number((await rowOf(id)).size_left)).toBe(3_000_000_000);
+  });
+
+  it("stores paused, stalled and warning with the sentence that goes with each", async () => {
+    const client = await insertClient();
+    const cases: [Record<string, unknown>, string, RegExp][] = [
+      [{ paused: true }, "paused", /Paused or waiting/],
+      [{ stalled: true }, "stalled", /Stalled/],
+      [{ warning: "qBittorrent: the download folder is full" }, "warning", /folder is full/],
+    ];
+    for (const [flags, state, message] of cases) {
+      getDownloadClientAdapter.mockReturnValue(fakeAdapter({ getStatus: vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 0.1, status: "downloading", ...flags }]) }));
+      const id = await insertRow(client.id);
+
+      await pollQueue();
+
+      const row = await rowOf(id);
+      expect(row.client_state, state).toBe(state);
+      expect(row.status_message, state).toMatch(message);
+      await db.prepare("DELETE FROM queue WHERE id = ?").run(id);
+    }
+  });
+
+  it("keeps the client's reason on a row it failed", async () => {
+    const client = await insertClient();
+    getDownloadClientAdapter.mockReturnValue(
+      fakeAdapter({ getStatus: vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 1, status: "failed", failureReason: "SABnzbd: Aborted, cannot be completed" }]) })
+    );
+    searchAllIndexers.mockResolvedValue([]);
+    const id = await insertRow(client.id);
+
+    await pollQueue();
+
+    expect(await rowOf(id)).toMatchObject({ client_state: "failed", status_message: "SABnzbd: Aborted, cannot be completed", status: "failed" });
+  });
+
+  it("clientStateOf puts a warning before a pause and a pause before a stall", async () => {
+    const { clientStateOf } = await import("../src/services/scheduler.js");
+    expect(clientStateOf({ status: "downloading", warning: "w", paused: true, stalled: true }).state).toBe("warning");
+    expect(clientStateOf({ status: "downloading", paused: true, stalled: true }).state).toBe("paused");
+    expect(clientStateOf({ status: "downloading", stalled: true }).state).toBe("stalled");
+    expect(clientStateOf({ status: "completed" })).toEqual({ state: "completed", message: null });
+  });
+});

@@ -9,12 +9,12 @@ import {
   queueItemFromRow,
 } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { searchAllIndexers } from "../services/indexerClient.js";
+import { searchAllIndexers, type IndexerSearchOutcome } from "../services/indexerClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type SceneIndex } from "../services/releaseParser.js";
 import { sceneIndexFor } from "../services/sceneNumbering.js";
 import { indexerInfoOf, scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
-import { knownReleaseSize, qualityRank, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
+import { groupedRank, knownReleaseSize, qualityRank, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
 import { releaseRuntimeMinutes, runtimeContextFor } from "../services/releaseRuntime.js";
 import { compareUsenetAge, comparePeers, protocolGroup, protocolPreferenceKey } from "../services/releaseRanking.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
@@ -24,6 +24,7 @@ import {
   existingFileQuality,
   loadDelayProfiles,
   matchTierFor,
+  packContextFor,
   pickDelayProfile,
   rowsToDownloadClients,
   tagIdsForMediaItem,
@@ -33,7 +34,7 @@ import {
 import { episodePlanFor, searchHintsOf, seasonPlanFor, singlePlanFor, subItemPlanFor, type SearchPlan } from "../services/searchPlan.js";
 import { identityModeFor, releaseIdentifiesTarget } from "../services/releaseIdentity.js";
 import { releaseRejection } from "../services/releaseRejections.js";
-import { aliasTitlesFor, identityContextFor, identityTargetFor } from "../services/releaseAliases.js";
+import { aliasSeasonsFor, aliasTitlesFor, applyAliasSeason, identityContextFor, identityTargetFor, seasonEpisodeCounts } from "../services/releaseAliases.js";
 import { searchSlskd } from "../services/soulseek.js";
 import { getMediaTypeConfig } from "../services/mediaTypes.js";
 import {
@@ -50,6 +51,10 @@ import { existingFileRecord } from "../services/fileRelease.js";
 import { editionlessTitle } from "../services/nonVideoMatch.js";
 import { judgeUpgrade, propersMode, upgradeProfileOf } from "../services/upgradeRules.js";
 import { getQualityProfile, releaseNameVerdict, siblingTitlesOf, yearFieldsOf, type TargetName } from "../services/scheduler.js";
+import { availabilityRejectionDetail } from "../services/releaseAvailability.js";
+import { freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReason, freeSpaceReserveBytes } from "../services/freeSpace.js";
+import { episodesCoveredBy, judgeSeasonPack, packSettings, type PackEpisode } from "../services/seasonPacks.js";
+import { ageMinutesOf, buildRejections, emptyFacts, indexerFlagsOf, releaseTypeOf, summarize, type DecisionRejection } from "../services/releaseDecision.js";
 import type { SearchResult } from "../types/index.js";
 
 export const searchRouter = Router();
@@ -106,8 +111,32 @@ export interface AnnotatedSearchResult extends SearchResult {
    * format score and tie-breaks), so the list can show it first. Always false for a season-only or
    * album/book search, which have no single automatic pick. */
   wouldAutoGrab: boolean;
+  /** At least one permanent reason (see `rejections`). A rejected release can still be grabbed by hand. */
   rejected: boolean;
+  /** The first permanent reason, else the first reason. */
   rejectReason?: string;
+  /** Every reason the release would not be taken, permanent or temporary (Sonarr's `rejections[]`). */
+  rejections: DecisionRejection[];
+  /** No reason at all. */
+  approved: boolean;
+  /** Reasons exist and every one ends by itself. */
+  temporarilyRejected: boolean;
+  /** An enabled download client takes the release's protocol. */
+  downloadAllowed: boolean;
+  /** Minutes since publication; null when the indexer gave no date. */
+  ageMinutes: number | null;
+  releaseGroup: string | null;
+  languages: string[];
+  /** single / season-pack / multi-episode; null for a type without episodes. */
+  releaseType: "single" | "season-pack" | "multi-episode" | null;
+  /** For a season pack: how many known episodes of its season it covers. */
+  episodesCovered: number | null;
+  /** The quality's place on the ladder, for sorting by quality (-1 when it is not on it). */
+  qualityRank: number;
+  /** freeleech, halfleech, doubleupload and the indexer's own tags. */
+  flags: string[];
+  /** 1-based position in the order the server ranked the list (the automatic pick's order). */
+  serverRank: number;
   /** For an album, book or comic issue search: whether the release names the sub-item, and why not (N18). */
   nameOk: boolean;
   nameReason: string | null;
@@ -120,6 +149,8 @@ export interface AnnotatedSearchResult extends SearchResult {
    * title + exact size) — collapsed into the best-ranked copy instead of showing N separate rows
    * for what's really one release someone happened to post to multiple trackers. */
   alsoOnIndexers?: string[];
+  /** The same release on the other indexers, so a grab can fall back to one when the first cannot serve it. */
+  alternates?: { indexerId: number | null; indexerName: string; downloadUrl: string; infoHash: string | null }[];
 }
 
 /** Same normalization releaseParser.ts-adjacent code doesn't already do: lowercase, collapse all
@@ -141,13 +172,17 @@ function dedupeResults(results: AnnotatedSearchResult[]): AnnotatedSearchResult[
   const byKey = new Map<string, AnnotatedSearchResult>();
   const order: string[] = [];
   for (const r of results) {
-    const key = r.size > 0 ? `${normalizeForDedup(r.title)}::${r.size}` : `${normalizeForDedup(r.title)}::0::${r.downloadUrl}`;
+    // The protocol is part of the key: an NZB is no fallback for a torrent of the same name and size.
+    const key = r.size > 0 ? `${r.protocol}::${normalizeForDedup(r.title)}::${r.size}` : `${r.protocol}::${normalizeForDedup(r.title)}::0::${r.downloadUrl}`;
     const existing = byKey.get(key);
     if (!existing) {
       byKey.set(key, r);
       order.push(key);
     } else if (r.indexerName && r.indexerName !== existing.indexerName) {
       (existing.alsoOnIndexers ??= []).push(r.indexerName);
+      if (r.downloadUrl) {
+        (existing.alternates ??= []).push({ indexerId: r.indexerId ?? null, indexerName: r.indexerName, downloadUrl: r.downloadUrl, infoHash: r.infoHash ?? null });
+      }
     }
   }
   return order.map((key) => byKey.get(key)!);
@@ -162,6 +197,12 @@ function dedupeResults(results: AnnotatedSearchResult[]): AnnotatedSearchResult[
 searchRouter.get(
   "/:mediaItemId",
   asyncHandler(async (req, res) => {
+    // The admin leaving the page ends the search: no further indexers or query forms are asked. Listening from
+    // the first line, so a request dropped while the target is still being read is noticed too.
+    const aborter = new AbortController();
+    res.on("close", () => {
+      if (!res.writableFinished) aborter.abort();
+    });
     const itemRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.mediaItemId);
     if (!itemRow) throw new HttpError(404, "Media item not found");
     const item = mediaItemFromRow(itemRow);
@@ -233,12 +274,24 @@ searchRouter.get(
     const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(
       indexerFromRow
     );
-    const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true, plan.ids, searchHintsOf(plan));
+    if (aborter.signal.aborted) return;
+    const outcomes = new Map<number, IndexerSearchOutcome>();
+    const noteOutcome = (o: IndexerSearchOutcome) => {
+      const known = outcomes.get(o.indexerId);
+      if (!known) outcomes.set(o.indexerId, { ...o });
+      else if (!o.ok) {
+        known.ok = false;
+        known.error = o.error;
+      }
+    };
+    const hintsOf = (p: SearchPlan) => ({ ...searchHintsOf(p), onOutcome: noteOutcome, signal: aborter.signal });
+    const rawResults = await searchAllIndexers(indexers as any, query, item.type as any, true, plan.ids, hintsOf(plan));
     if (furtherPlans.length > 0) {
       // The queries of a season a scene splits overlap (a pack named by both): a release is listed once.
       const seen = new Set(rawResults.map((r) => `${r.indexerId ?? r.indexerName}:${r.downloadUrl || `${r.title}:${r.size}`}`));
       for (const further of furtherPlans) {
-        for (const r of await searchAllIndexers(indexers as any, further.query, item.type as any, true, further.ids, searchHintsOf(further))) {
+        if (aborter.signal.aborted) break;
+        for (const r of await searchAllIndexers(indexers as any, further.query, item.type as any, true, further.ids, hintsOf(further))) {
           const key = `${r.indexerId ?? r.indexerName}:${r.downloadUrl || `${r.title}:${r.size}`}`;
           if (seen.has(key)) continue;
           seen.add(key);
@@ -246,6 +299,8 @@ searchRouter.get(
         }
       }
     }
+
+    if (aborter.signal.aborted) return;
 
     // Soulseek has no Torznab-style indexer — a configured, enabled slskd client is queried
     // directly instead and its results merged in alongside the indexer ones. Music-shaped
@@ -266,6 +321,7 @@ searchRouter.get(
     let allowedQualities: string[] = [];
     let cutoff = "";
     let minFormatScore = 0;
+    let qualityGroups: string[][] = [];
     if (item.qualityProfileId) {
       const profileRow = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(item.qualityProfileId);
       if (profileRow) {
@@ -273,6 +329,7 @@ searchRouter.get(
         allowedQualities = profile.allowedQualities;
         cutoff = profile.cutoff;
         minFormatScore = profile.minFormatScore ?? 0;
+        qualityGroups = profile.qualityGroups ?? [];
       }
     }
 
@@ -289,10 +346,21 @@ searchRouter.get(
     // What an automatic search of this target would grab, by the same decision code: the admin's own
     // search is not delayed, and the file the target already has is only replaced by a real upgrade.
     const delayProfile = pickDelayProfile(await loadDelayProfiles(), await tagIdsForMediaItem(item.id));
+    const clients = await rowsToDownloadClients();
     const hasAutoPick = !seasonNumberParam && !subItemId && (!!plan.target || getMediaTypeConfig(item.type).shape === "single");
+    // The file the target already has and the profile's upgrade rules: what an automatic search replaces
+    // only by a real upgrade, and the "would replace it" label.
+    const existingForUpgrade =
+      tiered && !seasonNumberParam && !subItemId
+        ? await existingFileRecord(item, episodeId ? Number(episodeId) : null, null)
+        : null;
+    const upgradeProfile = existingForUpgrade ? upgradeProfileOf(item.qualityProfileId ? await getQualityProfile(item.qualityProfileId) : null) : null;
+    const onDisk = hasAutoPick ? await existingFileQuality(item, episodeId ? Number(episodeId) : null, null) : undefined;
+    // The season pack guards of an automatic search of this target (a pack the automatic search would
+    // skip is not offered as its pick).
+    const packContext = packContextFor(item, plan);
     let autoPick: SearchResult | null = null;
     if (hasAutoPick && rawResults.length > 0) {
-      const onDisk = await existingFileQuality(item, episodeId ? Number(episodeId) : null, null);
       autoPick =
         (
           await chooseBestResult(
@@ -308,30 +376,56 @@ searchRouter.get(
             identity,
             item.id,
             {
-              clients: await rowsToDownloadClients(),
+              clients,
               upgradeFromRank: onDisk === undefined ? null : qualityRank(onDisk),
+              existing: existingForUpgrade && upgradeProfile ? { file: existingForUpgrade, profile: upgradeProfile } : undefined,
               name: { title: item.title },
               indexers,
               userInvoked: true,
               label: item.title,
+              pack: packContext,
             }
           )
         )?.result ?? null;
     }
     const runtimeContext = await runtimeContextFor(item.id, item.type);
-    // The file the target already has and the profile's upgrade rules, for the "would replace it" label.
-    const existingForUpgrade =
-      tiered && !seasonNumberParam && !subItemId
-        ? await existingFileRecord(item, episodeId ? Number(episodeId) : null, null)
-        : null;
-    const upgradeProfile = existingForUpgrade ? upgradeProfileOf(item.qualityProfileId ? await getQualityProfile(item.qualityProfileId) : null) : null;
     const revisionMode = propersMode();
+    // What a type with no quality tiers is matched by: the sub-item's names, or (a ROM) the item's own title, as the automatic search does.
+    const nameTarget: TargetName | null = tiered ? null : subName ?? (hasAutoPick ? { title: item.title } : null);
     const nameFields = (title: string) => {
-      const verdict = subName && !tiered ? releaseNameVerdict(title, subName, item.type) : { ok: true, reason: null };
+      const verdict = nameTarget ? releaseNameVerdict(title, nameTarget, item.type) : { ok: true, reason: null };
       return { nameOk: verdict.ok, nameReason: verdict.reason };
     };
+
+    // What the checks of an automatic search need, read once for the whole list.
+    const minimumSeedersById = new Map(indexers.map((i: any) => [i.id as number, (i.minimumSeeders ?? 0) as number]));
+    const freeBytes = freeSpaceCheckEnabled() ? await freeBytesForItem(item.id) : null;
+    const reserveBytes = freeSpaceReserveBytes();
+    const identityEnforced = identityModeFor(item.type) === "enforce";
+    const episodic = getMediaTypeConfig(item.type).shape === "episodic";
+    // Parsed as the automatic search parses: a release that names a cour by its own title is that season's episode.
+    const aliasSeasons = tiered ? await aliasSeasonsFor(item.id) : new Map<string, number>();
+    const aliasSeasonCounts = aliasSeasons.size > 0 ? await seasonEpisodeCounts(item.id) : undefined;
+    const parsedByResult = new Map<SearchResult, ReturnType<typeof parseReleaseTitle>>(
+      rawResults.map((r) => [r, applyAliasSeason(parseReleaseTitle(r.title), aliasSeasons, aliasSeasonCounts)])
+    );
+    let packEpisodes: PackEpisode[] | null = null;
+    if (packContext && rawResults.some((r) => parsedByResult.get(r)?.isFullSeason)) {
+      packEpisodes = typeof packContext.episodes === "function" ? await packContext.episodes() : packContext.episodes;
+    }
+    const packRules = packSettings();
+    const packUpgradeProfile = upgradeProfileOf(item.qualityProfileId ? await getQualityProfile(item.qualityProfileId) : null);
+    const targetLabel =
+      targetAirDate !== null
+        ? `the air date ${targetAirDate}`
+        : targetSeason !== null && targetEpisode !== null
+          ? `S${String(targetSeason).padStart(2, "0")}E${String(targetEpisode).padStart(2, "0")}`
+          : targetSeason !== null
+            ? `season ${targetSeason}`
+            : null;
+    const now = Date.now();
     const annotated: AnnotatedSearchResult[] = await Promise.all(rawResults.map(async (r) => {
-      const parsed = parseReleaseTitle(r.title);
+      const parsed = parsedByResult.get(r)!;
       const matchesTarget =
         targetAirDate !== null
           ? releaseMatchesAirDate(parsed, targetAirDate) ||
@@ -348,7 +442,7 @@ searchRouter.get(
       // The same refusals an automatic grab applies (multi-season packs, split seasons, disc images,
       // samples, burned-in subtitles); the user may still pick the release by hand.
       const refusal = releaseRejection(parsed, { title: r.title, size }, item.type);
-      const { totalScore, matches, rejected, rejectReason } = await scoreRelease(
+      const { totalScore, matches, rejected: formatRejected, rejectReason: formatRejectReason } = await scoreRelease(
         r.title,
         size,
         item.qualityProfileId,
@@ -357,12 +451,68 @@ searchRouter.get(
         item.id,
         r.indexerId ?? null
       );
+      const isBlocklisted = isBlockedRelease(blocklisted, r);
+      const sizeAllowed = !tiered || sizeWithinQualityBounds(parsed.quality, size, runtimeContext ? releaseRuntimeMinutes(parsed, runtimeContext) : null);
+      const upgradeVerdict =
+        existingForUpgrade && upgradeProfile
+          ? judgeUpgrade(upgradeProfile, revisionMode, existingForUpgrade, { quality: parsed.quality, title: r.title, score: totalScore })
+          : null;
+
+      // Every reason an automatic search of this target would not take the release, from the same checks.
+      const facts = emptyFacts();
+      facts.hashName = parsed.rejected;
+      facts.blocklisted = isBlocklisted;
+      // With no client at all every release would say so; that is `downloadAllowed`, not a reason per release.
+      const clientForProtocol = pickClientForProtocol(clients, r.protocol);
+      facts.noClientFor = clients.length > 0 && clientForProtocol === null ? r.protocol : null;
+      facts.refusal = refusal;
+      facts.availability = availabilityRejectionDetail(r, minimumSeedersById, now);
+      facts.freeSpace = freeSpaceReason(size, freeBytes, reserveBytes);
+      facts.wrongTarget = !matchesTarget && targetLabel ? `It is not for ${targetLabel}` : null;
+      if (packContext && packEpisodes && parsed.isFullSeason) {
+        const packVerdict = judgeSeasonPack({
+          parsed,
+          season: parsed.seasonNumber ?? packContext.season,
+          episodes: packEpisodes,
+          item: packContext.item,
+          packQuality: parsed.quality,
+          cutoff,
+          qualityGroups,
+          settings: packRules,
+          upgrade: {
+            profile: packUpgradeProfile,
+            mode: revisionMode,
+            packTitle: r.title,
+            packScore: packUpgradeProfile.cutoffFormatScore > 0 ? totalScore : undefined,
+          },
+        });
+        facts.pack = packVerdict.ok ? null : packVerdict.reason;
+      }
+      const names = nameFields(r.title);
+      facts.name = names.nameOk ? null : names.nameReason ?? "Its title does not match";
+      facts.identity = verdict && !verdict.ok && identityEnforced ? verdict.detail : null;
+      facts.quality = tiered && allowedQualities.length > 0 && !allowedQualities.includes(parsed.quality) ? `Quality "${parsed.quality}" isn't allowed by this quality profile` : null;
+      if (upgradeVerdict === "no") facts.notAnUpgrade = "It isn't an upgrade over the file already on disk";
+      else if (!existingForUpgrade && onDisk !== undefined && groupedRank(parsed.quality, qualityGroups) <= groupedRank(onDisk, qualityGroups)) {
+        facts.notAnUpgrade = `Quality "${parsed.quality}" isn't an upgrade over what's already on disk`;
+      }
+      facts.size = sizeAllowed ? null : "Its size doesn't fit this quality's configured size range";
+      if (delayProfile && ((r.protocol === "torrent" && !delayProfile.enableTorrent) || (r.protocol === "usenet" && !delayProfile.enableUsenet))) {
+        facts.protocolOff = `Its protocol (${r.protocol}) is turned off in the delay profile`;
+      }
+      facts.formatRejected = formatRejected ? formatRejectReason ?? "A custom format the profile rejects matches it" : null;
+      // The engine ignores the minimum for a type with no quality tiers (music, books, comics).
+      facts.belowMinimumScore = tiered && !formatRejected && totalScore < minFormatScore ? `Its custom-format score (${totalScore}) is below the profile's minimum (${minFormatScore})` : null;
+      const rejections = buildRejections(facts);
+      const summary = summarize(rejections);
+      const firstPermanent = rejections.find((x) => x.type === "permanent") ?? rejections[0];
+
       return {
         ...r,
         parsedQuality: parsed.quality,
         matchesTarget,
         allowedByProfile: !tiered || allowedQualities.length === 0 || allowedQualities.includes(parsed.quality),
-        sizeAllowed: !tiered || sizeWithinQualityBounds(parsed.quality, size, runtimeContext ? releaseRuntimeMinutes(parsed, runtimeContext) : null),
+        sizeAllowed,
         formatScore: totalScore,
         formatMatches: matches.map((m) => m.name),
         matchTier: matchTierFor(r, identity),
@@ -371,18 +521,26 @@ searchRouter.get(
         identityReason: verdict && !verdict.ok ? verdict.detail : null,
         identityRejection: verdict && !verdict.ok ? verdict.reason : null,
         parsedTitle: parsed.title,
-        blocklisted: isBlockedRelease(blocklisted, r),
+        blocklisted: isBlocklisted,
         wouldAutoGrab: autoPick === r,
-        ...nameFields(r.title),
-        upgrade:
-          existingForUpgrade && upgradeProfile
-            ? judgeUpgrade(upgradeProfile, revisionMode, existingForUpgrade, { quality: parsed.quality, title: r.title, score: totalScore }) === "yes"
-              ? "yes"
-              : "no"
-            : null,
+        ...names,
+        upgrade: upgradeVerdict === null ? null : upgradeVerdict === "yes" ? "yes" : "no",
         revisionLabel: revisionLabelOf(parsed.revision),
-        rejected: rejected || parsed.rejected || !!refusal,
-        rejectReason: parsed.rejected ? "The release name is a hash, so there is no title to check it against" : refusal ? refusal.reason : rejectReason,
+        rejected: summary.rejected,
+        rejectReason: firstPermanent?.reason,
+        rejections,
+        approved: summary.approved,
+        temporarilyRejected: summary.temporarilyRejected,
+        downloadAllowed: clientForProtocol !== null,
+        ageMinutes: ageMinutesOf(r.publishDate, now),
+        releaseGroup: parsed.releaseGroup,
+        languages: parsed.languages,
+        releaseType: releaseTypeOf(parsed, episodic),
+        episodesCovered:
+          packContext && packEpisodes && parsed.isFullSeason ? episodesCoveredBy(parsed, parsed.seasonNumber ?? packContext.season, packEpisodes).length : null,
+        qualityRank: tiered ? qualityRank(parsed.quality) : -1,
+        flags: indexerFlagsOf(r),
+        serverRank: 0,
       };
     }));
 
@@ -416,32 +574,72 @@ searchRouter.get(
         (a.protocol === "torrent" && b.protocol === "torrent" ? (b.seeders ?? 0) - (a.seeders ?? 0) : 0)
     );
 
-    res.json(dedupeResults(annotated));
+    const listed = dedupeResults(annotated);
+    listed.forEach((r, index) => {
+      r.serverRank = index + 1;
+    });
+    // `?detail=1` also says which indexers answered (a failed one otherwise looks like "nothing exists").
+    if (req.query.detail === "1") {
+      const counts = new Map<number, number>();
+      for (const r of rawResults) if (r.indexerId != null) counts.set(r.indexerId, (counts.get(r.indexerId) ?? 0) + 1);
+      res.json({
+        results: listed,
+        // Only the indexers this search applied to: one that takes no release of this type was never asked.
+        indexers: indexers.filter((i: any) => String(i.mediaTypes).split(",").includes(item.type)).map((i: any) => {
+          const outcome = outcomes.get(i.id);
+          return { id: i.id, name: i.name, ok: outcome ? outcome.ok : true, count: counts.get(i.id) ?? 0, ...(outcome?.error ? { error: outcome.error } : {}) };
+        }),
+      });
+      return;
+    }
+    res.json(listed);
   })
 );
 
-/** Manual grab: POST /api/search/:mediaItemId/grab */
-searchRouter.post(
-  "/:mediaItemId/grab",
-  asyncHandler(async (req, res) => {
-    const itemRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.mediaItemId);
+/**
+ * The admin picks a release by hand (a search result, or a release the delay profile is holding): the checks
+ * a manual grab makes, then the same grab() every automatic path uses. Throws an HttpError for a refusal.
+ */
+export async function manualGrab(mediaItemId: number | string, b: Record<string, any>) {
+  {
+    const itemRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
     if (!itemRow) throw new HttpError(404, "Media item not found");
     const item = mediaItemFromRow(itemRow);
 
-    const b = req.body ?? {};
     if (!b.downloadUrl) throw new HttpError(400, "downloadUrl is required");
-    if (
-      b.title &&
-      (await isBlocklisted(Number(req.params.mediaItemId), {
-        title: b.title,
-        protocol: b.protocol === "usenet" || b.protocol === "torrent" || b.protocol === "http" || b.protocol === "slskd" ? b.protocol : undefined,
-        indexerId: b.indexerId ?? null,
-        size: Number(b.size) || 0,
-        publishDate: typeof b.publishDate === "string" ? b.publishDate : null,
-        infoHash: typeof b.infoHash === "string" ? b.infoHash : null,
-      }))
-    ) {
-      throw new HttpError(400, "This release is blocklisted for this media item");
+    // An id from the request that is not an indexer, episode or sub-item here would fail the queue row's foreign
+    // key after the client had taken the download: a held release can be days old.
+    const knownIndexers = new Set(
+      ((await db.prepare("SELECT id FROM indexers").all()) as { id: number }[]).map((row) => Number(row.id))
+    );
+    const knownIndexerId = (id: unknown): number | null => (id != null && knownIndexers.has(Number(id)) ? Number(id) : null);
+    if (b.episodeId && !(await db.prepare("SELECT 1 FROM episodes WHERE id = ? AND media_item_id = ?").get(b.episodeId, item.id))) {
+      throw new HttpError(404, "Episode not found");
+    }
+    if (b.subItemId && !(await db.prepare("SELECT 1 FROM sub_items WHERE id = ? AND media_item_id = ?").get(b.subItemId, item.id))) {
+      throw new HttpError(404, "Sub-item not found");
+    }
+    const protocolOf = (value: unknown) => (value === "usenet" || value === "torrent" || value === "http" || value === "slskd" ? value : undefined);
+    const blocklistedCopy = (copy: { indexerId: unknown; infoHash: unknown }) =>
+      b.title
+        ? isBlocklisted(Number(mediaItemId), {
+            title: b.title,
+            protocol: protocolOf(b.protocol),
+            indexerId: copy.indexerId == null ? null : Number(copy.indexerId),
+            size: Number(b.size) || 0,
+            publishDate: typeof b.publishDate === "string" ? b.publishDate : null,
+            infoHash: typeof copy.infoHash === "string" ? copy.infoHash : null,
+          })
+        : Promise.resolve(false);
+    // What the admin overrode on purpose: the history records a grab as forced only for these.
+    const overrides: string[] = Array.isArray(b.overrides) ? b.overrides.filter((c: unknown): c is string => typeof c === "string").slice(0, 20) : [];
+    let forced = overrides.length > 0;
+    // `force` overrides every refusal below (the 409 confirm flow); `overrides` names the rejections the admin read in the list and accepted.
+    const mayOverride = (code: string) => !!b.force || overrides.includes(code);
+    // A blocklisted release is an ordinary rejection: "grab anyway" overrides it, as in Sonarr.
+    if (await blocklistedCopy({ indexerId: b.indexerId ?? null, infoHash: b.infoHash })) {
+      if (!mayOverride("blocklisted")) throw new HttpError(409, "This release is blocklisted for this media item. Grab it anyway to override the blocklist.");
+      forced = true;
     }
 
     // A manual grab records how the release matched like an automatic grab's (grab_source tells
@@ -458,8 +656,9 @@ searchRouter.post(
             await identityTargetFor(item)
           )
         : null;
-    if (verdict && !verdict.ok && !b.force && identityModeFor(item.type) === "enforce") {
-      throw new HttpError(409, `${verdict.detail}. Grab it anyway, or add the release's title as an alias of this item.`);
+    if (verdict && !verdict.ok && identityModeFor(item.type) === "enforce") {
+      if (!mayOverride("identity")) throw new HttpError(409, `${verdict.detail}. Grab it anyway, or add the release's title as an alias of this item.`);
+      forced = true;
     }
 
     // Either an explicit client id, or (the UI's normal path) the release's protocol — an NZB
@@ -497,7 +696,9 @@ searchRouter.post(
     // admin may still add a different release while one is queued (allowCovered).
     const searchResult = {
       ...b,
-      indexerId: b.indexerId ?? null,
+      // Other indexers' links are for the fallback below; they do not belong on the queue row or in the history.
+      alternates: undefined,
+      indexerId: knownIndexerId(b.indexerId),
       indexerName: typeof b.indexerName === "string" ? b.indexerName : "",
       title: releaseTitle,
       // NaN, not 0, for an unknown size: grab() stores it as NULL, as the interactive grab always did.
@@ -513,32 +714,65 @@ searchRouter.post(
     // A full-season pack grabbed for one episode is recorded against its season too (grab() does it), so
     // the rest of that season counts as queued and the importer places it all.
     const seasonNumber: number | null = b.episodeId ? null : (b.seasonNumber ?? null);
-    let grabbed: boolean;
-    try {
-      grabbed = await grabRelease(
-        client,
-        item,
-        b.episodeId ?? null,
-        b.subItemId ?? null,
-        { result: searchResult, quality: parsedTitle.quality, identity: verdict },
-        0,
-        seasonNumber,
-        "interactive",
-        { allowCovered: true, refuseSameRelease: !b.force }
-      );
-    } catch (err) {
-      // The messages quote the indexer's or client's own words, which can carry a URL with an API key.
-      const withoutUrls = (message: string) => message.replace(/\b(?:[a-z][a-z0-9+.-]*:\/\/|magnet:\?)\S*/gi, "<link>");
-      if (err instanceof DuplicateGrabError) throw new HttpError(409, err.message);
-      if (err instanceof ReleaseRefusedError) throw new HttpError(502, `This release could not be added: ${withoutUrls(err.message)}`);
-      if (err instanceof DownloadClientUnavailableError) throw new HttpError(503, withoutUrls(err.message));
-      throw err;
+    // The same release on other indexers (the list collapses it into one row): when the first link cannot
+    // be served, the next is tried. Only a refusal of the release moves on; an unreachable client does not.
+    const alternates = Array.isArray(b.alternates)
+      ? (b.alternates as any[])
+          .filter((a) => a && typeof a.downloadUrl === "string" && a.downloadUrl)
+          .slice(0, 5)
+          .map((a) => ({
+            indexerId: a.indexerId ?? null,
+            indexerName: typeof a.indexerName === "string" ? a.indexerName : "",
+            downloadUrl: a.downloadUrl as string,
+            infoHash: typeof a.infoHash === "string" ? a.infoHash : null,
+          }))
+      : [];
+    // A copy on another indexer can be a different torrent, and a blocklist entry is per hash and per indexer:
+    // each is asked, and a blocklisted one is only tried when the admin forced the grab.
+    const usableAlternates: typeof alternates = [];
+    for (const a of alternates) {
+      if (!mayOverride("blocklisted") && (await blocklistedCopy(a))) continue;
+      usableAlternates.push(a);
+    }
+    const attempts = [searchResult, ...usableAlternates.map((a) => ({ ...searchResult, ...a, indexerId: knownIndexerId(a.indexerId) }))];
+    let grabbed = false;
+    for (const attempt of attempts) {
+      try {
+        grabbed = await grabRelease(
+          client,
+          item,
+          b.episodeId ?? null,
+          b.subItemId ?? null,
+          { result: attempt, quality: parsedTitle.quality, identity: verdict },
+          0,
+          seasonNumber,
+          "interactive",
+          { allowCovered: true, refuseSameRelease: !b.force, forced }
+        );
+        break;
+      } catch (err) {
+        if (err instanceof ReleaseRefusedError && attempt !== attempts[attempts.length - 1]) continue;
+        // The messages quote the indexer's or client's own words, which can carry a URL with an API key.
+        const withoutUrls = (message: string) => message.replace(/\b(?:[a-z][a-z0-9+.-]*:\/\/|magnet:\?)\S*/gi, "<link>");
+        if (err instanceof DuplicateGrabError) throw new HttpError(409, err.message);
+        if (err instanceof ReleaseRefusedError) throw new HttpError(502, `This release could not be added: ${withoutUrls(err.message)}`);
+        if (err instanceof DownloadClientUnavailableError) throw new HttpError(503, withoutUrls(err.message));
+        throw err;
+      }
     }
     if (!grabbed) throw new HttpError(409, "The download client already has this download for another entry.");
 
     const queueRow = await db
       .prepare("SELECT * FROM queue WHERE media_item_id = ? AND title = ? AND download_client_id = ? ORDER BY id DESC LIMIT 1")
       .get(item.id, releaseTitle, client.id);
-    res.status(201).json(queueItemFromRow(queueRow));
+    return queueItemFromRow(queueRow);
+  }
+}
+
+/** Manual grab: POST /api/search/:mediaItemId/grab */
+searchRouter.post(
+  "/:mediaItemId/grab",
+  asyncHandler(async (req, res) => {
+    res.status(201).json(await manualGrab(req.params.mediaItemId, req.body ?? {}));
   })
 );

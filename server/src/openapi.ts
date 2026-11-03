@@ -61,13 +61,22 @@ export const openApiSpec = {
           { name: "mediaItemId", in: "path", required: true, schema: { type: "integer" } },
           { name: "episodeId", in: "query", schema: { type: "integer" } },
           { name: "subItemId", in: "query", schema: { type: "integer" } },
+          { name: "seasonNumber", in: "query", schema: { type: "integer" } },
+          { name: "detail", in: "query", description: "1: answer {results, indexers} instead of the bare array; indexers says which indexers answered", schema: { type: "string", enum: ["1"] } },
         ],
-        responses: { "200": { description: "Annotated search results (quality, format score, blocklist status)" } },
+        responses: {
+          "200": {
+            description:
+              "Annotated search results in the order an automatic search would choose from (serverRank): quality, format score, blocklist status, age, group, packaging, and rejections [{code, reason, type: permanent|temporary}] with approved/rejected flags; alternates are the same release on other indexers",
+          },
+        },
       },
     },
     "/search/{mediaItemId}/grab": {
       post: {
         summary: "Manually grab a specific search result for this media item",
+        description:
+          "Body: downloadUrl, title, protocol, indexerId, episodeId/subItemId/seasonNumber, alternates (other links tried in turn when the client refuses the release), force (overrides the blocklist, the identity gate and the already-queued check) and overrides (rejection codes the caller accepted; recorded as a forced grab).",
         parameters: [{ name: "mediaItemId", in: "path", required: true, schema: { type: "integer" } }],
         responses: { "201": { description: "Queue item created" } },
       },

@@ -341,6 +341,23 @@ one book.
   cannot be deleted. `PUT /api/settings/:key` refuses unknown keys and bad values. The settings template
   carries tags, delay profiles and release profiles. TRaSH language conditions import (positive,
   non-English only), and a TRaSH quality profile can be imported from the Custom Formats settings (its qualities, groups, cutoff and upgrade settings, plus the scores of the formats already synced). Deleting an indexer switches off a release profile that was scoped only to it.
+- **Interactive search** — the release list opens in the order an automatic search would choose from (the
+  pick is marked) and keeps it until you sort. Each release shows every reason an automatic search would not
+  take it, permanent or ending by itself (a usenet post younger than the minimum age), from the same checks the
+  automatic search makes: an indexer's minimum seeders, usenet retention, free space, no client for the
+  protocol, a protocol the delay profile turns off, the season pack guards, the profile's quality and size, a
+  score under the minimum. It also shows age, group, languages, packaging (and how many episodes a pack covers),
+  flags and seeders/leechers, and says which indexers answered, so a down indexer no longer looks like
+  "nothing found"; Cancel stops a search, and leaving the page does too. A rejected release can be grabbed
+  with "grab anyway", which first lists the reasons and records which ones you overrode; a blocklisted copy is
+  also held back when the same release is tried on another indexer. The same release on several indexers falls
+  back to the next link when one is refused. A season pack is accepted when it upgrades enough of its episodes
+  by the profile's upgrade rules (a PROPER or REPACK of the group's own release, a better format score), not
+  only by quality, and never when it would fill or upgrade none of them, whatever the pack guard settings say.
+  Files of unknown quality do not count as upgraded by a pack. Releases a delay profile is holding appear
+  on the Activity page with when they become ready, and can be grabbed at once or forgotten. The queue shows
+  time left, remaining size, the client's state (paused, stalled, a warning of its own) and why a download
+  failed. The History feed says whether a release was picked by hand, and over a rejection.
 - **CSV export of library** — an admin-only "Export CSV" button on the Library page (respecting the
   current type filter) and `GET /api/media/export.csv` download a flat CSV of the library for
   spreadsheet tracking outside the app.

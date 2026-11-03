@@ -22,6 +22,43 @@ interface TimelineEntry {
   type: string;
   title: string;
   detail: string | null;
+  /** How a grab came about: "interactive" (picked by hand), "auto", "rss", ... Null for other events. */
+  source?: string | null;
+  /** The admin grabbed a release the list had rejected. */
+  forced?: boolean;
+}
+
+/** A release a delay profile is holding back (GET /activity/pending). */
+interface PendingRelease {
+  id: number;
+  mediaItemId: number;
+  mediaTitle: string;
+  mediaType: string;
+  target: string | null;
+  reason: "delay";
+  delayMinutes: number;
+  readyInMinutes: number | null;
+  expiresAt: string | null;
+  release: { title: string; size: number | null; protocol: string; indexerName: string; publishDate: string | null; seeders: number | null; quality: string };
+}
+
+const SOURCE_LABELS: Record<string, string> = { interactive: "Manual", auto: "Automatic search", rss: "RSS sync", irc: "IRC announce" };
+
+/** 5400 -> "1h 30m", 45 -> "45s"; null when the client gave no estimate. */
+function formatEta(seconds: number | null | undefined): string | null {
+  if (seconds == null) return null;
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  const hours = Math.floor(seconds / 3600);
+  if (hours < 48) return `${hours}h ${Math.floor((seconds % 3600) / 60)}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+function formatReady(minutes: number | null): string {
+  if (minutes == null) return "when the delay ends";
+  if (minutes <= 0) return "any moment";
+  if (minutes < 60) return `in ${minutes} min`;
+  return `in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 const TIMELINE_LABELS: Record<string, string> = {
@@ -88,6 +125,8 @@ function StatusIcon({ status }: { status: string }) {
 
 export default function Activity() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [pending, setPending] = useState<PendingRelease[]>([]);
+  const [pendingBusy, setPendingBusy] = useState<number | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [indexers, setIndexers] = useState<Indexer[]>([]);
   const [downloadClients, setDownloadClients] = useState<DownloadClient[]>([]);
@@ -175,6 +214,35 @@ export default function Activity() {
     });
   }
 
+  function loadPending() {
+    api.get<{ items: PendingRelease[] }>("/activity/pending").then((data) => setPending(data.items)).catch(() => {});
+  }
+
+  async function grabPendingNow(p: PendingRelease) {
+    setPendingBusy(p.id);
+    try {
+      await api.post(`/activity/pending/${p.id}/grab`);
+      notify.success(`Sent "${p.release.title}" to the download client now.`);
+      loadRef.current();
+    } catch (e) {
+      notify.error(`Grab failed: ${(e as Error).message}`);
+    } finally {
+      setPendingBusy(null);
+    }
+  }
+
+  async function forgetPending(p: PendingRelease) {
+    setPendingBusy(p.id);
+    try {
+      await api.del(`/activity/pending/${p.id}`);
+      loadPending();
+    } catch (e) {
+      notify.error((e as Error).message);
+    } finally {
+      setPendingBusy(null);
+    }
+  }
+
   function loadHistory() {
     const params = new URLSearchParams();
     params.set("limit", String(historyPageSize));
@@ -187,6 +255,7 @@ export default function Activity() {
 
   function load() {
     loadQueue();
+    loadPending();
     loadHistory();
   }
 
@@ -198,6 +267,7 @@ export default function Activity() {
   loadRef.current = load;
 
   useEffect(loadQueue, [queuePage, queuePageSize]);
+  useEffect(loadPending, []);
   useEffect(loadHistory, [historyPage, historyPageSize]);
 
   useEffect(() => {
@@ -449,6 +519,53 @@ export default function Activity() {
         </div>
       )}
 
+      {pending.length > 0 && (
+        <>
+          <h3 style={{ marginBottom: 4 }}>Waiting for a delay ({pending.length})</h3>
+          <p style={{ color: "var(--muted)", marginTop: 0, fontSize: "0.85rem" }}>
+            Releases a delay profile is holding back. Each is grabbed by itself when its delay ends, and forgotten after a week.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Release</th>
+                <th>Quality</th>
+                <th>Ready</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {pending.map((p) => (
+                <tr key={p.id}>
+                  <td>
+                    {p.mediaTitle}
+                    {p.target && <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>{p.target}</div>}
+                  </td>
+                  <td>
+                    {p.release.title}
+                    <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+                      {p.release.indexerName} · {p.release.protocol}
+                      {p.release.size ? ` · ${formatSize(p.release.size)}` : ""}
+                    </div>
+                  </td>
+                  <td>{p.release.quality}</td>
+                  <td title={`Delay of ${p.delayMinutes} minutes for ${p.release.protocol} releases`}>{formatReady(p.readyInMinutes)}</td>
+                  <td className="toolbar">
+                    <button type="button" className="icon-button" disabled={pendingBusy === p.id} onClick={() => grabPendingNow(p)} title="Grab now, without waiting" aria-label="Grab now">
+                      <DownloadIcon />
+                    </button>
+                    <button type="button" className="icon-button danger" disabled={pendingBusy === p.id} onClick={() => forgetPending(p)} title="Forget this release" aria-label="Forget this release">
+                      <TrashIcon />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
       {queue.length === 0 && <p className="empty">Nothing in the queue.</p>}
       {queue.length > 0 && visibleQueue.length === 0 && <p className="empty">No queue items match this filter.</p>}
       {visibleQueue.length > 0 && (
@@ -485,6 +602,11 @@ export default function Activity() {
                         retry {q.retryCount}
                       </span>
                     )}
+                    {(q.clientNote ?? q.statusMessage) && (
+                      <div style={{ fontSize: "0.75rem", color: q.clientState === "warning" || q.status === "failed" ? "var(--danger)" : "var(--muted)" }}>
+                        {q.clientNote ?? q.statusMessage}
+                      </div>
+                    )}
                   </td>
                   <td>{q.seasonNumber != null ? `S${q.seasonNumber}` : "-"}</td>
                   <td>{indexerName(q.indexerId)}</td>
@@ -510,6 +632,11 @@ export default function Activity() {
                     <div className="progress-bar">
                       <div style={{ width: `${Math.round(q.progress * 100)}%` }} />
                     </div>
+                    {q.status === "downloading" && (q.etaSeconds != null || q.sizeLeft != null) && (
+                      <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+                        {[q.etaSeconds != null && q.clientState !== "paused" ? `ETA ${formatEta(q.etaSeconds)}` : null, q.sizeLeft != null ? `${formatSize(q.sizeLeft)} left` : null].filter(Boolean).join(" · ")}
+                      </div>
+                    )}
                   </td>
                   <td>{q.quality ?? "-"}</td>
                   <td>{q.size ? formatSize(q.size) : "-"}</td>
@@ -621,7 +748,15 @@ export default function Activity() {
                   </span>
                 </td>
                 <td>{t.title}</td>
-                <td>{t.detail ?? "-"}</td>
+                <td>
+                  {t.detail ?? "-"}
+                  {t.source && (
+                    <span className="badge" style={{ marginLeft: 6 }} title="How this release came to be grabbed">
+                      {SOURCE_LABELS[t.source] ?? t.source}
+                      {t.forced ? ", over a rejection" : ""}
+                    </span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

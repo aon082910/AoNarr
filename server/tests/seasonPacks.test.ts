@@ -114,3 +114,111 @@ describe("packSettings", () => {
     expect(packs.packSettings()).toEqual({ guards: true, sharePercent: 50 });
   });
 });
+
+// SR7: a pack upgrades an episode's file by the profile's upgrade rules, not by quality rank alone.
+describe("judgeSeasonPack with the profile's upgrade rules (SR7)", () => {
+  const profile = { cutoff: "Bluray-1080p", qualityGroups: [], upgradeAllowed: true, cutoffFormatScore: 0, minUpgradeFormatScore: 1 };
+  const withFile = (n: number) => ({ hasFile: true, quality: "WEBDL-1080p", releaseTitle: "Show.S01E0" + Math.min(9, n) + ".1080p.WEB-DL-GRP", formatScore: 0 });
+
+  function judgeUpgrading(episodes: PackEpisode[], packTitle: string, over: Partial<typeof profile> = {}, packScore?: number, mode: "preferAndUpgrade" | "doNotUpgrade" | "doNotPrefer" = "preferAndUpgrade") {
+    return packs.judgeSeasonPack({
+      parsed: { episodeRange: null },
+      season: 1,
+      episodes,
+      item: show,
+      packQuality: "WEBDL-1080p",
+      cutoff: "Bluray-1080p",
+      settings,
+      today: TODAY,
+      upgrade: { profile: { ...profile, ...over }, mode, packTitle, packScore },
+    });
+  }
+
+  it("takes a same-quality PROPER pack of the group's own release when every episode is on disk", () => {
+    const episodes = season(10, withFile);
+    expect(judgeUpgrading(episodes, "Show.S01.PROPER.1080p.WEB-DL-GRP")).toMatchObject({ ok: true, covered: 10, wanted: 10 });
+  });
+
+  it("still refuses a same-quality pack that is not a later revision", () => {
+    expect(judgeUpgrading(season(10, withFile), "Show.S01.1080p.WEB-DL-GRP").ok).toBe(false);
+  });
+
+  it("refuses a REPACK pack from another group, which replaces only its own group's files", () => {
+    expect(judgeUpgrading(season(10, withFile), "Show.S01.REPACK.1080p.WEB-DL-OTHER").ok).toBe(false);
+  });
+
+  it("refuses the PROPER pack when the profile ignores revisions", () => {
+    expect(judgeUpgrading(season(10, withFile), "Show.S01.PROPER.1080p.WEB-DL-GRP", {}, undefined, "doNotUpgrade").ok).toBe(false);
+  });
+
+  it("takes a pack that only raises the custom-format score while the files are under the format cutoff", () => {
+    const episodes = season(10, (n) => ({ ...withFile(n), formatScore: 100 }));
+    const gain = judgeUpgrading(episodes, "Show.S01.1080p.WEB-DL-GRP", { cutoffFormatScore: 5000, minUpgradeFormatScore: 50 }, 400);
+    const noGain = judgeUpgrading(episodes, "Show.S01.1080p.WEB-DL-GRP", { cutoffFormatScore: 5000, minUpgradeFormatScore: 50 }, 120);
+
+    expect(gain).toMatchObject({ ok: true, wanted: 10 });
+    expect(noGain.ok).toBe(false);
+  });
+
+  it("counts nothing as an upgrade when the profile does not allow upgrades, but still fills missing episodes", () => {
+    const mixed = season(10, (n) => (n <= 4 ? {} : withFile(n)));
+    expect(judgeUpgrading(mixed, "Show.S01.PROPER.1080p.WEB-DL-GRP", { upgradeAllowed: false })).toMatchObject({ ok: false });
+    expect(judgeUpgrading(season(10, () => ({})), "Show.S01.1080p.WEB-DL-GRP", { upgradeAllowed: false })).toMatchObject({ ok: true, wanted: 10 });
+  });
+
+  it("does not upgrade a file that already meets the quality cutoff with a better-quality pack", () => {
+    const episodes = season(4, () => ({ hasFile: true, quality: "Bluray-1080p", releaseTitle: "Show.S01E01.1080p.BluRay-GRP", formatScore: 0 }));
+    const verdict = packs.judgeSeasonPack({
+      parsed: { episodeRange: null },
+      season: 1,
+      episodes,
+      item: show,
+      packQuality: "Remux-1080p",
+      cutoff: "Bluray-1080p",
+      settings,
+      today: TODAY,
+      upgrade: { profile, mode: "preferAndUpgrade", packTitle: "Show.S01.1080p.Remux-GRP" },
+    });
+    expect(verdict.ok).toBe(false);
+  });
+
+  it("does not count a file of unknown quality as upgraded by a pack", () => {
+    const episodes = season(4, () => ({ hasFile: true, quality: null, releaseTitle: null, formatScore: null }));
+    expect(judgeUpgrading(episodes, "Show.S01.1080p.WEB-DL-GRP").ok).toBe(false);
+  });
+});
+
+describe("a pack that fills or upgrades nothing is never taken", () => {
+  const onDisk = season(4, () => ({ hasFile: true, quality: "WEBDL-1080p" }));
+
+  it("refuses it with the guards off and with a share of 0", () => {
+    expect(judge(onDisk, { cutoff: "Bluray-1080p", quality: "WEBDL-720p", settings: { guards: false, sharePercent: 50 } }).ok).toBe(false);
+    expect(judge(onDisk, { cutoff: "Bluray-1080p", quality: "WEBDL-720p", settings: { guards: true, sharePercent: 0 } }).ok).toBe(false);
+    expect(judge(onDisk, { cutoff: "Bluray-1080p", quality: "WEBDL-720p", settings: { guards: false, sharePercent: 50 } })).toMatchObject({ reason: expect.stringMatching(/none of the 4/) });
+  });
+
+  it("still takes one that fills something with the guards off", () => {
+    const oneMissing = season(4, (n) => (n === 1 ? {} : { hasFile: true, quality: "WEBDL-1080p" }));
+    expect(judge(oneMissing, { cutoff: "Bluray-1080p", quality: "WEBDL-720p", settings: { guards: false, sharePercent: 50 } })).toMatchObject({ ok: true, wanted: 1 });
+  });
+});
+
+// The check made before any pack is known: is a search for one worth the requests?
+describe("judgeSeasonPack before any pack is known (couldUpgrade)", () => {
+  const base = { cutoff: "Bluray-1080p", qualityGroups: [], upgradeAllowed: true, cutoffFormatScore: 0, minUpgradeFormatScore: 1 };
+  const atCutoff = season(4, () => ({ hasFile: true, quality: "Bluray-1080p", releaseTitle: "Show.S01E01.1080p.BluRay-GRP", formatScore: 0 }));
+  const check = (episodes: PackEpisode[], couldUpgrade: typeof base) =>
+    packs.judgeSeasonPack({ parsed: { episodeRange: null }, season: 1, episodes, item: show, packQuality: "Bluray-1080p", cutoff: "Bluray-1080p", settings, today: TODAY, couldUpgrade });
+
+  it("refuses a season whose files have met both cutoffs", () => {
+    expect(check(atCutoff, base).ok).toBe(false);
+  });
+
+  it("looks for a pack when the files are under the format-score cutoff", () => {
+    expect(check(atCutoff, { ...base, cutoffFormatScore: 5000 })).toMatchObject({ ok: true, wanted: 4 });
+  });
+
+  it("looks for none when the profile does not allow upgrades", () => {
+    expect(check(atCutoff, { ...base, cutoffFormatScore: 5000, upgradeAllowed: false }).ok).toBe(false);
+  });
+});

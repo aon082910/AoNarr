@@ -10,7 +10,12 @@ import { isJobRunning, listJobs } from "../services/jobRegistry.js";
 import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 import { addToBlocklist } from "../services/blocklist.js";
 import { notifyQueueChanged, registerQueueStreamClient, unregisterQueueStreamClient } from "../services/realtime.js";
-import { markQueueImportFailed, markQueueImportStarted, queueClientNote } from "../services/scheduler.js";
+import { loadDelayProfiles, markQueueImportFailed, markQueueImportStarted, pickDelayProfile, queueClientNote, tagIdsForMediaItem } from "../services/scheduler.js";
+import { delayMinutesFor } from "../services/delayHold.js";
+import { loadPending, PENDING_MAX_AGE_DAYS, removePending } from "../services/pendingStore.js";
+import { parseReleaseTitle } from "../services/releaseParser.js";
+import { ageMinutesOf } from "../services/releaseDecision.js";
+import { manualGrab } from "./search.js";
 import { getSetting } from "../services/settingsStore.js";
 
 export const activityRouter = Router();
@@ -28,6 +33,95 @@ activityRouter.get(
     // clientNote: what the download client says beyond the progress (paused, waiting its turn, or a warning
     // such as a full download folder), when it says anything.
     res.json({ items: rows.map((row) => ({ ...queueItemFromRow(row), clientNote: queueClientNote(Number((row as { id: number }).id)) })), total: Number(total) });
+  })
+);
+
+/**
+ * Releases a delay profile is holding back (Sonarr's pending queue items): each with its target, why it is
+ * held, and when the delay ends. They are grabbed by themselves when it does; `grab` takes one now and
+ * `delete` forgets it. Never returns a release's download link, which can carry an indexer key.
+ */
+activityRouter.get(
+  "/pending",
+  asyncHandler(async (_req, res) => {
+    const rows = await loadPending();
+    const delayProfiles = await loadDelayProfiles();
+    const now = Date.now();
+    const items: unknown[] = [];
+    for (const row of rows) {
+      const media = (await db.prepare("SELECT title, type FROM media_items WHERE id = ?").get(row.mediaItemId)) as { title: string; type: string } | undefined;
+      if (!media) continue;
+      let target: string | null = null;
+      if (row.leafTable === "episodes") {
+        const ep = (await db.prepare("SELECT season_number, episode_number, title FROM episodes WHERE id = ?").get(row.leafId)) as
+          | { season_number: number; episode_number: number; title: string | null }
+          | undefined;
+        if (ep) target = `S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}${ep.title ? ` ${ep.title}` : ""}`;
+      } else if (row.leafTable === "sub_items") {
+        const sub = (await db.prepare("SELECT title FROM sub_items WHERE id = ?").get(row.leafId)) as { title: string } | undefined;
+        target = sub?.title ?? null;
+      }
+      const profile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(row.mediaItemId));
+      const protocol = row.release.protocol;
+      const delay = profile && (protocol === "torrent" || protocol === "usenet") ? delayMinutesFor(profile, protocol) : 0;
+      const age = ageMinutesOf(row.release.publishDate, now);
+      const firstSeen = Date.parse(row.firstSeenAt.includes("T") ? row.firstSeenAt : `${row.firstSeenAt.replace(" ", "T")}Z`);
+      items.push({
+        id: row.id,
+        mediaItemId: row.mediaItemId,
+        mediaTitle: media.title,
+        mediaType: media.type,
+        target,
+        reason: "delay",
+        delayMinutes: delay,
+        readyInMinutes: delay > 0 && age != null ? Math.max(0, delay - age) : null,
+        firstSeenAt: row.firstSeenAt,
+        expiresAt: Number.isFinite(firstSeen) ? new Date(firstSeen + PENDING_MAX_AGE_DAYS * 86_400_000).toISOString() : null,
+        release: {
+          title: row.release.title,
+          size: Number.isFinite(row.release.size) ? row.release.size : null,
+          protocol,
+          indexerName: row.release.indexerName,
+          publishDate: row.release.publishDate,
+          seeders: row.release.seeders,
+          quality: parseReleaseTitle(row.release.title).quality,
+        },
+      });
+    }
+    res.json({ items, total: items.length });
+  })
+);
+
+activityRouter.post(
+  "/pending/:id/grab",
+  asyncHandler(async (req, res) => {
+    const row = (await loadPending()).find((p) => p.id === Number(req.params.id));
+    if (!row) throw new HttpError(404, "That release is not waiting any more");
+    // The target can be gone since the release was held (a refresh drops an episode): nothing to grab it for.
+    if (row.leafTable === "episodes" || row.leafTable === "sub_items") {
+      const leaf = await db.prepare(`SELECT id FROM ${row.leafTable} WHERE id = ?`).get(row.leafId);
+      if (!leaf) {
+        await removePending(row.id);
+        throw new HttpError(404, "What this release was held for no longer exists, so it was forgotten");
+      }
+    }
+    const queued = await manualGrab(row.mediaItemId, {
+      ...row.release,
+      episodeId: row.leafTable === "episodes" ? row.leafId : undefined,
+      subItemId: row.leafTable === "sub_items" ? row.leafId : undefined,
+    });
+    await removePending(row.id);
+    res.status(201).json(queued);
+  })
+);
+
+activityRouter.delete(
+  "/pending/:id",
+  asyncHandler(async (req, res) => {
+    const row = (await loadPending()).find((p) => p.id === Number(req.params.id));
+    if (!row) throw new HttpError(404, "That release is not waiting any more");
+    await removePending(row.id);
+    res.status(204).send();
   })
 );
 
@@ -323,6 +417,10 @@ interface TimelineEntry {
   type: string;
   title: string;
   detail: string | null;
+  /** For a grab: how it came about ("interactive" is a release picked by hand). */
+  source?: string | null;
+  /** For a grab: the admin grabbed a release the list had rejected. */
+  forced?: boolean;
 }
 
 /**
@@ -359,13 +457,17 @@ activityRouter.get(
 
     const entries: TimelineEntry[] = historyRows.map((row) => {
       let detail: string | null = null;
+      let source: string | null = null;
+      let forced = false;
       try {
         const parsed = row.data ? JSON.parse(row.data) : null;
         detail = parsed?.title ?? parsed?.fileName ?? parsed?.reason ?? null;
+        if (row.eventType === "grabbed" && typeof parsed?.grabSource === "string") source = parsed.grabSource;
+        forced = parsed?.forced === true;
       } catch {
         detail = null;
       }
-      return { timestamp: row.createdAt, type: row.eventType, title: row.mediaTitle, detail };
+      return { timestamp: row.createdAt, type: row.eventType, title: row.mediaTitle, detail, ...(source ? { source } : {}), ...(forced ? { forced } : {}) };
     });
 
     const requestRows = (await db

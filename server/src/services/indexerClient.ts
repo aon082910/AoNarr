@@ -168,6 +168,20 @@ export interface SearchHints {
   /** Look through the plain RSS feeds too, which an automatic search leaves to the RSS sync: for a
    * search the admin asked for, or a retry, that the sync will not repeat. */
   includeFeeds?: boolean;
+  /** Told, for each indexer the main query was sent to, whether it answered (and its error when not). */
+  onOutcome?: (outcome: IndexerSearchOutcome) => void;
+  /** Aborted when whoever asked has gone away: the search stops asking further indexers and phases. */
+  signal?: AbortSignal;
+}
+
+/** What one indexer did with a search's main query. */
+export interface IndexerSearchOutcome {
+  indexerId: number;
+  indexerName: string;
+  ok: boolean;
+  /** Results of the main query only. */
+  count: number;
+  error?: string;
 }
 
 function cacheKey(indexerId: number, query: string, mediaType: MediaType, externalIds?: Record<string, string>, hints?: SearchHints): string {
@@ -1458,25 +1472,40 @@ async function runSearch(
   externalIds?: Record<string, string>,
   hints?: SearchHints
 ): Promise<SearchRun> {
+  // Whoever asked is already gone: no request goes out, so no indexer's hourly limit is spent.
+  if (hints?.signal?.aborted) return { results: [], empty: [], answered: 0 };
   if (applicable.length > 0) {
     log.info(`[indexerClient] searching ${applicable.length} indexer(s) for "${query}"`);
   }
-  const settled = await Promise.allSettled(
+  const asked = Promise.allSettled(
     applicable.map((i) =>
       bypassCache ? searchIndexer(i, query, mediaType, externalIds, hints) : searchIndexerCached(i, query, mediaType, externalIds, hints)
     )
   );
+  // Whoever asked has gone away: stop waiting for the indexers (their requests end by their own timeout).
+  const signal = hints?.signal;
+  if (signal) {
+    const gone = new Promise<"aborted">((resolve) => {
+      if (signal.aborted) resolve("aborted");
+      else signal.addEventListener("abort", () => resolve("aborted"), { once: true });
+    });
+    if ((await Promise.race([asked, gone])) === "aborted") return { results: [], empty: [], answered: 0 };
+  }
+  const settled = await asked;
 
   const results: SearchResult[] = [];
   const empty: Indexer[] = [];
   let answered = 0;
   settled.forEach((s, index) => {
+    const indexer = applicable[index];
     if (s.status === "fulfilled") {
       answered++;
       results.push(...s.value);
-      if (s.value.length === 0) empty.push(applicable[index]);
+      if (s.value.length === 0) empty.push(indexer);
+      hints?.onOutcome?.({ indexerId: indexer.id, indexerName: indexer.name, ok: true, count: s.value.length });
     } else {
       log.warn("Indexer search failed:", s.reason?.message ?? s.reason);
+      hints?.onOutcome?.({ indexerId: indexer.id, indexerName: indexer.name, ok: false, count: 0, error: String(s.reason?.message ?? s.reason) });
     }
   });
   log.info(`[indexerClient] "${query}": queried ${applicable.length} indexer(s), ${results.length} result(s)`);
@@ -1523,7 +1552,7 @@ export async function searchAllIndexers(
     (i) => i.enabled && i.mediaTypes.split(",").includes(mediaType) && !(feedsReadBySync && i.protocol === "rss")
   );
   const mainHints: SearchHints | undefined = bypassCache ? { ...hints, fresh: true } : hints;
-  const textOnly: SearchHints = { skipTyped: true, fresh: bypassCache };
+  const textOnly: SearchHints = { skipTyped: true, fresh: bypassCache, signal: hints?.signal };
 
   const seenQueries = new Set([query.toLowerCase()]);
   const alternates = (hints?.alternateQueries ?? [])
@@ -1537,6 +1566,11 @@ export async function searchAllIndexers(
   const main = await runSearch(applicable, query, mediaType, bypassCache, externalIds, mainHints);
   let results = main.results;
   let stillEmpty = main.empty;
+  // The one who asked has gone: the extra forms of the search would only spend the indexers' hourly limits.
+  if (hints?.signal?.aborted) {
+    searchReaches.set(results, { applicable: applicable.length, answered: main.answered });
+    return results;
+  }
 
   // The other form of the search, asked of every indexer that can take it.
   const also = (hints?.alsoQueries ?? [])

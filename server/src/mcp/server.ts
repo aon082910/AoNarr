@@ -222,7 +222,7 @@ export function createAoNarrMcpServer(): McpServer {
     "search_releases",
     {
       title: "Search indexers for a release",
-      description: "Searches configured indexers for downloadable releases of a media item (or one of its episodes/sub-items), annotated with quality/format match info — the list to pick a downloadUrl from for grab_release.",
+      description: "Searches configured indexers for downloadable releases of a media item (or one of its episodes/sub-items), annotated with quality/format match info, in the order an automatic search would choose from. Each release has rejections (code, reason, permanent or temporary) and approved: an approved release is one an automatic search would take. Pick a downloadUrl from it for grab_release.",
       inputSchema: {
         mediaItemId: z.number(),
         episodeId: z.number().optional(),
@@ -256,7 +256,8 @@ export function createAoNarrMcpServer(): McpServer {
         subItemId: z.number().optional(),
         size: z.number().optional(),
         indexerId: z.number().optional().describe("From the search_releases result this release came from — lets a later blocklist action scope to that specific indexer"),
-        force: z.boolean().optional().describe("Grab a release the identity check refused (the error says why) — only after confirming it really is this item's"),
+        force: z.boolean().optional().describe("Grab a release the identity check or the blocklist refused (the error says why) — only after confirming it really is this item's"),
+        overrides: z.array(z.string()).optional().describe("Codes of the search_releases rejections you read and accept, for example [\"size\"]; recorded in the history as a forced grab"),
       },
     },
     async ({ mediaItemId, ...rest }) => {

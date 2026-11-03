@@ -72,6 +72,10 @@ export interface QueueStatusUpdate {
   clientTitle?: string;
   progress: number; // 0-1
   status: "downloading" | "completed" | "failed";
+  /** Seconds the client expects the download to take still; unset when it gives none (or "never"). */
+  etaSeconds?: number | null;
+  /** Bytes still to download, when the client says. */
+  sizeLeft?: number | null;
   /** True when the client itself reports this download as active but receiving no data (no peers /
    * no metadata). Never set for a download waiting its turn in the client's own queue, paused, or
    * being checked — those are healthy, just not running yet. */
@@ -495,6 +499,7 @@ class QBittorrentAdapter implements DownloadClientAdapter {
         ...(status === "downloading" && QBIT_STALLED_STATES.has(t.state) ? { stalled: true } : {}),
         ...(status === "downloading" && QBIT_PAUSED_STATES.has(t.state) ? { paused: true } : {}),
         ...(status === "downloading" && QBIT_WARNING_STATES[t.state] ? { warning: QBIT_WARNING_STATES[t.state] } : {}),
+        ...(status === "downloading" ? qbitTimeAndSize(t) : {}),
         // content_path (API v2.8.4+) points straight at the torrent's actual file/folder; save_path
         // is only the download root it was saved under. Older qBittorrent builds lack content_path
         // entirely, so fall back to save_path rather than reporting no path at all.
@@ -756,6 +761,7 @@ class SabnzbdAdapter implements DownloadClientAdapter {
         status: s.status === "Failed" ? "failed" : "downloading",
         // A job the user paused, or one waiting for its turn, is healthy; its age says nothing.
         ...(s.status === "Paused" || s.status === "Queued" || s.status === "Propagating" ? { paused: true } : {}),
+        ...sabTimeAndSize(s),
       });
     }
 
@@ -2039,4 +2045,27 @@ export async function waitForQueueImports(timeoutMs: number, moreMayStart: () =>
     await (idle ? timeout : Promise.race([Promise.all(queueImportsInFlight.values()), timeout]));
     clearTimeout(timer);
   }
+}
+
+/** qBittorrent's `eta` (seconds; 8640000 means never) and `amount_left` (bytes) for a download in progress. */
+export function qbitTimeAndSize(t: { eta?: unknown; amount_left?: unknown }): Pick<QueueStatusUpdate, "etaSeconds" | "sizeLeft"> {
+  const eta = typeof t.eta === "number" && Number.isFinite(t.eta) && t.eta >= 0 && t.eta < 8_640_000 ? Math.round(t.eta) : null;
+  const left = typeof t.amount_left === "number" && Number.isFinite(t.amount_left) && t.amount_left >= 0 ? Math.round(t.amount_left) : null;
+  return { ...(eta != null ? { etaSeconds: eta } : {}), ...(left != null ? { sizeLeft: left } : {}) };
+}
+
+/** SABnzbd's `timeleft` ("0:10:30" or "1:02:03:04" with days) and `mbleft` (MiB, as text) for a queue slot. */
+export function sabTimeAndSize(slot: { timeleft?: unknown; mbleft?: unknown }): Pick<QueueStatusUpdate, "etaSeconds" | "sizeLeft"> {
+  let eta: number | null = null;
+  if (typeof slot.timeleft === "string" && /^\d+(:\d{1,2}){1,3}$/.test(slot.timeleft)) {
+    const parts = slot.timeleft.split(":").map(Number);
+    eta = parts.reduce((total, part) => total * 60 + part, 0);
+    // With a day part ("1:02:03:04") the first number is days, not hours.
+    if (parts.length === 4) eta = (parts[0] * 24 + parts[1]) * 3600 + parts[2] * 60 + parts[3];
+  }
+  const mb = Number(slot.mbleft);
+  const left = typeof slot.mbleft === "string" || typeof slot.mbleft === "number" ? (Number.isFinite(mb) && mb >= 0 ? Math.round(mb * 1048576) : null) : null;
+  // SABnzbd reports 0:00:00 for a slot that is not moving (paused, queued): that is no estimate for data still to come.
+  if (eta === 0 && left != null && left > 0) eta = null;
+  return { ...(eta != null ? { etaSeconds: eta } : {}), ...(left != null ? { sizeLeft: left } : {}) };
 }

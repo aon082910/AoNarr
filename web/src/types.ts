@@ -348,6 +348,14 @@ export interface QueueItem {
   downloadClientId: number | null;
   /** Why a completed row's import was skipped, leaving it for a manual import. */
   importSkippedReason?: string | null;
+  /** What the download client said at its last poll: how long and how much is left, its state and a sentence
+   * about it (paused, stalled, a warning of its own, or why it failed). */
+  etaSeconds?: number | null;
+  sizeLeft?: number | null;
+  clientState?: "downloading" | "paused" | "stalled" | "warning" | "completed" | "failed" | null;
+  statusMessage?: string | null;
+  /** The live note for an active row (kept in memory; statusMessage is the same text, kept in the database). */
+  clientNote?: string | null;
 }
 
 export interface User {
@@ -475,6 +483,38 @@ export interface SearchResult {
   /** PROPER / REPACK / v2 and the like. */
   revisionLabel?: string | null;
   infoHash?: string | null;
+  /** Every reason an automatic search would not take the release (Sonarr's rejections[]). Permanent ones stay;
+   * a temporary one ends by itself (a usenet post younger than the minimum age). */
+  rejections?: SearchRejection[];
+  approved?: boolean;
+  temporarilyRejected?: boolean;
+  /** An enabled download client takes the release's protocol. */
+  downloadAllowed?: boolean;
+  ageMinutes?: number | null;
+  releaseGroup?: string | null;
+  languages?: string[];
+  releaseType?: "single" | "season-pack" | "multi-episode" | null;
+  /** For a season pack: how many known episodes of its season it covers. */
+  episodesCovered?: number | null;
+  /** The quality's place on the ladder; -1 when it is not on it. */
+  qualityRank?: number;
+  flags?: string[];
+  /** 1-based position in the server's ranking, the automatic pick's order. */
+  serverRank?: number;
+  /** The same release on the other indexers; a grab falls back to one when the first link is refused. */
+  alternates?: { indexerId: number | null; indexerName: string; downloadUrl: string; infoHash: string | null }[];
+}
+
+export interface SearchRejection {
+  code: string;
+  reason: string;
+  type: "permanent" | "temporary";
+}
+
+/** What `GET /search/:id?detail=1` answers: the releases, and how each indexer did. */
+export interface SearchDetail {
+  results: SearchResult[];
+  indexers: { id: number; name: string; ok: boolean; count: number; error?: string }[];
 }
 
 export interface BlocklistEntry {

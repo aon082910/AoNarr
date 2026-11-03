@@ -237,7 +237,10 @@ CREATE TABLE IF NOT EXISTS history (
   media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
   event_type TEXT NOT NULL,
   data TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  episode_id INTEGER, -- what a grab was for; no foreign key, a history row outlives the episode
+  sub_item_id INTEGER,
+  season_number INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_history_media_item_id ON history(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at);

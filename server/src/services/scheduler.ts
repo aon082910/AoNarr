@@ -24,7 +24,8 @@ import { recordPending } from "./pendingStore.js";
 import { compareRevisions, formatCutoffNotMet, judgeUpgrade, propersMode, upgradeProfileOf, type ExistingFile, type UpgradeProfile } from "./upgradeRules.js";
 import { existingFileRecord } from "./fileRelease.js";
 import { editionlessTitle, FORMAT_UPGRADE_STEP, formatUpgradeFloor, nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
-import { exceedsFreeSpace, freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReserveBytes } from "./freeSpace.js";
+import { freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReason, freeSpaceReserveBytes } from "./freeSpace.js";
+import { recordGrabbed } from "./grabHistory.js";
 import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolGroup, protocolPreferenceKey } from "./releaseRanking.js";
 import { aliasSeasonsFor, aliasTitlesFor, applyAliasSeason, identityContextFor, seasonEpisodeCounts } from "./releaseAliases.js";
 import { childNumberOf, volumeYearOf } from "./searchQueries.js";
@@ -437,6 +438,10 @@ export interface ChooseOptions {
   /** With it, a season pack among the results must pass the pack guards (every episode it covers has
    * aired and is monitored, and it fills or upgrades enough of them). Omitted = no pack guards. */
   pack?: PackContext;
+  /** A season pack is judged by the pack guards alone, which count the episodes it would upgrade by the profile's
+   * upgrade rules, so the minimum-rank gate (`upgradeFromRank`) does not also apply to it. Set by the season-level
+   * search; a retry of a failed pack keeps the gate (the replacement must beat every file). */
+  packJudgesUpgrades?: boolean;
   /** The enabled download clients: a release whose protocol none of them takes is never chosen, so
    * an NZB with no usenet client can't beat a grabbable torrent. Omitted = no protocol filter. */
   clients?: DownloadClient[];
@@ -899,11 +904,7 @@ export async function chooseBestResult(
       return true;
     })
     .filter(({ result, size }) => {
-      const reason =
-        availabilityRejection(result, minimumSeedersById) ??
-        (exceedsFreeSpace(size, freeBytes, reserveBytes)
-          ? `it is ${Math.round((size ?? 0) / 1e9)} GB, more than the ${Math.max(0, Math.round((freeBytes! - reserveBytes) / 1e9))} GB free on the root folder`
-          : null);
+      const reason = availabilityRejection(result, minimumSeedersById) ?? freeSpaceReason(size, freeBytes, reserveBytes);
       if (reason) log.info(`[scheduler] rejected "${result.title}": ${reason}`);
       return !reason;
     });
@@ -932,8 +933,21 @@ export async function chooseBestResult(
   if (packContext && episodeFiltered.some(({ parsed }) => parsed.isFullSeason)) {
     const episodes = typeof packContext.episodes === "function" ? await packContext.episodes() : packContext.episodes;
     const settings = packSettings();
-    packFiltered = episodeFiltered.filter(({ result, parsed }) => {
-      if (!parsed.isFullSeason) return true;
+    // Whether the pack upgrades an episode's file is the profile's upgrade rules applied to that file's own
+    // release, as for a single episode: a later revision (PROPER, REPACK, v2) and a score gain count too.
+    const upgradeProfile = upgradeProfileOf(await getQualityProfile(qualityProfileId));
+    packFiltered = [];
+    for (const entry of episodeFiltered) {
+      const { result, parsed, size } = entry;
+      if (!parsed.isFullSeason) {
+        packFiltered.push(entry);
+        continue;
+      }
+      // The pack's own score matters only while a format cutoff is set (otherwise no score rule can apply).
+      const packScore =
+        upgradeProfile.cutoffFormatScore > 0
+          ? (await scoreRelease(result.title, size, qualityProfileId, mediaType, indexerInfoOf(result), mediaItemId, result.indexerId ?? null)).totalScore
+          : undefined;
       const verdict = judgeSeasonPack({
         parsed,
         season: parsed.seasonNumber ?? packContext.season,
@@ -943,10 +957,11 @@ export async function chooseBestResult(
         cutoff,
         qualityGroups,
         settings,
+        upgrade: { profile: upgradeProfile, mode: revisionMode, packTitle: result.title, packScore },
       });
       if (!verdict.ok) log.info(`[scheduler] rejected "${result.title}": ${verdict.reason}`);
-      return verdict.ok;
-    });
+      else packFiltered.push(entry);
+    }
   }
 
   // Identity gate for quality-tiered types (Sonarr/Radarr reject a release that doesn't name the
@@ -1023,7 +1038,7 @@ export async function chooseBestResult(
         return false;
       }
       if (verdict === "needs-score") needsScore.add(result);
-    } else if (upgradeFromGroupRank !== null && groupedRank(parsed.quality, qualityGroups) <= upgradeFromGroupRank) {
+    } else if (!(options.packJudgesUpgrades && parsed.isFullSeason) && upgradeFromGroupRank !== null && groupedRank(parsed.quality, qualityGroups) <= upgradeFromGroupRank) {
       log.info(`[scheduler] rejected "${result.title}": quality "${parsed.quality}" isn't an upgrade over what's already on disk`);
       return false;
     }
@@ -1299,7 +1314,7 @@ export async function grab(
   source: GrabSource = "auto",
   /** `allowCovered`: the admin chose this release by hand, so a queued download that already covers the
    * target does not stop it (the other checks do). */
-  options: { allowCovered?: boolean; refuseSameRelease?: boolean } = {}
+  options: { allowCovered?: boolean; refuseSameRelease?: boolean; forced?: boolean } = {}
 ): Promise<boolean> {
   return serializeForItem(mediaItem.id, async () => {
     const { result: best, quality } = chosen;
@@ -1376,9 +1391,11 @@ export async function grab(
         best.infoHash ?? null
       );
 
-    await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'grabbed', ?)`).run(
+    await recordGrabbed(
       mediaItem.id,
-      JSON.stringify(best)
+      { episodeId, subItemId, seasonNumber: packSeason },
+      best,
+      { source, quality, client: { id: client.id, name: client.name }, forced: options.forced, releaseGroup: parsedBest.releaseGroup }
     );
 
     // A manual grab answers at once; waiting for a webhook that never answers held the response (and every other
@@ -1804,7 +1821,9 @@ export function seasonGroupsOf(episodes: { id: number; season_number: number; sc
  * is unmonitored, and enough of it is wanted): if not, searching for one is wasted requests. */
 async function seasonCouldHoldPack(item: MediaItem, group: SeasonGroup, cutoff: string): Promise<boolean> {
   const episodes = await loadPackEpisodes(item.id);
-  return judgeSeasonPack({ parsed: { episodeRange: null }, season: group.scene, episodes, item, packQuality: cutoff, cutoff }).ok;
+  // No pack is known yet: a file counts as upgradable when the profile's cutoff (quality or format score) is not met for it.
+  const couldUpgrade = upgradeProfileOf(await getQualityProfile(item.qualityProfileId));
+  return judgeSeasonPack({ parsed: { episodeRange: null }, season: group.scene, episodes, item, packQuality: cutoff, cutoff, couldUpgrade }).ok;
 }
 
 /** Whether any of the episodes still has no queued download covering it. */
@@ -2349,6 +2368,7 @@ async function searchAndGrabSeason(
         indexers: ctx.indexers,
         label: `${item.title} S${String(seasons.scene).padStart(2, "0")}`,
         pack: packContextFor(item, plan),
+        packJudgesUpgrades: true,
         userInvoked: !ctx.automatic,
       }
     );
@@ -3166,6 +3186,23 @@ function trackClientNote(match: QueueItem, status: PolledStatus): void {
   }
 }
 
+/**
+ * The state a client reports for a row and the sentence that goes with it (Sonarr's trackedDownloadState and
+ * statusMessages, simplified): downloading, paused (held or waiting its turn), stalled (active but receiving
+ * nothing), warning (the client's own problem, such as a full disk), completed or failed (with its reason).
+ */
+export function clientStateOf(status: Pick<QueueStatusUpdate, "status" | "paused" | "stalled" | "warning" | "failureReason">): {
+  state: "downloading" | "paused" | "stalled" | "warning" | "completed" | "failed";
+  message: string | null;
+} {
+  if (status.status === "completed") return { state: "completed", message: null };
+  if (status.status === "failed") return { state: "failed", message: status.failureReason ?? null };
+  if (status.warning) return { state: "warning", message: status.warning };
+  if (status.paused) return { state: "paused", message: "Paused or waiting its turn at the download client" };
+  if (status.stalled) return { state: "stalled", message: "Stalled: the client reports no connections or no data" };
+  return { state: "downloading", message: null };
+}
+
 /** What the client reports about a queue row beyond its progress, for the Activity page: "paused" or
  * "queued" while the client holds it, or the client's warning. Null for a row nothing is wrong with. */
 export function queueClientNote(queueId: number): string | null {
@@ -3474,15 +3511,19 @@ async function applyClientStatuses(client: DownloadClient, relevant: QueueItem[]
       // Marked in the same write that completes the row, so a restart before its import even
       // starts is caught by resumeInterruptedImports too.
       const importStart = status.status === "completed" ? `, import_started_at = ${nowExpr(db)}` : "";
+      // What the client says besides progress, kept on the row so Activity shows it and a restart does not lose it.
+      const clientView = clientStateOf(status);
+      const noteSet = ", eta_seconds = ?, size_left = ?, client_state = ?, status_message = ?";
+      const noteArgs = [status.etaSeconds ?? null, status.sizeLeft == null ? null : Math.round(status.sizeLeft), clientView.state, clientView.message];
       const updated = progressChanged
         ? await db
             .prepare(
-              `UPDATE queue SET progress = ?, status = ?, updated_at = ${nowExpr(db)}, last_progress_at = ${nowExpr(db)}${pathSet}${importStart} WHERE id = ? AND status IN ('queued','downloading')`
+              `UPDATE queue SET progress = ?, status = ?, updated_at = ${nowExpr(db)}, last_progress_at = ${nowExpr(db)}${noteSet}${pathSet}${importStart} WHERE id = ? AND status IN ('queued','downloading')`
             )
-            .run(status.progress, status.status, ...pathArgs, match.id)
+            .run(status.progress, status.status, ...noteArgs, ...pathArgs, match.id)
         : await db
-            .prepare(`UPDATE queue SET status = ?, updated_at = ${nowExpr(db)}${pathSet}${importStart} WHERE id = ? AND status IN ('queued','downloading')`)
-            .run(status.status, ...pathArgs, match.id);
+            .prepare(`UPDATE queue SET status = ?, updated_at = ${nowExpr(db)}${noteSet}${pathSet}${importStart} WHERE id = ? AND status IN ('queued','downloading')`)
+            .run(status.status, ...noteArgs, ...pathArgs, match.id);
       if (updated.changes === 0) continue;
       trackStalledFlag(match.id, status.status === "downloading" && !progressChanged && status.stalled === true);
       trackClientNote(match, status);

@@ -4,6 +4,7 @@ import { groupedRank, type QualityGroups } from "./quality.js";
 import { airedFrontierOf, episodeNotAired } from "./searchPlan.js";
 import type { ParsedRelease } from "./releaseParser.js";
 import type { MediaItem } from "../types/index.js";
+import { cutoffNotMet, judgeUpgrade, type PropersMode, type UpgradeProfile } from "./upgradeRules.js";
 
 /**
  * Whether a season pack is a good grab for what is wanted of its season. AoNarr grabs a pack found
@@ -29,6 +30,9 @@ export interface PackEpisode {
   hasFile: boolean;
   quality: string | null;
   airDate: string | null;
+  /** The release the episode's file came from and the custom-format score it had when imported (null: unknown). */
+  releaseTitle?: string | null;
+  formatScore?: number | null;
 }
 
 export type PackVerdict = { ok: true; covered: number; wanted: number } | { ok: false; reason: string };
@@ -49,7 +53,9 @@ export function packSettings(): PackSettings {
 /** The item's episodes, for a pack verdict. */
 export async function loadPackEpisodes(mediaItemId: number): Promise<PackEpisode[]> {
   const rows = (await db
-    .prepare("SELECT season_number, episode_number, scene_season_number, scene_episode_number, monitored, has_file, quality, air_date FROM episodes WHERE media_item_id = ?")
+    .prepare(
+      "SELECT season_number, episode_number, scene_season_number, scene_episode_number, monitored, has_file, quality, air_date, file_release_title, file_format_score FROM episodes WHERE media_item_id = ?"
+    )
     .all(mediaItemId)) as {
     season_number: number;
     episode_number: number;
@@ -59,6 +65,8 @@ export async function loadPackEpisodes(mediaItemId: number): Promise<PackEpisode
     has_file: number | boolean;
     quality: string | null;
     air_date: string | null;
+    file_release_title: string | null;
+    file_format_score: number | string | null;
   }[];
   return rows.map((r) => ({
     seasonNumber: Number(r.season_number),
@@ -69,6 +77,8 @@ export async function loadPackEpisodes(mediaItemId: number): Promise<PackEpisode
     hasFile: !!Number(r.has_file),
     quality: r.quality,
     airDate: r.air_date,
+    releaseTitle: r.file_release_title ?? null,
+    formatScore: r.file_format_score == null ? null : Number(r.file_format_score),
   }));
 }
 
@@ -100,11 +110,35 @@ export function judgeSeasonPack(args: {
   qualityGroups?: QualityGroups;
   settings?: PackSettings;
   today?: string;
+  /**
+   * With it, an episode that has a file counts as upgraded by the pack when the profile's upgrade rules say so:
+   * a better quality below the cutoff, a later revision of its own release (PROPER, REPACK, v2) or a
+   * custom-format score gain (Sonarr's UpgradeDiskSpecification for a full-season release). Without it only a better
+   * quality below the cutoff counts.
+   */
+  upgrade?: { profile: UpgradeProfile; mode: PropersMode; packTitle: string; packScore?: number };
+  /**
+   * For the check made before any pack is known (is a search for one worth the requests): an episode with a file
+   * counts as upgradable when some pack could replace it, that is when the profile's cutoff is not met for it.
+   */
+  couldUpgrade?: UpgradeProfile;
 }): PackVerdict {
   const settings = args.settings ?? packSettings();
   const covered = episodesCoveredBy(args.parsed, args.season, args.episodes);
   if (covered.length === 0) return { ok: false, reason: `it covers no episode of season ${args.season} that is known` };
-  const wanted = covered.filter((e) => !e.hasFile || upgradableBy(e.quality, args.packQuality, args.cutoff, args.qualityGroups)).length;
+  const upgrade = args.upgrade;
+  const upgradedByPack = (e: PackEpisode): boolean => {
+    const file = { quality: e.quality, releaseTitle: e.releaseTitle ?? null, formatScore: e.formatScore ?? null };
+    if (args.couldUpgrade) return cutoffNotMet(args.couldUpgrade, file);
+    // A file of unknown quality is not one a pack is known to improve (a single release over it is judged alone).
+    if (upgrade && groupedRank(e.quality, upgrade.profile.qualityGroups) >= 0) {
+      return judgeUpgrade(upgrade.profile, upgrade.mode, file, { quality: args.packQuality, title: upgrade.packTitle, score: upgrade.packScore }) === "yes";
+    }
+    return upgradableBy(e.quality, args.packQuality, args.cutoff, args.qualityGroups);
+  };
+  const wanted = covered.filter((e) => !e.hasFile || upgradedByPack(e)).length;
+  // Whatever the guards say, a pack that fills or upgrades nothing is a download for nothing.
+  if (wanted === 0) return { ok: false, reason: `it would fill or upgrade none of the ${covered.length} episodes it covers` };
   if (!settings.guards) return { ok: true, covered: covered.length, wanted };
 
   const today = args.today ?? new Date().toISOString().slice(0, 10);

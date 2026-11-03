@@ -38,7 +38,7 @@ import {
 import { TrashIcon, PencilIcon, FolderIcon, EyeIcon, ArrowLeftIcon, ArrowUpIcon, GridIcon, ChevronsDownIcon, ChevronsUpIcon } from "../components/ActionIcons.js";
 import { ProviderIcon } from "../components/ProviderIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
-import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchResult, Tag } from "../types.js";
+import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchDetail, SearchResult, Tag } from "../types.js";
 import { formatBytes, formatCalendarDate, formatMediaInfo, formatServerTimestamp, parseServerTimestamp } from "../utils/format.js";
 import { displayableImageUrl } from "../utils/artwork.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
@@ -197,6 +197,17 @@ function summarizeSubtitles(mediaInfo: MediaInfo): string {
   return mediaInfo.subtitleStreams.map((s) => s.language ?? "und").join(", ");
 }
 
+/** A release's age as one short figure for the search list: 40m, 5h, 12d, 7mo, 2y; "-" when the indexer gave no date. */
+function formatReleaseAge(minutes: number | null | undefined): string {
+  if (minutes == null) return "-";
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}h`;
+  const days = Math.floor(minutes / 1440);
+  if (days < 60) return `${days}d`;
+  if (days < 730) return `${Math.floor(days / 30)}mo`;
+  return `${Math.floor(days / 365)}y`;
+}
+
 /** Null when the value isn't a usable date, so the header falls back to the year. */
 function formatReleaseDate(value: string | null | undefined): string | null {
   return formatCalendarDate(value, { year: "numeric", month: "short", day: "numeric" }) || null;
@@ -212,10 +223,13 @@ export default function MediaDetail() {
   const [item, setItem] = useState<MediaDetailResponse | null>(null);
   const [target, setTarget] = useState<SearchTarget>(null);
   const [results, setResults] = useState<SearchResult[] | null>(null);
+  /** How each indexer did in the search that produced `results`: a failed one otherwise looks like "nothing exists". */
+  const [indexerOutcomes, setIndexerOutcomes] = useState<SearchDetail["indexers"]>([]);
+  // The list opens in the server's order, the one an automatic search would choose from; a header click sorts it.
   const { sortRows: sortSearchResults, sortableHeader: searchResultHeader } = useSortableTable<
     SearchResult,
-    "title" | "quality" | "formatScore" | "indexer" | "size" | "seeders"
-  >("seeders", "desc");
+    "server" | "title" | "quality" | "formatScore" | "indexer" | "age" | "size" | "seeders"
+  >("server", "asc");
   const { sortRows: sortChildren, sortableHeader: childHeader } = useSortableTable<SubItem, "title" | "releaseDate">("title");
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1108,30 +1122,53 @@ export default function MediaDetail() {
   // populate `results`/`target` for whatever item happens to be mounted by the time it lands,
   // letting a subsequent "Grab" attach the found release to the wrong item.
   const searchRequestRef = useRef(0);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  // Leaving the page (or moving to another item) ends the search the server is still running.
+  useEffect(() => () => searchAbortRef.current?.abort(), [id]);
   async function runSearch(t: SearchTarget) {
     const requestId = ++searchRequestRef.current;
+    searchAbortRef.current?.abort();
+    const abort = new AbortController();
+    searchAbortRef.current = abort;
     setTarget(t);
     setSearching(true);
     setError(null);
     setResults(null);
+    setIndexerOutcomes([]);
     try {
       const params = new URLSearchParams();
       if (t?.episodeId) params.set("episodeId", String(t.episodeId));
       else if (t?.seasonNumber != null) params.set("seasonNumber", String(t.seasonNumber));
       if (t?.subItemId) params.set("subItemId", String(t.subItemId));
-      const qs = params.toString();
-      const res = await api.get<SearchResult[]>(`/search/${id}${qs ? `?${qs}` : ""}`);
+      params.set("detail", "1");
+      const res = await api.get<SearchDetail>(`/search/${id}?${params.toString()}`, abort.signal);
       if (searchRequestRef.current !== requestId) return;
-      setResults(res);
+      setIndexerOutcomes(res.indexers);
+      setResults(res.results);
     } catch (e) {
       if (searchRequestRef.current !== requestId) return;
+      if ((e as Error).name === "AbortError") return;
       setError((e as Error).message);
     } finally {
       if (searchRequestRef.current === requestId) setSearching(false);
     }
   }
 
-  async function grab(result: SearchResult, options: { force?: boolean } = {}) {
+  /** Stops the search in progress: the server stops asking further indexers once the request is dropped. */
+  function cancelSearch() {
+    searchRequestRef.current++;
+    searchAbortRef.current?.abort();
+    setSearching(false);
+  }
+
+  async function grab(result: SearchResult, options: { force?: boolean; overrides?: string[] } = {}) {
+    // A release the list rejected: the reasons are shown before it is sent, and the server records which were overridden.
+    let overrides = options.overrides;
+    if (overrides === undefined && result.rejections && result.rejections.length > 0) {
+      const reasons = result.rejections.map((x) => `- ${x.reason}`).join("\n");
+      if (!window.confirm(`The list rejects this release:\n\n${reasons}\n\nGrab it anyway?`)) return;
+      overrides = result.rejections.map((x) => x.code);
+    }
     // The server picks an enabled client matching the release's protocol (usenet → SABnzbd,
     // torrent → qBittorrent/debrid) — the first client in the list isn't necessarily either.
     try {
@@ -1145,17 +1182,20 @@ export default function MediaDetail() {
         infoHash: result.infoHash ?? null,
         imdbId: result.imdbId ?? null,
         tmdbId: result.tmdbId ?? null,
+        // The same release on other indexers: tried in turn when this link is refused.
+        alternates: result.alternates ?? [],
         episodeId: target?.episodeId ?? null,
         subItemId: target?.subItemId ?? null,
         seasonNumber: target?.episodeId ? null : target?.seasonNumber ?? null,
         force: options.force ?? false,
+        overrides: overrides ?? [],
       });
       notify.success(`Sent "${result.title}" to download client.`);
       load();
     } catch (e) {
-      // The identity gate (enforcing) refused the release once; the admin decides.
+      // The identity gate (enforcing), the blocklist or a copy already queued refused the release once; the admin decides.
       if (e instanceof ApiError && e.status === 409 && !options.force) {
-        if (window.confirm(`${e.message}\n\nGrab it anyway?`)) await grab(result, { force: true });
+        if (window.confirm(`${e.message}\n\nGrab it anyway?`)) await grab(result, { force: true, overrides: overrides ?? [] });
         return;
       }
       notify.error(`Grab failed: ${(e as Error).message}`);
@@ -1174,7 +1214,8 @@ export default function MediaDetail() {
       notify.error(`Couldn't add the alternate title: ${(e as Error).message}`);
       return;
     }
-    await grab(result, { force: true });
+    // The alias settles the identity rejection; any other reason the list gave is still shown before the grab.
+    await grab({ ...result, rejections: (result.rejections ?? []).filter((x) => x.code !== "identity") });
   }
 
   async function downloadVideo(sub: SubItem) {
@@ -1209,13 +1250,21 @@ export default function MediaDetail() {
     if (
       !(await confirmDialog({
         title: "Blocklist release",
-        message: `Blocklist "${result.title}"? It will never be auto-grabbed or shown as grabbable again for this item.`,
+        message: `Blocklist "${result.title}"? It will never be auto-grabbed for this item. You can still grab it by hand with "Grab anyway".`,
         danger: true,
       }))
     )
       return;
     await api.post("/blocklist", { mediaItemId: item.id, releaseTitle: result.title, indexerId: result.indexerId });
-    setResults((prev) => prev && prev.map((r) => (r.title === result.title ? { ...r, blocklisted: true } : r)));
+    const reason = { code: "blocklisted", reason: "This release is blocklisted for this item", type: "permanent" as const };
+    setResults((prev) =>
+      prev &&
+      prev.map((r) =>
+        r.title === result.title
+          ? { ...r, blocklisted: true, rejected: true, approved: false, rejections: (r.rejections ?? []).some((x) => x.code === "blocklisted") ? r.rejections : [reason, ...(r.rejections ?? [])] }
+          : r
+      )
+    );
   }
 
   // Opens the Artwork modal and loads its options — Modal's own close button/overlay-click/
@@ -2076,6 +2125,14 @@ export default function MediaDetail() {
         </div>
       )}
 
+      {searching && (
+        <p style={{ color: "var(--muted)" }}>
+          Searching the indexers...{" "}
+          <button type="button" onClick={cancelSearch}>
+            Cancel
+          </button>
+        </p>
+      )}
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
       {loadError && <p style={{ color: "var(--danger)" }}>Couldn't refresh this item: {loadError}</p>}
       {watchStateError && <p style={{ color: "var(--danger)" }}>{watchStateError}</p>}
@@ -2648,32 +2705,63 @@ export default function MediaDetail() {
 
       {results && (
         <Modal title={`Search results${target ? ` — ${target.label}` : ""}`} onClose={() => setResults(null)} maxWidth={1000}>
-          {results.length === 0 && <p className="empty">No results found.</p>}
+          {indexerOutcomes.length > 0 && (
+            <p style={{ fontSize: "0.8rem", margin: "0 0 8px" }}>
+              Indexers:{" "}
+              {indexerOutcomes.map((o, i) => (
+                <span key={o.id} style={{ color: o.ok ? "var(--muted)" : "var(--danger)" }} title={o.error}>
+                  {i > 0 ? ", " : ""}
+                  {o.name} {o.ok ? o.count : `failed (${o.error ?? "no answer"})`}
+                </span>
+              ))}
+            </p>
+          )}
+          {results.length === 0 && (
+            <p className="empty">
+              {indexerOutcomes.length > 0 && indexerOutcomes.every((o) => !o.ok)
+                ? "No indexer answered, so nothing was searched. Check the indexers on the Indexers page."
+                : "No results found."}
+            </p>
+          )}
           {results.length > 0 && (
             <table>
               <thead>
                 <tr>
+                  {searchResultHeader("server", "#")}
                   {searchResultHeader("title", "Title")}
                   {searchResultHeader("quality", "Quality")}
                   {searchResultHeader("formatScore", "Format score")}
                   {searchResultHeader("indexer", "Indexer")}
+                  {searchResultHeader("age", "Age")}
                   {searchResultHeader("size", "Size")}
-                  {searchResultHeader("seeders", "Seeders")}
+                  {searchResultHeader("seeders", "Peers")}
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 {sortSearchResults(results, (a, b, key) => {
+                  if (key === "server") return (a.serverRank ?? 0) - (b.serverRank ?? 0);
                   if (key === "title") return a.title.localeCompare(b.title);
-                  if (key === "quality") return a.parsedQuality.localeCompare(b.parsedQuality);
+                  if (key === "quality") return (a.qualityRank ?? -1) - (b.qualityRank ?? -1);
                   if (key === "formatScore") return a.formatScore - b.formatScore;
                   if (key === "indexer") return a.indexerName.localeCompare(b.indexerName);
+                  if (key === "age") return (a.ageMinutes ?? Number.MAX_SAFE_INTEGER) - (b.ageMinutes ?? Number.MAX_SAFE_INTEGER);
                   if (key === "size") return a.size - b.size;
                   return (a.seeders ?? -1) - (b.seeders ?? -1);
-                }).map((r, idx) => (
-                  <tr key={idx} style={{ opacity: r.matchesTarget && r.identityOk !== false && !r.blocklisted && !r.rejected ? 1 : 0.55 }}>
+                }).map((r) => (
+                  <tr key={`${r.indexerId ?? r.indexerName}:${r.downloadUrl || `${r.title}:${r.size}`}`} style={{ opacity: r.matchesTarget && r.identityOk !== false && !r.rejected ? 1 : 0.55 }}>
+                    <td>{r.serverRank ?? ""}</td>
                     <td>
                       {r.title}
+                      <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+                        {[
+                          r.releaseGroup,
+                          r.releaseType === "season-pack" ? `season pack${r.episodesCovered != null ? ` (${r.episodesCovered} episodes)` : ""}` : r.releaseType === "multi-episode" ? "multi-episode" : null,
+                          r.languages && r.languages.length > 0 ? r.languages.join(", ") : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </div>
                       {r.identityOk === false && (
                         <span className="badge danger" style={{ marginLeft: 6 }} title={r.identityReason ?? undefined}>
                           other title
@@ -2699,20 +2787,25 @@ export default function MediaDetail() {
                           blocklisted
                         </span>
                       )}
-                      {r.rejected && (
-                        <span className="badge danger" style={{ marginLeft: 6 }} title={r.rejectReason}>
-                          rejected
+                      {(r.flags ?? []).map((flag) => (
+                        <span key={flag} className={`badge ${flag === "freeleech" || flag === "halfleech" || flag === "doubleupload" ? "ok" : ""}`} style={{ marginLeft: 6 }}>
+                          {flag}
                         </span>
-                      )}
-                      {r.downloadVolumeFactor === 0 && (
-                        <span className="badge ok" style={{ marginLeft: 6 }}>
-                          freeleech
-                        </span>
-                      )}
-                      {r.downloadVolumeFactor === 0.5 && (
-                        <span className="badge ok" style={{ marginLeft: 6 }}>
-                          halfleech
-                        </span>
+                      ))}
+                      {r.rejections && r.rejections.length > 0 && (
+                        <details style={{ marginTop: 4 }}>
+                          <summary className={`badge ${r.rejected ? "danger" : ""}`} style={{ cursor: "pointer", display: "inline-block" }}>
+                            {r.rejected ? "rejected" : "waiting"} ({r.rejections.length})
+                          </summary>
+                          <ul style={{ margin: "4px 0 0", paddingLeft: 18, fontSize: "0.8rem" }}>
+                            {r.rejections.map((x, i) => (
+                              <li key={i}>
+                                {x.reason}
+                                {x.type === "temporary" && <span style={{ color: "var(--muted)" }}> (ends by itself)</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
                       )}
                     </td>
                     <td>
@@ -2721,6 +2814,9 @@ export default function MediaDetail() {
                     <td title={r.formatMatches.join(", ")}>{r.formatScore}</td>
                     <td>
                       {r.indexerName}
+                      <span className="badge" style={{ marginLeft: 6 }} title={r.downloadAllowed === false ? "No enabled download client takes this protocol" : undefined}>
+                        {r.protocol}
+                      </span>
                       {r.wouldAutoGrab && (
                         <span className="badge ok" style={{ marginLeft: 6 }} title="Automatic search would grab this release">
                           auto pick
@@ -2732,6 +2828,7 @@ export default function MediaDetail() {
                         </span>
                       )}
                     </td>
+                    <td>{formatReleaseAge(r.ageMinutes)}</td>
                     <td>
                       {(r.size / 1e9).toFixed(2)} GB
                       {!r.sizeAllowed && (
@@ -2740,9 +2837,9 @@ export default function MediaDetail() {
                         </span>
                       )}
                     </td>
-                    <td>{r.seeders ?? "-"}</td>
+                    <td>{r.protocol === "usenet" ? "-" : `${r.seeders ?? "-"}${r.leechers != null ? ` / ${r.leechers}` : ""}`}</td>
                     <td style={{ display: "flex", gap: 6 }}>
-                      <button type="button" className="icon-button" onClick={() => grab(r)} disabled={r.blocklisted} title="Grab" aria-label="Grab">
+                      <button type="button" className="icon-button" onClick={() => grab(r)} title={r.blocklisted ? "Grab anyway (it is blocklisted)" : r.rejected ? "Grab anyway" : "Grab"} aria-label="Grab">
                         <DownloadIcon />
                       </button>
                       {r.identityOk === false && r.identityRejection === "title" && r.parsedTitle && !r.blocklisted && (

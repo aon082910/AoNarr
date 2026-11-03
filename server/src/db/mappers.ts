@@ -208,6 +208,11 @@ export function queueItemFromRow(row: any) {
     protocol: row.protocol ?? null,
     publishDate: row.publish_date ?? null,
     infoHash: row.info_hash ?? null,
+    // What the download client said at the last poll (null until a poll has run, and for rows older than these columns).
+    etaSeconds: row.eta_seconds == null ? null : Number(row.eta_seconds),
+    sizeLeft: row.size_left == null ? null : Number(row.size_left),
+    clientState: row.client_state ?? null,
+    statusMessage: row.status_message ?? null,
   };
 }
 

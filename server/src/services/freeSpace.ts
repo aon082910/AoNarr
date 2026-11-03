@@ -57,6 +57,13 @@ export function exceedsFreeSpace(sizeBytes: number | null, freeBytes: number | n
   return sizeBytes != null && freeBytes != null && sizeBytes > freeBytes - reserveBytes;
 }
 
+/** Why the release does not fit, as a sentence, or null when it does. */
+export function freeSpaceReason(sizeBytes: number | null, freeBytes: number | null, reserveBytes: number): string | null {
+  return exceedsFreeSpace(sizeBytes, freeBytes, reserveBytes)
+    ? `it is ${Math.round((sizeBytes ?? 0) / 1e9)} GB, more than the ${Math.max(0, Math.round((freeBytes! - reserveBytes) / 1e9))} GB free on the root folder`
+    : null;
+}
+
 /** For tests: forget the cached readings. */
 export function clearFreeSpaceCache(): void {
   cache.clear();

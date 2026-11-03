@@ -61,7 +61,7 @@ export function bestGrabbableQuality(ctx: Pick<DelayContext, "cutoff" | "allowed
   return null;
 }
 
-function delayMinutesFor(profile: DelayProfile, protocol: SearchResult["protocol"]): number {
+export function delayMinutesFor(profile: DelayProfile, protocol: SearchResult["protocol"]): number {
   return protocol === "torrent" ? profile.torrentDelayMinutes : profile.usenetDelayMinutes;
 }
 

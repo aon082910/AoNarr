@@ -212,7 +212,10 @@ describe("GET /api/search/:mediaItemId — what the indexers are asked", () => {
     expect(query).toBe("Office US S04E02");
     expect(bypassCache).toBe(true);
     expect(externalIds).toEqual({ tvdb: "73244" });
-    expect(hints).toEqual({ season: 4, episode: 2, queryTitle: "Office US", alternateQueries: ["Office S04E02", "Das Buro S04E02"] });
+    expect(hints).toMatchObject({ season: 4, episode: 2, queryTitle: "Office US", alternateQueries: ["Office S04E02", "Das Buro S04E02"] });
+    // Whoever asked can stop the search, and is told which indexers answered.
+    expect(hints.signal).toBeInstanceOf(AbortSignal);
+    expect(typeof hints.onOutcome).toBe("function");
   });
 
   it("asks for a whole season by season alone, and a whole show by its ids and no numbers", async () => {
@@ -456,6 +459,10 @@ describe("manual grab under an enforcing identity gate (Round 3)", () => {
 describe("GET /api/search/:mediaItemId — releases that can never import (matching Round 7)", () => {
   it("flags a multi-season pack, a split season, a raw disc, a sample and a cam copy, and sorts them below a clean release", async () => {
     const showId = await insertItem("series", "Show Name");
+    // The season's episodes: a pack for a season the show has no episodes for fails the pack guards.
+    for (let n = 1; n <= 3; n++) {
+      await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored, has_file) VALUES (?, 1, ?, ?, '2020-01-01', 1, 0)").run(showId, n, `E${n}`);
+    }
     searchAllIndexers.mockResolvedValue([
       release({ title: "Show.Name.S01-S05.COMPLETE.1080p.BluRay.x265-GRP", seeders: 900, downloadUrl: "magnet:?xt=pack" }),
       release({ title: "Show.Name.S01.Part.1.1080p.WEB-DL-GRP", seeders: 800, downloadUrl: "magnet:?xt=part" }),
