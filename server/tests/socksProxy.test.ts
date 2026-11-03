@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, afterAll, vi } from "vitest";
 import { getGlobalDispatcher, setGlobalDispatcher } from "undici";
 import { setupTestDb } from "./helpers/testDb.js";
 
@@ -59,20 +59,65 @@ describe("applySocksProxySetting", () => {
     expect(getGlobalDispatcher()).not.toBe(before);
   });
 
-  it("leaves the dispatcher untouched and doesn't throw for an unparseable proxy URL", () => {
-    const before = getGlobalDispatcher();
+  it("doesn't throw for an unparseable proxy URL, and falls back to no proxy rather than keeping the old one (review F5)", () => {
+    setSetting("socks5ProxyUrl", uniqueProxyUrl());
+    applySocksProxySetting();
+    expect(getGlobalDispatcher()).not.toBe(originalDispatcher);
+
     setSetting("socks5ProxyUrl", "not a url at all " + uniqueProxyUrl());
 
     expect(() => applySocksProxySetting()).not.toThrow();
-    expect(getGlobalDispatcher()).toBe(before);
+    expect(getGlobalDispatcher()).toBe(originalDispatcher);
   });
 
-  it("leaves the dispatcher untouched and doesn't throw for a URL with the wrong protocol", () => {
-    const before = getGlobalDispatcher();
-    setSetting("socks5ProxyUrl", `http://not-a-socks-proxy-${uniqueCounter++}.example.com:8080`);
+  it("doesn't throw for a URL with the wrong protocol, and still applies the certificate setting (review F5)", () => {
+    setSetting("socks5ProxyUrl", `ftp://not-a-proxy-${uniqueCounter++}.example.com:21`);
+    setSetting("tlsRejectUnauthorized", "0");
 
     expect(() => applySocksProxySetting()).not.toThrow();
-    expect(getGlobalDispatcher()).toBe(before);
+    expect(getGlobalDispatcher()).not.toBe(originalDispatcher); // an agent that skips the check, not the default
+  });
+
+  it("keeps the credentials of a bad proxy URL out of the log (review F5)", async () => {
+    const { log } = await import("../src/services/logger.js");
+    const errors: string[] = [];
+    const spy = vi.spyOn(log, "error").mockImplementation((...args: unknown[]) => void errors.push(args.map(String).join(" ")));
+    try {
+      setSetting("socks5ProxyUrl", `ftp://vpnuser:hunter2pass@bad-${uniqueCounter++}.example.com:21`);
+      applySocksProxySetting();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(errors.join("\n")).not.toContain("hunter2pass");
+    expect(errors.join("\n")).not.toContain("vpnuser");
+    expect(errors.join("\n")).toContain("***@");
+  });
+
+  it("accepts an http://, an https:// and a socks4:// proxy as well (ST1)", () => {
+    for (const scheme of ["http", "https", "socks4"]) {
+      const before = getGlobalDispatcher();
+      setSetting("socks5ProxyUrl", `${scheme}://proxy-${uniqueCounter++}.example.com:8080`);
+
+      applySocksProxySetting();
+
+      expect(getGlobalDispatcher(), scheme).not.toBe(before);
+    }
+  });
+
+  it("installs a new dispatcher when only the bypass list or the certificate mode changes", () => {
+    setSetting("socks5ProxyUrl", uniqueProxyUrl());
+    applySocksProxySetting();
+    const first = getGlobalDispatcher();
+
+    setSetting("proxyBypassFilter", "*.example.org");
+    applySocksProxySetting();
+    const second = getGlobalDispatcher();
+    expect(second).not.toBe(first);
+
+    setSetting("tlsRejectUnauthorized", "local");
+    applySocksProxySetting();
+    expect(getGlobalDispatcher()).not.toBe(second);
+    setSetting("proxyBypassFilter", "");
   });
 
   it("installs a new agent for a valid socks5:// proxy URL", () => {

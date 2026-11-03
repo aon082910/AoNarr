@@ -510,7 +510,9 @@ describe("previewStarrCustomFormats / importStarrCustomFormats", () => {
     mockStarrApi({
       "/api/v3/customformat": [
         { id: 1, name: "x265", specifications: [{ implementation: "ReleaseTitleSpecification", fields: { value: "x265" } }] },
-        { id: 2, name: "German Only", specifications: [{ implementation: "LanguageSpecification", fields: { value: 7 } }] },
+        // English is matched on untagged releases too, so it has no faithful AoNarr equivalent.
+        { id: 2, name: "English Only", specifications: [{ implementation: "LanguageSpecification", fields: { value: 1 } }] },
+        { id: 3, name: "German Only", specifications: [{ implementation: "LanguageSpecification", fields: { value: 4 } }] },
       ],
     });
 
@@ -518,7 +520,8 @@ describe("previewStarrCustomFormats / importStarrCustomFormats", () => {
 
     expect(preview).toEqual([
       { sourceId: 1, name: "x265", translatable: true, skipped: [] },
-      { sourceId: 2, name: "German Only", translatable: false, skipped: ["LanguageSpecification"] },
+      { sourceId: 2, name: "English Only", translatable: false, skipped: ["LanguageSpecification"] },
+      { sourceId: 3, name: "German Only", translatable: true, skipped: [] },
     ]);
     const count = (await db.prepare("SELECT COUNT(*) AS c FROM custom_formats").get()) as { c: number };
     expect(count.c).toBe(0);

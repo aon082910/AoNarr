@@ -700,6 +700,9 @@ export default function Settings() {
   const [trashError, setTrashError] = useState<string | null>(null);
   const [trashSyncing, setTrashSyncing] = useState<TrashSyncApp | null>(null);
   const [trashSyncStatus, setTrashSyncStatus] = useState<TrashSyncStatus>({ radarr: null, sonarr: null });
+  const [trashProfileApp, setTrashProfileApp] = useState<TrashSyncApp>("radarr");
+  const [trashProfiles, setTrashProfiles] = useState<{ file: string; name: string; description: string | null; scoreSet: string }[] | null>(null);
+  const [trashProfileBusy, setTrashProfileBusy] = useState<string | null>(null);
   const [starrFormatApp, setStarrFormatApp] = useState<"radarr" | "sonarr" | "whisparr">("radarr");
   const [starrFormatUrl, setStarrFormatUrl] = useState("");
   const [starrFormatApiKey, setStarrFormatApiKey] = useState("");
@@ -1124,6 +1127,46 @@ export default function Settings() {
     }
   }
 
+  async function loadTrashProfiles(app: TrashSyncApp) {
+    setTrashProfileApp(app);
+    setTrashProfileBusy("list");
+    try {
+      setTrashProfiles(await api.get(`/custom-formats/trash-profiles?app=${app}`));
+    } catch (e) {
+      setTrashProfiles(null);
+      notify.error((e as Error).message);
+    } finally {
+      setTrashProfileBusy(null);
+    }
+  }
+
+  async function importTrashProfile(file: string) {
+    setTrashProfileBusy(file);
+    try {
+      const result = await api.post<{
+        name: string;
+        created: boolean;
+        scoresApplied: number;
+        missingFormats: string[];
+        unscoredFormats: string[];
+        unmappedQualities: string[];
+      }>("/custom-formats/trash-profiles/import", { app: trashProfileApp, file });
+      const notes: string[] = [];
+      if (result.missingFormats.length > 0) notes.push(`${result.missingFormats.length} format(s) are not synced yet (${result.missingFormats.slice(0, 4).join(", ")}${result.missingFormats.length > 4 ? ", ..." : ""}); sync the formats, then import again`);
+      if (result.unscoredFormats.length > 0) notes.push(`${result.unscoredFormats.length} synced format(s) have no TRaSH score stored; sync the formats again`);
+      if (result.unmappedQualities.length > 0) notes.push(`no AoNarr tier for ${result.unmappedQualities.join(", ")}`);
+      notify.success(
+        `${result.created ? "Created" : "Updated"} the quality profile "${result.name}" with ${result.scoresApplied} format score(s).${notes.length ? " " + notes.join("; ") + "." : ""}`,
+        notes.length ? 12000 : undefined
+      );
+      api.get<QualityProfile[]>("/quality-profiles").then(setProfiles).catch(() => {});
+    } catch (e) {
+      notify.error((e as Error).message);
+    } finally {
+      setTrashProfileBusy(null);
+    }
+  }
+
   async function fetchStarrFormatPreview() {
     if (!starrFormatUrl.trim() || !starrFormatApiKey.trim()) return;
     setStarrFormatBusy(true);
@@ -1447,6 +1490,9 @@ export default function Settings() {
     setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, cutoff } : p)));
   }
 
+  /** The unit of the quality size limits: a new install reads them per minute of video. */
+  const sizeUnit = settings.sizeLimitMode === "perMinute" ? "MB per minute" : "MB";
+
   async function addTag(e: FormEvent) {
     e.preventDefault();
     if (!tagName.trim()) return;
@@ -1456,7 +1502,13 @@ export default function Settings() {
   }
 
   async function removeTag(id: number) {
-    await api.del(`/tags/${id}`);
+    try {
+      await api.del(`/tags/${id}`);
+    } catch (e) {
+      // The server refuses a tag that a delay profile, a release profile or a retention period uses.
+      notify.error((e as Error).message);
+      return;
+    }
     load();
   }
 
@@ -1543,10 +1595,14 @@ export default function Settings() {
         formatsImported: number;
         scoresImported: number;
         namingImported: number;
+        tagsImported?: number;
+        delayProfilesImported?: number;
+        releaseProfilesImported?: number;
       }>("/settings/template/import", parsed);
       notify.success(
         `Imported: ${result.qualitiesImported} qualities, ${result.profilesImported} profiles, ` +
-          `${result.formatsImported} custom formats, ${result.scoresImported} format scores, ${result.namingImported} naming templates.`
+          `${result.formatsImported} custom formats, ${result.scoresImported} format scores, ${result.namingImported} naming templates, ` +
+          `${result.tagsImported ?? 0} tags, ${result.delayProfilesImported ?? 0} delay profiles, ${result.releaseProfilesImported ?? 0} release profiles.`
       );
       load();
     } catch (e) {
@@ -2694,22 +2750,43 @@ export default function Settings() {
           },
           {
             key: "socks5",
-            label: "SOCKS5 Proxy",
-            description: "Route all outbound requests through a proxy",
+            label: "Proxy",
+            description: "Route outbound requests through a SOCKS or HTTP proxy",
             render: () => (
               <div>
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-                  Routes every outbound request AoNarr makes (indexers, metadata providers, download
-                  client APIs) through a SOCKS5 proxy. Leave blank to disable. Takes effect immediately —
-                  no restart needed.
+                  Routes the requests AoNarr makes to the internet (indexers, metadata providers,
+                  notifications) through a SOCKS5, SOCKS4 or HTTP proxy. Leave blank to disable. Takes
+                  effect immediately, no restart needed. Hosts on your own network (a download client, a
+                  media server, Prowlarr) go straight out unless you turn that off below.
                 </p>
                 <label htmlFor="settings-proxy-url-43">Proxy URL</label>
                 <input id="settings-proxy-url-43"
                   key={settings.socks5ProxyUrl ?? "socks5-empty"}
                   defaultValue={settings.socks5ProxyUrl ?? ""}
-                  placeholder="socks5://user:pass@host:1080"
+                  placeholder="socks5://user:pass@host:1080 or http://host:3128"
                   onBlur={(e) => saveSetting("socks5ProxyUrl", e.target.value)}
                 />
+                <label htmlFor="settings-proxy-bypass-local">Bypass proxy for local addresses</label>
+                <select id="settings-proxy-bypass-local"
+                  key={settings.proxyBypassLocal ?? "proxy-bypass-local-empty"}
+                  defaultValue={settings.proxyBypassLocal ?? "1"}
+                  onChange={(e) => saveSetting("proxyBypassLocal", e.target.value)}
+                >
+                  <option value="1">Yes (default): private and shared (100.64.x.x) addresses, localhost, single-word names and .local / .lan / .internal names</option>
+                  <option value="0">No: send everything through the proxy</option>
+                </select>
+                <label htmlFor="settings-proxy-bypass-filter">Bypass list</label>
+                <input id="settings-proxy-bypass-filter"
+                  key={settings.proxyBypassFilter ?? "proxy-bypass-filter-empty"}
+                  defaultValue={settings.proxyBypassFilter ?? ""}
+                  placeholder="nas.example.com, *.corp.example, 192.0.2.0/24"
+                  onBlur={(e) => saveSetting("proxyBypassFilter", e.target.value)}
+                />
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+                  Comma-separated host names, wildcards (*.example.com) and IPv4 ranges (192.0.2.0/24)
+                  that also skip the proxy.
+                </p>
               </div>
             ),
           },
@@ -2720,11 +2797,11 @@ export default function Settings() {
             render: () => (
               <div>
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-                  Enabled by default (the safe setting). Disable only if an indexer or other
-                  service you've configured uses a self-signed certificate — this applies to
-                  every outbound request AoNarr makes, not just that one service, so leave it
-                  enabled unless you actually need it. Has no effect while a SOCKS5 proxy above is
-                  configured (the proxy connection doesn't go through this same TLS path).
+                  Enabled by default (the safe setting). If a service on your own network uses a
+                  self-signed certificate, choose "Disabled for local addresses": the check is skipped
+                  only for private and shared (100.64.x.x) addresses, localhost, single-word names and .local / .lan / .internal names, and stays on for
+                  the internet. "Disabled" skips it for every outbound request, so leave it enabled
+                  unless you actually need it. Applies through the proxy above as well.
                 </p>
                 <label htmlFor="settings-certificate-validation-44">Certificate validation</label>
                 <select id="settings-certificate-validation-44"
@@ -2733,6 +2810,7 @@ export default function Settings() {
                   onChange={(e) => saveSetting("tlsRejectUnauthorized", e.target.value)}
                 >
                   <option value="1">Enabled (default)</option>
+                  <option value="local">Disabled for local addresses</option>
                   <option value="0">Disabled</option>
                 </select>
               </div>
@@ -3534,26 +3612,29 @@ export default function Settings() {
             render: () => (
               <div className="form-panel">
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-                  Reorder to change how releases rank against each other. Min/max size (MB) is optional
-                  and rejects releases parsed as this quality whose size falls outside it. Preferred size
-                  is a soft target only, used to break ties between otherwise-equal releases at this
+                  Reorder to change how releases rank against each other. Min/max size ({sizeUnit}) is optional
+                  and rejects releases parsed as this quality whose size falls outside it.
+                  {settings.sizeLimitMode === "perMinute"
+                    ? " Sizes are read per minute of video: a 110-minute film is held to the limits times 110, an episode to the limits times its runtime."
+                    : ""}{" "}
+                  Preferred size is a soft target only, used to break ties between otherwise-equal releases at this
                   quality.
                 </p>
                 <label htmlFor="settings-name-88">Name</label>
                 <input id="settings-name-88" value={q.name} readOnly title="Quality names are fixed — they must match what the release parser detects" />
-                <label htmlFor="settings-min-size-mb-89">Min size (MB)</label>
+                <label htmlFor="settings-min-size-mb-89">Min size ({sizeUnit})</label>
                 <input id="settings-min-size-mb-89"
                   type="number"
                   defaultValue={q.minSizeMb ?? ""}
                   onBlur={(e) => saveQualitySize(q.id, "minSizeMb", e.target.value)}
                 />
-                <label htmlFor="settings-max-size-mb-90">Max size (MB)</label>
+                <label htmlFor="settings-max-size-mb-90">Max size ({sizeUnit})</label>
                 <input id="settings-max-size-mb-90"
                   type="number"
                   defaultValue={q.maxSizeMb ?? ""}
                   onBlur={(e) => saveQualitySize(q.id, "maxSizeMb", e.target.value)}
                 />
-                <label htmlFor="settings-preferred-size-mb-91">Preferred size (MB)</label>
+                <label htmlFor="settings-preferred-size-mb-91">Preferred size ({sizeUnit})</label>
                 <input id="settings-preferred-size-mb-91"
                   type="number"
                   defaultValue={q.preferredSizeMb ?? ""}
@@ -4172,6 +4253,40 @@ export default function Settings() {
                   </div>
                   <TrashSyncResultSummary label="Radarr" result={trashSyncStatus.radarr} />
                   <TrashSyncResultSummary label="Sonarr" result={trashSyncStatus.sonarr} />
+                </div>
+
+                <div className="form-panel">
+                  <label>Import a TRaSH-Guides quality profile</label>
+                  <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                    Creates a quality profile from one TRaSH publishes (its allowed qualities, groups, cutoff and upgrade
+                    settings) and scores the custom formats it lists. Sync the formats above first: only synced formats
+                    get a score, and the result names the ones that did not. Importing a profile with the same name as one
+                    you already have replaces its qualities and the scores of the formats the TRaSH profile lists.
+                  </p>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button type="button" onClick={() => loadTrashProfiles("radarr")} disabled={trashProfileBusy !== null}>
+                      {trashProfileBusy === "list" && trashProfileApp === "radarr" ? "Loading..." : "List Radarr profiles"}
+                    </button>
+                    <button type="button" onClick={() => loadTrashProfiles("sonarr")} disabled={trashProfileBusy !== null}>
+                      {trashProfileBusy === "list" && trashProfileApp === "sonarr" ? "Loading..." : "List Sonarr profiles"}
+                    </button>
+                  </div>
+                  {trashProfiles && trashProfiles.length === 0 && <p className="empty">TRaSH-Guides lists no profiles.</p>}
+                  {trashProfiles && trashProfiles.length > 0 && (
+                    <ul style={{ listStyle: "none", padding: 0 }}>
+                      {trashProfiles.map((p) => (
+                        <li key={p.file} style={{ display: "flex", gap: 8, alignItems: "baseline", margin: "6px 0" }}>
+                          <button type="button" onClick={() => importTrashProfile(p.file)} disabled={trashProfileBusy !== null}>
+                            {trashProfileBusy === p.file ? "Importing..." : "Import"}
+                          </button>
+                          <span>
+                            <strong>{p.name}</strong>
+                            {p.description && <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}> — {p.description}</span>}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
 
                 <div className="form-panel">

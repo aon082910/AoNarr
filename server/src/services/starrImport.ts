@@ -13,6 +13,7 @@ import {
 import { translateTrashFormat, type TrashCustomFormat } from "./trashFormats.js";
 import { appScopedFormatName } from "./trashSync.js";
 import { log } from "./logger.js";
+import { parseQualityGroups } from "./qualityGroups.js";
 
 /**
  * Migrates an already-organized Radarr/Sonarr library into AoNarr, reusing the exact same
@@ -702,6 +703,12 @@ interface StarrQualityProfile {
   cutoff: number;
   items: StarrQualityProfileItem[];
   minFormatScore?: number;
+  /** Radarr, Sonarr and Lidarr: false means a file is never replaced by a better one. */
+  upgradeAllowed?: boolean;
+  /** "Upgrade until custom format score": upgrades stop once a file's score reaches this. */
+  cutoffFormatScore?: number;
+  /** The least a better release's score must exceed the file's by to count as an upgrade. */
+  minUpgradeFormatScore?: number;
   formatItems?: { format: number; name: string; score: number }[];
 }
 
@@ -739,6 +746,15 @@ export interface StarrQualityProfilePreview {
   unmappedQualities: string[];
   cutoff: string | null;
   minFormatScore: number;
+  upgradeAllowed: boolean;
+  cutoffFormatScore: number;
+  minUpgradeFormatScore: number;
+  /** Starr groups whose members AoNarr has, two or more each: qualities that count as one tier. */
+  qualityGroups: string[][];
+}
+
+function wholeNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) ? value : fallback;
 }
 
 async function fetchStarrQualityProfiles(baseUrl: string, apiKey: string, app: StarrFormatApp): Promise<StarrQualityProfile[]> {
@@ -767,7 +783,25 @@ function translateStarrQualityProfile(profile: StarrQualityProfile, rankByName: 
     cutoff = mappedQualities.length > 0 ? mappedQualities.reduce((best, n) => (rankByName.get(n)! > rankByName.get(best)! ? n : best)) : null;
   }
 
-  return { sourceId: profile.id, name: profile.name, mappedQualities, unmappedQualities, cutoff, minFormatScore: profile.minFormatScore ?? 0 };
+  // A group of allowed qualities is one tier in Starr: none of its members is an upgrade over another.
+  const qualityGroups = parseQualityGroups(
+    profile.items
+      .filter((item) => item.allowed && !item.quality && item.items)
+      .map((group) => collectAllowedQualityNames([group]).filter((n) => rankByName.has(n)))
+  );
+
+  return {
+    sourceId: profile.id,
+    name: profile.name,
+    mappedQualities,
+    unmappedQualities,
+    cutoff,
+    minFormatScore: profile.minFormatScore ?? 0,
+    upgradeAllowed: profile.upgradeAllowed !== false,
+    cutoffFormatScore: wholeNumber(profile.cutoffFormatScore, 0),
+    minUpgradeFormatScore: wholeNumber(profile.minUpgradeFormatScore, 1),
+    qualityGroups,
+  };
 }
 
 export async function previewStarrQualityProfiles(baseUrl: string, apiKey: string, app: StarrFormatApp): Promise<StarrQualityProfilePreview[]> {
@@ -821,9 +855,24 @@ export async function importStarrQualityProfiles(
       continue;
     }
     try {
+      // prefer_cutoff_quality is 0: Radarr and Sonarr take the best allowed quality, and the cutoff
+      // only decides when upgrading stops. Left on, the profile would skip anything above its cutoff.
       const insertResult = await db
-        .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score) VALUES (?, ?, ?, ?)")
-        .run(profile.name, JSON.stringify(preview.mappedQualities), preview.cutoff, preview.minFormatScore);
+        .prepare(
+          `INSERT INTO quality_profiles
+             (name, allowed_qualities, cutoff, min_format_score, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups)
+           VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)`
+        )
+        .run(
+          profile.name,
+          JSON.stringify(preview.mappedQualities),
+          preview.cutoff,
+          preview.minFormatScore,
+          preview.upgradeAllowed ? 1 : 0,
+          preview.cutoffFormatScore,
+          preview.minUpgradeFormatScore,
+          JSON.stringify(preview.qualityGroups)
+        );
       const newProfileId = Number(insertResult.lastInsertRowid);
       result.added++;
 

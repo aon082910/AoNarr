@@ -15,6 +15,12 @@ vi.mock("../src/services/metadata.js", async (importOriginal) => ({
   fetchSeriesEpisodesFor: (...args: unknown[]) => fetchSeriesEpisodesFor(...args),
 }));
 
+// A series added with a TVDB id asks TheXEM for scene numbering; none of these tests may reach out.
+const syncSceneNumbering = vi.fn(async () => ({ updated: 0 }));
+vi.mock("../src/services/sceneNumbering.js", () => ({
+  syncSceneNumbering: (...args: unknown[]) => (syncSceneNumbering as any)(...args),
+}));
+
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let handleOverseerrWebhook: (typeof import("../src/services/overseerrWebhook.js"))["handleOverseerrWebhook"];
 const rootFolderIds: Record<string, number> = {};
@@ -186,5 +192,204 @@ describe("handleOverseerrWebhook", () => {
     const show = (await db.prepare("SELECT id FROM media_items WHERE title = 'Episode Fetch Fails Series'").get()) as any;
     const count = (await db.prepare("SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ?").get(show.id)) as { c: number };
     expect(Number(count.c)).toBe(0);
+  });
+});
+
+// API6: the webhook used to add every season as monitored, and left out what the Add Media screen
+// stores (the instance's minimum availability, absolute episode numbers, scene numbering).
+describe("handleOverseerrWebhook honours what was requested (API6)", () => {
+  const threeSeasons = [
+    { seasonNumber: 0, episodeNumber: 1, title: "Special", airDate: null, overview: "" },
+    { seasonNumber: 1, episodeNumber: 1, title: "S1E1", airDate: "2019-01-01", overview: "" },
+    { seasonNumber: 1, episodeNumber: 2, title: "S1E2", airDate: "2019-01-08", overview: "" },
+    { seasonNumber: 2, episodeNumber: 1, title: "S2E1", airDate: "2020-01-01", overview: "" },
+    { seasonNumber: 3, episodeNumber: 1, title: "S3E1", airDate: "2021-01-01", overview: "" },
+  ];
+
+  async function episodesOf(title: string) {
+    const show = (await db.prepare("SELECT id FROM media_items WHERE title = ?").get(title)) as { id: number };
+    return (await db
+      .prepare("SELECT season_number, episode_number, monitored, absolute_episode_number FROM episodes WHERE media_item_id = ? ORDER BY season_number, episode_number")
+      .all(show.id)) as { season_number: number; episode_number: number; monitored: number; absolute_episode_number: number | null }[];
+  }
+
+  it("monitors only the seasons named in the payload's extra list, and still stores the others", async () => {
+    fetchSeriesByTmdbId.mockResolvedValueOnce({ title: "Season Two Only", year: 2019, overview: "", posterUrl: null, externalIds: { tmdb: "3101" }, releaseDate: null });
+    fetchSeriesEpisodesFor.mockResolvedValueOnce(threeSeasons);
+
+    const result = await handleOverseerrWebhook({
+      notification_type: "MEDIA_APPROVED",
+      media: { media_type: "tv", tmdbId: 3101 },
+      extra: [{ name: "Requested Seasons", value: "2" }],
+    });
+
+    expect(result).toEqual({ added: true });
+    const eps = await episodesOf("Season Two Only");
+    expect(eps).toHaveLength(5);
+    expect(eps.filter((e) => Number(e.monitored) === 1).map((e) => `${e.season_number}x${e.episode_number}`)).toEqual(["2x1"]);
+  });
+
+  it("monitors the usual episodes when the payload names no seasons (a plain request)", async () => {
+    fetchSeriesByTmdbId.mockResolvedValueOnce({ title: "Whole Show", year: 2019, overview: "", posterUrl: null, externalIds: { tmdb: "3102" }, releaseDate: null });
+    fetchSeriesEpisodesFor.mockResolvedValueOnce(threeSeasons);
+
+    await handleOverseerrWebhook({ notification_type: "MEDIA_APPROVED", media: { media_type: "tv", tmdbId: 3102 } });
+
+    const eps = await episodesOf("Whole Show");
+    expect(eps.filter((e) => Number(e.monitored) === 1)).toHaveLength(4); // everything but the season 0 special
+  });
+
+  it("numbers the episodes absolutely, as the Add Media screen does, for anime matching", async () => {
+    fetchSeriesByTmdbId.mockResolvedValueOnce({ title: "Absolute Numbers", year: 2019, overview: "", posterUrl: null, externalIds: { tmdb: "3103" }, releaseDate: null });
+    fetchSeriesEpisodesFor.mockResolvedValueOnce(threeSeasons);
+
+    await handleOverseerrWebhook({ notification_type: "MEDIA_APPROVED", media: { media_type: "tv", tmdbId: 3103 } });
+
+    const eps = await episodesOf("Absolute Numbers");
+    expect(eps.map((e) => e.absolute_episode_number)).toEqual([null, 1, 2, 3, 4]);
+  });
+
+  it("asks for scene numbering once the series has a TVDB id", async () => {
+    syncSceneNumbering.mockClear();
+    fetchSeriesByTmdbId.mockResolvedValueOnce({ title: "Scene Numbered", year: 2019, overview: "", posterUrl: null, externalIds: { tmdb: "3104", tvdb: "9104" }, releaseDate: null });
+    fetchSeriesEpisodesFor.mockResolvedValueOnce(threeSeasons);
+
+    await handleOverseerrWebhook({ notification_type: "MEDIA_APPROVED", media: { media_type: "tv", tmdbId: 3104 } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(syncSceneNumbering).toHaveBeenCalledTimes(1);
+  });
+
+  it("monitors the requested season of a series the library already has, instead of doing nothing", async () => {
+    fetchSeriesByTmdbId.mockResolvedValueOnce({ title: "Already Here", year: 2019, overview: "", posterUrl: null, externalIds: { tmdb: "3105" }, releaseDate: null });
+    fetchSeriesEpisodesFor.mockResolvedValueOnce(threeSeasons);
+    await handleOverseerrWebhook({
+      notification_type: "MEDIA_APPROVED",
+      media: { media_type: "tv", tmdbId: 3105 },
+      extra: [{ name: "Requested Seasons", value: "1" }],
+    });
+    expect((await episodesOf("Already Here")).filter((e) => Number(e.monitored) === 1).map((e) => e.season_number)).toEqual([1, 1]);
+
+    const result = await handleOverseerrWebhook({
+      notification_type: "MEDIA_APPROVED",
+      media: { media_type: "tv", tmdbId: 3105 },
+      extra: [{ name: "Requested Seasons", value: "1, 3" }],
+    });
+
+    expect(result.added).toBe(false);
+    expect(result.reason).toContain("season");
+    expect((await episodesOf("Already Here")).filter((e) => Number(e.monitored) === 1).map((e) => e.season_number)).toEqual([1, 1, 3]);
+  });
+
+  it("gives a new movie the instance's default minimum availability and its release date", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    setSetting("defaultMinimumAvailability", "released");
+    try {
+      fetchMovieByTmdbId.mockResolvedValueOnce(fakeMovieMeta({ title: "Gated Movie", externalIds: { tmdb: "3106" }, releaseDate: "2031-05-01" }));
+
+      await handleOverseerrWebhook({ notification_type: "MEDIA_APPROVED", media: { media_type: "movie", tmdbId: 3106 } });
+
+      const row = (await db.prepare("SELECT minimum_availability, release_date FROM media_items WHERE title = 'Gated Movie'").get()) as any;
+      expect(row.minimum_availability).toBe("released");
+      expect(row.release_date).toBe("2031-05-01");
+    } finally {
+      setSetting("defaultMinimumAvailability", "");
+    }
+  });
+});
+
+// Review F3, F4, F7 of Round 23.
+describe("handleOverseerrWebhook edge cases (review F3, F4, F7)", () => {
+  const fourSeasons = [1, 2, 3, 4].map((season) => ({ seasonNumber: season, episodeNumber: 1, title: `S${season}E1`, airDate: "2020-01-01", overview: "" }));
+
+  async function seasonsMonitored(title: string): Promise<number[]> {
+    const show = (await db.prepare("SELECT id FROM media_items WHERE title = ?").get(title)) as { id: number };
+    const rows = (await db.prepare("SELECT season_number FROM episodes WHERE media_item_id = ? AND monitored = 1 ORDER BY season_number").all(show.id)) as { season_number: number }[];
+    return rows.map((r) => Number(r.season_number));
+  }
+
+  it("adds the episodes of a season TMDB listed after the show was added, then monitors them (F3)", async () => {
+    fetchSeriesByTmdbId.mockResolvedValueOnce({ title: "Grew A Season", year: 2019, overview: "", posterUrl: null, externalIds: { tmdb: "3201" }, releaseDate: null });
+    fetchSeriesEpisodesFor.mockResolvedValueOnce(fourSeasons.slice(0, 2));
+    await handleOverseerrWebhook({ notification_type: "MEDIA_APPROVED", media: { media_type: "tv", tmdbId: 3201 }, extra: [{ name: "Requested Seasons", value: "1" }] });
+    expect(await seasonsMonitored("Grew A Season")).toEqual([1]);
+
+    fetchSeriesEpisodesFor.mockResolvedValueOnce(fourSeasons);
+    const result = await handleOverseerrWebhook({
+      notification_type: "MEDIA_APPROVED",
+      media: { media_type: "tv", tmdbId: 3201 },
+      extra: [{ name: "Requested Seasons", value: "3" }],
+    });
+
+    expect(result.added).toBe(false);
+    expect(result.reason).toContain("monitored 1 episode(s) of season(s) 3");
+    expect(await seasonsMonitored("Grew A Season")).toEqual([1, 3]);
+  });
+
+  it("says so when the provider has no episodes for the requested season either (F3)", async () => {
+    fetchSeriesByTmdbId.mockResolvedValueOnce({ title: "No Such Season", year: 2019, overview: "", posterUrl: null, externalIds: { tmdb: "3202" }, releaseDate: null });
+    fetchSeriesEpisodesFor.mockResolvedValueOnce(fourSeasons.slice(0, 1));
+    await handleOverseerrWebhook({ notification_type: "MEDIA_APPROVED", media: { media_type: "tv", tmdbId: 3202 } });
+
+    fetchSeriesEpisodesFor.mockResolvedValueOnce(fourSeasons.slice(0, 1));
+    const result = await handleOverseerrWebhook({
+      notification_type: "MEDIA_APPROVED",
+      media: { media_type: "tv", tmdbId: 3202 },
+      extra: [{ name: "Requested Seasons", value: "9" }],
+    });
+
+    expect(result.reason).toContain("no episodes found for season(s) 9");
+  });
+
+  it("monitors both requests' seasons when two requests for different seasons of a new show overlap (F4)", async () => {
+    fetchSeriesByTmdbId.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return { title: "Overlapping Requests", year: 2019, overview: "", posterUrl: null, externalIds: { tmdb: "3203" }, releaseDate: null };
+    });
+    fetchSeriesEpisodesFor.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return fourSeasons;
+    });
+    const request = (season: string) => ({
+      notification_type: "MEDIA_APPROVED",
+      media: { media_type: "tv", tmdbId: 3203 },
+      extra: [{ name: "Requested Seasons", value: season }],
+    });
+
+    try {
+      const first = handleOverseerrWebhook(request("1"));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const second = handleOverseerrWebhook(request("2"));
+      const results = await Promise.all([first, second]);
+
+      expect(results.filter((r) => r.added)).toHaveLength(1);
+      expect(await seasonsMonitored("Overlapping Requests")).toEqual([1, 2]);
+    } finally {
+      fetchSeriesByTmdbId.mockReset();
+      fetchSeriesEpisodesFor.mockReset();
+    }
+  });
+
+  it("uses the TVDB id the payload carries, so scene numbering has something to look up (F7)", async () => {
+    syncSceneNumbering.mockClear();
+    fetchSeriesByTmdbId.mockResolvedValueOnce({ title: "Payload Tvdb", year: 2019, overview: "", posterUrl: null, externalIds: { tmdb: "3204" }, releaseDate: null });
+    fetchSeriesEpisodesFor.mockResolvedValueOnce(fourSeasons.slice(0, 1));
+
+    await handleOverseerrWebhook({ notification_type: "MEDIA_APPROVED", media: { media_type: "tv", tmdbId: 3204, tvdbId: "81189" } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const row = (await db.prepare("SELECT external_ids FROM media_items WHERE title = 'Payload Tvdb'").get()) as { external_ids: string };
+    expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "3204", tvdb: "81189" });
+    expect(syncSceneNumbering).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a TVDB id of 0 or an empty one", async () => {
+    fetchSeriesByTmdbId.mockResolvedValueOnce({ title: "Zero Tvdb", year: 2019, overview: "", posterUrl: null, externalIds: { tmdb: "3205" }, releaseDate: null });
+    fetchSeriesEpisodesFor.mockResolvedValueOnce(fourSeasons.slice(0, 1));
+
+    await handleOverseerrWebhook({ notification_type: "MEDIA_APPROVED", media: { media_type: "tv", tmdbId: 3205, tvdbId: "0" } });
+
+    const row = (await db.prepare("SELECT external_ids FROM media_items WHERE title = 'Zero Tvdb'").get()) as { external_ids: string };
+    expect(JSON.parse(row.external_ids)).toEqual({ tmdb: "3205" });
   });
 });

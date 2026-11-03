@@ -330,6 +330,17 @@ one book.
   history, watch history, audit log and job runs (keeping the latest watch row of each title) and shrinks the
   database file about monthly when that frees a worthwhile amount. Root folders must exist, be writable and not
   overlap each other when they are added, and an import never creates a missing root folder.
+- **Settings correctness** — the outbound proxy can be SOCKS5, SOCKS4 or HTTP, sends hosts on your own network
+  (private and shared 100.64.x.x addresses, `localhost`, single-word names, `.local`, `.lan` and `.internal` names) straight out unless you turn that off, and has a bypass
+  list of names, wildcards and IPv4 ranges; "Certificate validation" can skip the check for local addresses
+  only; the proxy URL is stored encrypted. Importing a quality profile from Radarr or Sonarr keeps "upgrades
+  allowed", the format-score cutoff, the minimum increment and the quality groups. Anything added from a list,
+  watchlist, request or Overseerr webhook gets the default minimum availability, release dates and (if on)
+  its empty folder, and an Overseerr request monitors only the seasons it named. A new install starts with
+  Starr's size limits per minute. A tag that a delay profile, release profile or retention period uses
+  cannot be deleted. `PUT /api/settings/:key` refuses unknown keys and bad values. The settings template
+  carries tags, delay profiles and release profiles. TRaSH language conditions import (positive,
+  non-English only), and a TRaSH quality profile can be imported from the Custom Formats settings (its qualities, groups, cutoff and upgrade settings, plus the scores of the formats already synced). Deleting an indexer switches off a release profile that was scoped only to it.
 - **CSV export of library** — an admin-only "Export CSV" button on the Library page (respecting the
   current type filter) and `GET /api/media/export.csv` download a flat CSV of the library for
   spreadsheet tracking outside the app.

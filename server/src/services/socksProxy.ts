@@ -1,85 +1,113 @@
-import tls from "node:tls";
-import { Agent, setGlobalDispatcher, getGlobalDispatcher } from "undici";
-import { SocksClient } from "socks";
+import { Agent, Dispatcher, ProxyAgent, setGlobalDispatcher, getGlobalDispatcher } from "undici";
 import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
+import { isLocalAddress, parseBypassFilter, proxyUrlProblem, redactProxyUrl } from "./networkAddress.js";
+import { planRoute, RoutingDispatcher, socksTunnelAgent, type CertificateMode, type RoutePolicy } from "./outboundRouting.js";
 
 const defaultDispatcher = getGlobalDispatcher();
 let appliedSignature: string | null = null;
+let installed: RoutingDispatcher | null = null;
+
+/** From the `tlsRejectUnauthorized` setting: "1" always check, "local" skip for local hosts, "0" never check. */
+export function certificateMode(): CertificateMode {
+  const value = getSetting("tlsRejectUnauthorized");
+  return value === "0" ? "disabled" : value === "local" ? "local" : "enabled";
+}
+
+/** The proxy URL as a URL, or null (with an error in the log, credentials left out) when it cannot be used. */
+function parseProxyUrl(url: string): URL | null {
+  const problem = proxyUrlProblem(url);
+  if (problem) {
+    log.error(`[socksProxy] the proxy URL "${redactProxyUrl(url)}" ${problem}: sending requests without a proxy`);
+    return null;
+  }
+  return new URL(url.trim());
+}
 
 /**
- * Routes every outbound fetch() (indexers, metadata providers, download-client APIs, webhooks —
- * anything using Node's global fetch, which is undici under the hood) through a SOCKS5 proxy, and/
- * or disables TLS certificate validation for them (Radarr's "Certificate Validation" setting — for
- * an indexer running a self-signed cert). Node's fetch has no native SOCKS support, so this builds
- * a custom undici Agent whose `connect` performs the SOCKS5 handshake via the `socks` package, then
- * installs it as the global dispatcher — the officially documented way to customize connection
- * behavior for every fetch() call app-wide without threading a dispatcher through every call site
- * individually. undici only performs the TLS handshake itself when `connect` is an options
- * object; a custom `connect` function owns TLS, so for https: destinations the SOCKS-tunneled
- * socket is wrapped in `tls.connect` here (honoring the cert-validation setting) — without that,
- * every https fetch through the proxy would write plaintext to port 443.
+ * A request can be between two redirect hops when the settings change, and fetch keeps the
+ * dispatcher it started with for the later hops, so the old one is closed after a delay, not at once.
+ */
+const CLOSE_OLD_DISPATCHER_AFTER_MS = 30_000;
+
+function closeLater(old: RoutingDispatcher | null): void {
+  if (!old) return;
+  setTimeout(() => old.close().catch(() => {}), CLOSE_OLD_DISPATCHER_AFTER_MS).unref();
+}
+
+/**
+ * Installs the dispatcher behind every outbound fetch() (indexers, metadata providers, download
+ * clients, webhooks). Settings used:
+ *
+ * - `socks5ProxyUrl`: a SOCKS4/5 or HTTP(S) proxy for outbound traffic. Local hosts go straight out
+ *   unless `proxyBypassLocal` is "0"; `proxyBypassFilter` adds hosts, wildcards and CIDR blocks.
+ * - `tlsRejectUnauthorized`: "1" checks server certificates, "local" skips the check for local
+ *   hosts only, "0" skips it for all hosts.
+ *
+ * Node's fetch has no proxy support, so a global undici dispatcher is installed instead.
  */
 export function applySocksProxySetting(): void {
   const url = getSetting("socks5ProxyUrl");
-  const rejectUnauthorized = getSetting("tlsRejectUnauthorized") !== "0";
-  const signature = `${url ?? ""}|${rejectUnauthorized}`;
+  const mode = certificateMode();
+  const bypassLocal = getSetting("proxyBypassLocal") !== "0";
+  const filterText = (getSetting("proxyBypassFilter") ?? "").trim();
+  const signature = `${url ?? ""}|${mode}|${bypassLocal}|${filterText}`;
   if (signature === appliedSignature) return;
   appliedSignature = signature;
 
-  if (!url) {
-    if (rejectUnauthorized) {
-      setGlobalDispatcher(defaultDispatcher);
-    } else {
-      setGlobalDispatcher(new Agent({ connect: { rejectUnauthorized: false } }));
-      log.warn("[network] TLS certificate validation is DISABLED for all outbound requests");
+  // A URL that cannot be used is treated as no proxy, not as "leave the last settings in place": the
+  // old proxy must not stay in force, and the certificate setting still applies.
+  const proxy = url ? parseProxyUrl(url) : null;
+
+  if (!proxy && mode === "enabled") {
+    setGlobalDispatcher(defaultDispatcher);
+    closeLater(installed);
+    installed = null;
+    return;
+  }
+
+  // Whether to check the certificate of an https proxy itself: the setting decides, by the proxy's own address.
+  const proxyVerify = mode === "disabled" ? false : mode === "local" ? !(proxy && isLocalAddress(proxy.hostname)) : true;
+
+  const filter = parseBypassFilter(filterText, (item) =>
+    log.warn(`[socksProxy] ignoring bypass list entry "${item}": only host names, wildcards and IPv4 ranges (a.b.c.d/n) are understood`)
+  );
+  const agents = new Map<string, Dispatcher>();
+  const agentFor = (viaProxy: boolean, verify: boolean): Dispatcher => {
+    const key = `${viaProxy ? "proxy" : "direct"}|${verify}`;
+    let agent = agents.get(key);
+    if (!agent) {
+      if (viaProxy && proxy) {
+        const web = proxy.protocol === "http:" || proxy.protocol === "https:";
+        agent = web
+          ? new ProxyAgent({ uri: proxy.href, requestTls: { rejectUnauthorized: verify }, proxyTls: { rejectUnauthorized: proxyVerify } })
+          : socksTunnelAgent(proxy, verify);
+      } else {
+        agent = new Agent({ connect: { rejectUnauthorized: verify } });
+      }
+      agents.set(key, agent);
     }
-    return;
-  }
+    return agent;
+  };
 
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    log.error(`[socksProxy] invalid SOCKS5 proxy URL "${url}" — leaving fetch unproxied`);
-    return;
-  }
-  if (parsed.protocol !== "socks5:" && parsed.protocol !== "socks:") {
-    log.error(`[socksProxy] proxy URL must start with socks5:// (got "${parsed.protocol}") — leaving fetch unproxied`);
-    return;
-  }
-
-  const proxyHost = parsed.hostname;
-  const proxyPort = Number(parsed.port) || 1080;
-  const userId = parsed.username ? decodeURIComponent(parsed.username) : undefined;
-  const password = parsed.password ? decodeURIComponent(parsed.password) : undefined;
-
-  const agent = new Agent({
-    connect: (opts: any, callback: any) => {
-      const isTls = opts.protocol === "https:";
-      SocksClient.createConnection({
-        proxy: { host: proxyHost, port: proxyPort, type: 5, userId, password },
-        command: "connect",
-        destination: { host: opts.hostname, port: Number(opts.port) || (isTls ? 443 : 80) },
-      })
-        .then(({ socket }) => {
-          if (!isTls) {
-            callback(null, socket);
-            return;
-          }
-          const secure = tls.connect({
-            socket,
-            servername: opts.servername || opts.hostname,
-            rejectUnauthorized,
-            ALPNProtocols: ["http/1.1"],
-          });
-          secure.once("secureConnect", () => callback(null, secure));
-          secure.once("error", (err) => callback(err, null));
-        })
-        .catch((err) => callback(err, null));
+  const policy: RoutePolicy = { hasProxy: proxy != null, bypassLocal, filter, certificates: mode };
+  const router = new RoutingDispatcher(
+    (host) => {
+      const plan = planRoute(host, policy);
+      return agentFor(plan.viaProxy, plan.verifyCertificate);
     },
-  });
+    () => [...agents.values()]
+  );
 
-  setGlobalDispatcher(agent);
-  log.info(`[socksProxy] outbound requests now routed through socks5://${proxyHost}:${proxyPort}`);
+  const previous = installed;
+  setGlobalDispatcher(router);
+  installed = router;
+  closeLater(previous);
+
+  if (mode === "disabled") log.warn("[network] TLS certificate validation is DISABLED for all outbound requests");
+  if (mode === "local") log.warn("[network] TLS certificate validation is disabled for local addresses");
+  if (proxy) {
+    const port = proxy.port || (proxy.protocol.startsWith("socks") ? "1080" : "80");
+    log.info(`[socksProxy] outbound requests now routed through ${proxy.protocol}//${proxy.hostname}:${port}${bypassLocal ? " (local addresses go direct)" : ""}`);
+  }
 }

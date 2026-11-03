@@ -7,6 +7,7 @@ import { invalidateQualityRankCache, parseQualityGroups } from "../services/qual
 import { buildOtpauthUrl, generateBase32Secret, verifyTotp } from "../services/totp.js";
 import { getSetting, setSetting, deleteSetting, getAllSettings } from "../services/settingsStore.js";
 import { applySocksProxySetting } from "../services/socksProxy.js";
+import { isKnownSettingKey, settingValueProblem, suggestSettingKey } from "../services/settingsRegistry.js";
 import { sendTestNotification } from "../services/notifications.js";
 import { fetchWatchedFiles, getMediaServerConfig } from "../services/mediaServer.js";
 import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
@@ -14,6 +15,9 @@ import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const settingsRouter = Router();
 settingsRouter.use(requireAdmin);
+
+/** Settings that change how outbound requests are made, so the dispatcher is rebuilt when one is written. */
+const NETWORK_SETTING_KEYS = new Set(["socks5ProxyUrl", "tlsRejectUnauthorized", "proxyBypassLocal", "proxyBypassFilter"]);
 
 settingsRouter.get(
   "/",
@@ -31,10 +35,18 @@ settingsRouter.get(
 settingsRouter.put(
   "/:key",
   asyncHandler(async (req, res) => {
+    const key = req.params.key;
+    // A key nothing reads would be stored and answered 200, then silently do nothing.
+    if (!isKnownSettingKey(key)) {
+      const hint = suggestSettingKey(key);
+      throw new HttpError(400, `Unknown setting "${key}".${hint ? ` Did you mean "${hint}"?` : ""}`);
+    }
     const value = String((req.body ?? {}).value ?? "");
-    setSetting(req.params.key, value);
-    if (req.params.key === "socks5ProxyUrl" || req.params.key === "tlsRejectUnauthorized") applySocksProxySetting();
-    res.json({ key: req.params.key, value });
+    const problem = settingValueProblem(key, value);
+    if (problem) throw new HttpError(400, problem);
+    setSetting(key, value);
+    if (NETWORK_SETTING_KEYS.has(key)) applySocksProxySetting();
+    res.json({ key, value });
   })
 );
 
@@ -84,14 +96,47 @@ settingsRouter.post(
   })
 );
 
-const TEMPLATE_VERSION = 1;
+/** 2 added tags, delay profiles and release profiles. An import still reads a version 1 file. */
+const TEMPLATE_VERSION = 2;
+
+/** A list of strings from an exported value, with anything else left out. */
+function templateStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((v) => String(v).trim()).filter((v) => v.length > 0) : [];
+}
+
+/** The largest value the integer columns hold (and the delay profile API allows). */
+const MAX_INT32 = 2147483647;
+
+function templateWholeNumber(value: unknown, fallback: number, min = 0): number {
+  const n = Number(value);
+  return value !== null && value !== undefined && value !== "" && Number.isInteger(n) && n >= min && n <= MAX_INT32 ? n : fallback;
+}
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The id of the tag with this name, creating it when this instance does not have it yet. */
+async function tagIdByName(name: string, cache: Map<string, number>): Promise<number> {
+  const known = cache.get(name);
+  if (known !== undefined) return known;
+  await db.prepare("INSERT INTO tags (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET name = excluded.name").run(name);
+  const row = (await db.prepare("SELECT id FROM tags WHERE name = ?").get(name)) as { id: number };
+  cache.set(name, Number(row.id));
+  return Number(row.id);
+}
 
 /**
  * A portable bundle of "how this instance is configured to grab/organize media" — quality
- * ladder, quality profiles, custom formats + their per-profile scores, and naming templates —
- * deliberately excluding anything instance-specific (API keys, indexers, download clients, root
- * folder paths, users) so it's safe to share or reuse across installs. Separate from the full DB
- * backup in System, which is a byte-for-byte snapshot of everything including that instance data.
+ * ladder, quality profiles, custom formats + their per-profile scores, naming templates, tags,
+ * delay profiles and release profiles — deliberately excluding anything instance-specific (API
+ * keys, indexers, download clients, root folder paths, users) so it's safe to share or reuse across
+ * installs. A profile names its tag, not its tag id. A release profile's indexer scope is left out
+ * because indexer ids belong to one instance, but the export says there was one (`indexerScoped`), so
+ * an import can keep that profile switched off instead of letting it apply to every indexer. The size
+ * mode travels with the quality sizes, because the same numbers mean different things per release and
+ * per minute. Separate from the full DB backup in System, which is a byte-for-byte snapshot of
+ * everything including that instance data.
  */
 settingsRouter.get(
   "/template/export",
@@ -113,9 +158,52 @@ settingsRouter.get(
       .all();
     const namingTemplates = Object.fromEntries(Object.entries(getAllSettings()).filter(([key]) => key.startsWith("naming")));
 
+    const tagRows = (await db.prepare("SELECT id, name, retention_days FROM tags ORDER BY name").all()) as {
+      id: number;
+      name: string;
+      retention_days: number | null;
+    }[];
+    const tagNameById = new Map(tagRows.map((t) => [Number(t.id), t.name]));
+    const delayRows = (await db.prepare("SELECT * FROM delay_profiles ORDER BY order_index, id").all()) as any[];
+    const releaseRows = (await db.prepare("SELECT * FROM release_profiles ORDER BY name, id").all()) as any[];
+    const jsonList = (raw: unknown): any[] => {
+      try {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    };
+
     res.json({
       templateVersion: TEMPLATE_VERSION,
       exportedAt: new Date().toISOString(),
+      tags: tagRows.map((t) => ({ name: t.name, retentionDays: t.retention_days == null ? null : Number(t.retention_days) })),
+      delayProfiles: delayRows.map((p) => ({
+        tagName: p.tag_id == null ? null : tagNameById.get(Number(p.tag_id)) ?? null,
+        enableUsenet: !!Number(p.enable_usenet),
+        enableTorrent: !!Number(p.enable_torrent),
+        usenetDelayMinutes: Number(p.usenet_delay_minutes),
+        torrentDelayMinutes: Number(p.torrent_delay_minutes),
+        bypassIfHighestQuality: !!Number(p.bypass_if_highest_quality),
+        orderIndex: Number(p.order_index),
+        preferredProtocol: p.preferred_protocol,
+        bypassIfAboveFormatScore: !!Number(p.bypass_if_above_format_score),
+        minimumBypassFormatScore: Number(p.minimum_bypass_format_score),
+      })),
+      releaseProfiles: releaseRows.map((p) => ({
+        name: p.name,
+        enabled: !!Number(p.enabled),
+        mustContain: jsonList(p.must_contain),
+        mustNotContain: jsonList(p.must_not_contain),
+        preferred: jsonList(p.preferred),
+        mediaTypes: jsonList(p.media_types),
+        tagNames: jsonList(p.tag_ids)
+          .map((id) => tagNameById.get(Number(id)))
+          .filter((name): name is string => !!name),
+        indexerScoped: jsonList(p.indexer_ids).length > 0,
+      })),
+      sizeLimitMode: getSetting("sizeLimitMode") === "perMinute" ? "perMinute" : "absolute",
       qualities,
       qualityProfiles: profiles.map((p) => ({
         name: p.name,
@@ -151,7 +239,11 @@ settingsRouter.post(
       profilesImported = 0,
       formatsImported = 0,
       scoresImported = 0,
-      namingImported = 0;
+      namingImported = 0,
+      tagsImported = 0,
+      delayProfilesImported = 0,
+      releaseProfilesImported = 0,
+      releaseProfilesCreated = 0;
 
     await db.transaction(async () => {
       // qualities.rank is UNIQUE too, not just name — a quality this instance doesn't have yet
@@ -175,6 +267,10 @@ settingsRouter.post(
             .run(q.name, q.min_size_mb ?? null, q.max_size_mb ?? null, q.preferred_size_mb ?? null);
         }
         qualitiesImported++;
+      }
+      // The numbers mean MB per release or MB per minute depending on this, so they travel together.
+      if (templateQualities.length > 0 && (b.sizeLimitMode === "perMinute" || b.sizeLimitMode === "absolute")) {
+        setSetting("sizeLimitMode", b.sizeLimitMode);
       }
       const newNames = templateQualities.map((q: any) => q.name).filter((name: string) => !existingNames.has(name));
       if (newNames.length > 0) {
@@ -264,10 +360,130 @@ settingsRouter.post(
         setSetting(key, String(value));
         namingImported++;
       }
+
+      // Tags come first: the profiles below name them. A tag that is not on this instance yet is created.
+      const tagIds = new Map<string, number>();
+      for (const t of Array.isArray(b.tags) ? b.tags : []) {
+        if (!isPlainObject(t)) continue;
+        const name = String(t.name ?? "").trim();
+        if (!name) continue;
+        const id = await tagIdByName(name, tagIds);
+        if (t.retentionDays !== undefined) {
+          // -1 is "never archive", the override that keeps a tag's items out of auto-archival.
+          const days = t.retentionDays === null ? null : templateWholeNumber(t.retentionDays, Number.NaN, -1);
+          if (days === null || !Number.isNaN(days)) await db.prepare("UPDATE tags SET retention_days = ? WHERE id = ?").run(days, id);
+        }
+        tagsImported++;
+      }
+
+      // A delay profile is matched by its tag (the default one by having none), as the Delay Profiles
+      // page allows one per tag: re-importing updates it in place.
+      for (const p of Array.isArray(b.delayProfiles) ? b.delayProfiles : []) {
+        // An entry with none of the delay fields would reset the profile it matches to no delay at all.
+        const carriesSettings = isPlainObject(p) && ["enableUsenet", "enableTorrent", "usenetDelayMinutes", "torrentDelayMinutes", "preferredProtocol"].some((k) => p[k] !== undefined);
+        if (!carriesSettings) continue;
+        let tagId: number | null = null;
+        if (p.tagName !== undefined && p.tagName !== null) {
+          const name = String(p.tagName).trim();
+          if (!name) continue;
+          tagId = await tagIdByName(name, tagIds);
+        }
+        const preferredProtocol = p.preferredProtocol === "usenet" || p.preferredProtocol === "torrent" ? p.preferredProtocol : "none";
+        const values = [
+          p.enableUsenet === false ? 0 : 1,
+          p.enableTorrent === false ? 0 : 1,
+          templateWholeNumber(p.usenetDelayMinutes, 0),
+          templateWholeNumber(p.torrentDelayMinutes, 0),
+          p.bypassIfHighestQuality ? 1 : 0,
+          preferredProtocol,
+          p.bypassIfAboveFormatScore ? 1 : 0,
+          Number.isInteger(Number(p.minimumBypassFormatScore)) && Math.abs(Number(p.minimumBypassFormatScore)) <= MAX_INT32 ? Number(p.minimumBypassFormatScore) : 0,
+        ];
+        const existing = (await db
+          .prepare(tagId == null ? "SELECT id FROM delay_profiles WHERE tag_id IS NULL ORDER BY id" : "SELECT id FROM delay_profiles WHERE tag_id = ? ORDER BY id")
+          .get(...(tagId == null ? [] : [tagId]))) as { id: number } | undefined;
+        if (existing) {
+          await db
+            .prepare(
+              `UPDATE delay_profiles SET enable_usenet = ?, enable_torrent = ?, usenet_delay_minutes = ?, torrent_delay_minutes = ?, bypass_if_highest_quality = ?,
+               preferred_protocol = ?, bypass_if_above_format_score = ?, minimum_bypass_format_score = ? WHERE id = ?`
+            )
+            .run(...values, existing.id);
+        } else {
+          const maxOrder = (await db.prepare("SELECT MAX(order_index) AS m FROM delay_profiles").get()) as { m: number | null };
+          await db
+            .prepare(
+              `INSERT INTO delay_profiles (tag_id, enable_usenet, enable_torrent, usenet_delay_minutes, torrent_delay_minutes, bypass_if_highest_quality,
+               preferred_protocol, bypass_if_above_format_score, minimum_bypass_format_score, order_index)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            )
+            .run(tagId, ...values, templateWholeNumber(p.orderIndex, (maxOrder.m ?? -1) + 1));
+        }
+        delayProfilesImported++;
+      }
+
+      // A release profile is matched by name when that name is unique on both sides; names are not
+      // unique in the table, so otherwise by name and terms, else it is added. Its indexer scope is
+      // never imported, because indexer ids belong to one instance: a profile that had one comes in
+      // switched off, so a rule meant for one indexer does not start applying to all of them, and a
+      // profile that already exists here keeps its own scope and on/off state.
+      const releaseEntries = (Array.isArray(b.releaseProfiles) ? b.releaseProfiles : []).filter(isPlainObject);
+      const nameCounts = new Map<string, number>();
+      for (const p of releaseEntries) {
+        const name = String(p.name ?? "").trim();
+        if (name) nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+      }
+      for (const p of releaseEntries) {
+        const name = String(p.name ?? "").trim();
+        if (!name) continue;
+        const tagIdList: number[] = [];
+        for (const tagName of templateStrings(p.tagNames)) tagIdList.push(await tagIdByName(tagName, tagIds));
+        const preferred = (Array.isArray(p.preferred) ? p.preferred : [])
+          .map((x: any) => ({ term: String(x?.term ?? "").trim(), score: Number(x?.score) || 0 }))
+          .filter((x: { term: string }) => x.term.length > 0);
+        const mediaTypes = templateStrings(p.mediaTypes);
+        const mustContain = JSON.stringify(templateStrings(p.mustContain));
+        const mustNotContain = JSON.stringify(templateStrings(p.mustNotContain));
+        const rest = [
+          JSON.stringify(preferred),
+          mediaTypes.length > 0 ? JSON.stringify(mediaTypes) : null,
+          tagIdList.length > 0 ? JSON.stringify(tagIdList) : null,
+        ];
+        const sameName = (await db
+          .prepare("SELECT id, must_contain, must_not_contain FROM release_profiles WHERE name = ? ORDER BY id")
+          .all(name)) as { id: number; must_contain: string; must_not_contain: string }[];
+        const target =
+          sameName.length === 1 && nameCounts.get(name) === 1
+            ? sameName[0]
+            : sameName.find((r) => r.must_contain === mustContain && r.must_not_contain === mustNotContain);
+        if (target) {
+          await db
+            .prepare("UPDATE release_profiles SET must_contain = ?, must_not_contain = ?, preferred = ?, media_types = ?, tag_ids = ? WHERE id = ?")
+            .run(mustContain, mustNotContain, ...rest, target.id);
+          if (p.indexerScoped !== true) await db.prepare("UPDATE release_profiles SET enabled = ? WHERE id = ?").run(p.enabled === false ? 0 : 1, target.id);
+        } else {
+          const enabled = p.enabled === false || p.indexerScoped === true ? 0 : 1;
+          await db
+            .prepare("INSERT INTO release_profiles (name, enabled, must_contain, must_not_contain, preferred, media_types, tag_ids) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .run(name, enabled, mustContain, mustNotContain, ...rest);
+          releaseProfilesCreated++;
+        }
+        releaseProfilesImported++;
+      }
     });
     invalidateQualityRankCache();
 
-    res.json({ qualitiesImported, profilesImported, formatsImported, scoresImported, namingImported });
+    res.json({
+      qualitiesImported,
+      profilesImported,
+      formatsImported,
+      scoresImported,
+      namingImported,
+      tagsImported,
+      delayProfilesImported,
+      releaseProfilesImported,
+      releaseProfilesCreated,
+    });
   })
 );
 

@@ -40,23 +40,10 @@ async function rawScope(profileId: number): Promise<{ tag_ids: string | null; in
 // tag_ids/indexer_ids are JSON arrays with no foreign key: a profile scoped only to a deleted id
 // used to match nothing ever again, while the Settings UI showed it as unrestricted.
 describe("deleting a tag or indexer that release profiles are scoped to", () => {
-  it("drops the deleted tag id from every profile, clearing the scope once none are left", async () => {
-    const kids = await createTag("kids");
-    const teens = await createTag("teens");
-    const onlyKids = await createProfile({ name: "Only Kids", mustNotContain: ["KIDSONLYTERM"], tagIds: [kids] });
-    const both = await createProfile({ name: "Kids And Teens", mustNotContain: ["BOTHTAGSTERM"], tagIds: [kids, teens] });
-
-    const res = await request(app).delete(`/api/tags/${kids}`).set("X-Api-Key", apiKey);
-    expect(res.status).toBe(204);
-
-    expect((await rawScope(onlyKids)).tag_ids).toBeNull();
-    expect(JSON.parse((await rawScope(both)).tag_ids!)).toEqual([teens]);
-  });
-
-  it("makes a profile scoped only to the deleted tag apply to every item again", async () => {
+  it("refuses to delete a tag a release profile is scoped to, so the scope never widens to every item (ST9)", async () => {
     const { scoreRelease } = await import("../src/services/customFormatScoring.js");
     const tag = await createTag("doomed");
-    await createProfile({ name: "No Banned Term", mustNotContain: ["TAGSCOPEDTERM"], tagIds: [tag] });
+    const profile = await createProfile({ name: "No Banned Term", mustNotContain: ["TAGSCOPEDTERM"], tagIds: [tag] });
     const untaggedItemId = Number(
       (
         await db
@@ -68,11 +55,24 @@ describe("deleting a tag or indexer that release profiles are scoped to", () => 
 
     expect((await scoreRelease(title, null, null, "movie", null, untaggedItemId, null)).rejected).toBe(false);
 
-    await request(app).delete(`/api/tags/${tag}`).set("X-Api-Key", apiKey).expect(204);
+    await request(app).delete(`/api/tags/${tag}`).set("X-Api-Key", apiKey).expect(409);
 
-    const after = await scoreRelease(title, null, null, "movie", null, untaggedItemId, null);
-    expect(after.rejected).toBe(true);
-    expect(after.rejectReason).toContain("No Banned Term");
+    // The profile keeps its scope: an item without the tag is still not judged by it.
+    expect(JSON.parse((await rawScope(profile)).tag_ids!)).toEqual([tag]);
+    expect((await scoreRelease(title, null, null, "movie", null, untaggedItemId, null)).rejected).toBe(false);
+  });
+
+  it("removeReleaseProfileScopeId still narrows or clears a scope for a tag id that is gone", async () => {
+    const { removeReleaseProfileScopeId } = await import("../src/routes/tags.js");
+    const kids = await createTag("kids-gone");
+    const teens = await createTag("teens-gone");
+    const onlyKids = await createProfile({ name: "Only Kids", mustNotContain: ["KIDSONLYTERM"], tagIds: [kids] });
+    const both = await createProfile({ name: "Kids And Teens", mustNotContain: ["BOTHTAGSTERM"], tagIds: [kids, teens] });
+
+    await removeReleaseProfileScopeId("tag_ids", kids);
+
+    expect((await rawScope(onlyKids)).tag_ids).toBeNull();
+    expect(JSON.parse((await rawScope(both)).tag_ids!)).toEqual([teens]);
   });
 
   it("drops the deleted indexer id from every profile the same way", async () => {
@@ -88,6 +88,12 @@ describe("deleting a tag or indexer that release profiles are scoped to", () => 
     expect((await rawScope(onlyA)).indexer_ids).toBeNull();
     expect(JSON.parse((await rawScope(both)).indexer_ids!)).toEqual([idxB]);
     expect(JSON.parse((await rawScope(unrelated)).indexer_ids!)).toEqual([idxB]);
+
+    // A profile left with no indexer would apply to all of them, so it is switched off instead (review F14).
+    const enabled = async (id: number) => Number(((await db.prepare("SELECT enabled FROM release_profiles WHERE id = ?").get(id)) as { enabled: number }).enabled);
+    expect(await enabled(onlyA)).toBe(0);
+    expect(await enabled(both)).toBe(1);
+    expect(await enabled(unrelated)).toBe(1);
   });
 
   it("still returns 404 for a tag or indexer that doesn't exist", async () => {

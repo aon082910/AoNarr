@@ -3,8 +3,9 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { customFormatFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { translateTrashFormat, type TrashCustomFormat } from "../services/trashFormats.js";
+import { translateTrashFormat, trashScoresJson, type TrashCustomFormat } from "../services/trashFormats.js";
 import { getLastTrashSyncResult, isTrashSyncRunning, syncTrashFormats } from "../services/trashSync.js";
+import { importTrashProfile, listTrashProfiles } from "../services/trashProfiles.js";
 import { log } from "../services/logger.js";
 import { scoreRelease } from "../services/customFormatScoring.js";
 import { resetSearchBackoff } from "../services/searchBackoff.js";
@@ -221,8 +222,8 @@ customFormatsRouter.post(
     }
 
     const result = await db
-      .prepare("INSERT INTO custom_formats (name, patterns, trash_id) VALUES (?, ?, ?)")
-      .run(trash.name, JSON.stringify(groups), trash.trash_id ?? null);
+      .prepare("INSERT INTO custom_formats (name, patterns, trash_id, trash_scores) VALUES (?, ?, ?, ?)")
+      .run(trash.name, JSON.stringify(groups), trash.trash_id ?? null, trashScoresJson(trash));
     const row = await db.prepare("SELECT * FROM custom_formats WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json({ format: customFormatFromRow(row), skipped });
   })
@@ -257,6 +258,42 @@ customFormatsRouter.get(
       sonarr: getLastTrashSyncResult("sonarr"),
       running: { radarr: isTrashSyncRunning("radarr"), sonarr: isTrashSyncRunning("sonarr") },
     });
+  })
+);
+
+/**
+ * The quality profiles TRaSH-Guides publishes for an app, and the import of one: it creates (or updates,
+ * by name) the AoNarr quality profile and scores the custom formats the TRaSH profile lists. Only
+ * formats already synced from TRaSH can be scored, so sync first; the response lists the rest.
+ */
+customFormatsRouter.get(
+  "/trash-profiles",
+  asyncHandler(async (req, res) => {
+    const app = req.query.app === "sonarr" ? "sonarr" : "radarr";
+    try {
+      res.json(await listTrashProfiles(app));
+    } catch (err) {
+      throw new HttpError(502, `Could not read the TRaSH-Guides ${app} profiles: ${(err as Error).message}`);
+    }
+  })
+);
+
+customFormatsRouter.post(
+  "/trash-profiles/import",
+  asyncHandler(async (req, res) => {
+    const b = req.body ?? {};
+    const app = b.app === "sonarr" ? "sonarr" : "radarr";
+    if (typeof b.file !== "string" || !b.file) throw new HttpError(400, "file is required");
+    const scoreSet = typeof b.scoreSet === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(b.scoreSet) ? b.scoreSet : undefined;
+    let result;
+    try {
+      result = await importTrashProfile(app, b.file, { scoreSet });
+    } catch (err) {
+      const message = (err as Error).message;
+      throw new HttpError(message.startsWith("GitHub request failed") ? 502 : 400, message);
+    }
+    await resetSearchBackoff();
+    res.status(result.created ? 201 : 200).json(result);
   })
 );
 

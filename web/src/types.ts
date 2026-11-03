@@ -311,6 +311,10 @@ export interface StarrQualityProfilePreview {
   unmappedQualities: string[];
   cutoff: string | null;
   minFormatScore: number;
+  upgradeAllowed: boolean;
+  cutoffFormatScore: number;
+  minUpgradeFormatScore: number;
+  qualityGroups: string[][];
 }
 
 export interface ReleaseProfile {

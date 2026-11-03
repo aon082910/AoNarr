@@ -290,3 +290,62 @@ describe("translateTrashFormat — Source, Release Type, Quality Modifier and In
     expect(result.skipped).toEqual(["LanguageSpecification"]);
   });
 });
+
+// ST15: a language condition used to be reported skipped, so the TRaSH language formats never arrived.
+describe("translateTrashFormat language conditions", () => {
+  const language = (value: number, extra: Record<string, unknown> = {}) => ({
+    implementation: "LanguageSpecification",
+    fields: { value, ...(extra.exceptLanguage !== undefined ? { exceptLanguage: extra.exceptLanguage } : {}) },
+    ...(extra.negate !== undefined ? { negate: extra.negate as boolean } : {}),
+    ...(extra.required !== undefined ? { required: extra.required as boolean } : {}),
+  });
+
+  it("maps a language the release parser tags to a language condition", () => {
+    const cases: [number, string][] = [[2, "french"], [3, "spanish"], [4, "german"], [5, "italian"], [6, "danish"], [7, "dutch"], [8, "japanese"], [10, "chinese"], [11, "russian"], [12, "polish"], [14, "swedish"], [15, "norwegian"], [18, "portuguese"], [21, "korean"], [26, "hindi"]];
+    for (const [id, tag] of cases) {
+      const result = translateTrashFormat({ name: "Lang", specifications: [language(id)] }, "radarr");
+      expect(result.groups, tag).toEqual([{ type: "language", languages: [tag], negate: false }]);
+      expect(result.skipped, tag).toEqual([]);
+    }
+  });
+
+  it("keeps a format's title condition beside its language condition (German DL)", () => {
+    const result = translateTrashFormat(
+      { name: "German DL", specifications: [{ implementation: "ReleaseTitleSpecification", fields: { value: "\bDL\b" }, required: true }, language(4, { required: true })] },
+      "radarr"
+    );
+    expect(result.groups).toEqual([
+      { type: "title", patterns: ["\bDL\b"], negate: false },
+      { type: "language", languages: ["german"], negate: false },
+    ]);
+    expect(result.skipped).toEqual([]);
+  });
+
+  it("joins several non-required languages into one condition: any of them", () => {
+    const result = translateTrashFormat({ name: "Dubbed", specifications: [language(2), language(4), language(5)] }, "sonarr");
+    expect(result.groups).toEqual([{ type: "language", languages: ["french", "german", "italian"], negate: false }]);
+  });
+
+  it("still skips English, which Starr also matches on an untagged release", () => {
+    expect(translateTrashFormat({ name: "English", specifications: [language(1)] }, "radarr")).toEqual({ groups: [], skipped: ["LanguageSpecification"] });
+  });
+
+  it("skips a negated language and an 'except' language: AoNarr would match every untagged release", () => {
+    expect(translateTrashFormat({ name: "Not German", specifications: [language(4, { negate: true })] }, "radarr").skipped).toEqual(["LanguageSpecification"]);
+    expect(translateTrashFormat({ name: "Except German", specifications: [language(4, { exceptLanguage: true })] }, "radarr").skipped).toEqual(["LanguageSpecification"]);
+  });
+
+  it("skips Original, Any, Unknown and languages the parser has no tag for", () => {
+    for (const id of [-2, -1, 0, 19, 30, 37, 9999]) {
+      expect(translateTrashFormat({ name: "Other", specifications: [language(id)] }, "radarr").skipped, String(id)).toEqual(["LanguageSpecification"]);
+    }
+  });
+
+  it("reads the live /api/v3 shape, where fields is a list of name/value pairs", () => {
+    const result = translateTrashFormat(
+      { name: "Live", specifications: [{ implementation: "LanguageSpecification", fields: [{ name: "value", value: 4 }, { name: "exceptLanguage", value: false }] }] },
+      "radarr"
+    );
+    expect(result.groups).toEqual([{ type: "language", languages: ["german"], negate: false }]);
+  });
+});

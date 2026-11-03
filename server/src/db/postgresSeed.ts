@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { AsyncDb } from "./asyncDb.js";
 import { DEFAULT_QUALITY_ORDER } from "../services/quality.js";
+import { DEFAULT_QUALITY_SIZES, seedQualitySizesEnabled } from "./defaultQualitySizes.js";
 
 /**
  * Async port of `db/client.ts`'s first-boot seeding (default qualities, the "Any" quality profile,
@@ -15,8 +16,19 @@ export async function seedPostgresDefaults(db: AsyncDb): Promise<void> {
 
   const qualityCount = Number(((await db.prepare("SELECT COUNT(*) AS c FROM qualities").get()) as { c: number }).c);
   if (qualityCount === 0) {
+    const withSizes = seedQualitySizesEnabled();
     for (let rank = 0; rank < DEFAULT_QUALITY_ORDER.length; rank++) {
-      await db.prepare("INSERT INTO qualities (name, rank) VALUES (?, ?)").run(DEFAULT_QUALITY_ORDER[rank], rank);
+      const name = DEFAULT_QUALITY_ORDER[rank];
+      const size = withSizes ? DEFAULT_QUALITY_SIZES[name] : undefined;
+      await db
+        .prepare("INSERT INTO qualities (name, rank, min_size_mb, max_size_mb, preferred_size_mb) VALUES (?, ?, ?, ?, ?)")
+        .run(name, rank, size?.min ?? null, size?.max ?? null, size?.preferred ?? null);
+    }
+    // A new install reads the limits per minute; an existing one keeps its own mode (megabytes).
+    if (withSizes) {
+      await db
+        .prepare("INSERT INTO settings (key, value) VALUES ('sizeLimitMode', 'perMinute') ON CONFLICT (key) DO NOTHING")
+        .run();
     }
   }
 

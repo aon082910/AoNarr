@@ -346,3 +346,39 @@ describe("syncTrashFormats", () => {
     expect(updated.patterns).toContain("BD-?DISK");
   });
 });
+
+describe("syncTrashFormats keeps the score sets (ST15)", () => {
+  const file = (scores: unknown) => ({
+    trash_id: "scored-1",
+    trash_scores: scores,
+    name: "Scored Format",
+    specifications: [{ implementation: "ReleaseTitleSpecification", fields: { value: "x265" } }],
+  });
+
+  it("stores the integer scores of each set, drops anything else, and updates them on the next sync", async () => {
+    const { syncTrashFormats } = await import("../src/services/trashSync.js");
+    const entries = [{ name: "scored.json", download_url: "https://raw/scored.json", type: "file" }];
+
+    mockGithub(entries, { "https://raw/scored.json": file({ default: 1950, "anime-radarr": 975, odd: "x", fractional: 1.5 }) });
+    await syncTrashFormats("radarr");
+    const first = (await db.prepare("SELECT trash_scores FROM custom_formats WHERE trash_id = 'scored-1'").get()) as { trash_scores: string };
+    expect(JSON.parse(first.trash_scores)).toEqual({ default: 1950, "anime-radarr": 975 });
+
+    mockGithub(entries, { "https://raw/scored.json": file({ default: 2100 }) });
+    await syncTrashFormats("radarr");
+    const second = (await db.prepare("SELECT trash_scores FROM custom_formats WHERE trash_id = 'scored-1'").get()) as { trash_scores: string };
+    expect(JSON.parse(second.trash_scores)).toEqual({ default: 2100 });
+  });
+
+  it("stores no scores for a format that publishes none", async () => {
+    const { syncTrashFormats } = await import("../src/services/trashSync.js");
+    mockGithub([{ name: "plain.json", download_url: "https://raw/plain.json", type: "file" }], {
+      "https://raw/plain.json": { trash_id: "plain-1", name: "Plain Format", specifications: [{ implementation: "ReleaseTitleSpecification", fields: { value: "x264" } }] },
+    });
+
+    await syncTrashFormats("radarr");
+
+    const row = (await db.prepare("SELECT trash_scores FROM custom_formats WHERE trash_id = 'plain-1'").get()) as { trash_scores: string | null };
+    expect(row.trash_scores).toBeNull();
+  });
+});

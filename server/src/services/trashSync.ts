@@ -1,7 +1,7 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { getSetting, setSetting } from "./settingsStore.js";
-import { translateTrashFormat, type TrashCustomFormat } from "./trashFormats.js";
+import { translateTrashFormat, trashScoresJson, type TrashCustomFormat } from "./trashFormats.js";
 
 const CF_DIR: Record<"radarr" | "sonarr", string> = {
   radarr: "docs/json/radarr/cf",
@@ -220,7 +220,9 @@ async function runTrashSync(app: "radarr" | "sonarr", result: TrashSyncResult): 
         | undefined;
       if (existing) {
         const name = (await pickFormatName(trash.name, app, existing.id)) ?? existing.name;
-        await db.prepare("UPDATE custom_formats SET name = ?, patterns = ? WHERE id = ?").run(name, JSON.stringify(groups), existing.id);
+        await db
+          .prepare("UPDATE custom_formats SET name = ?, patterns = ?, trash_scores = ? WHERE id = ?")
+          .run(name, JSON.stringify(groups), trashScoresJson(trash), existing.id);
         result.updated++;
       } else {
         const name = await pickFormatName(trash.name, app, null);
@@ -229,8 +231,8 @@ async function runTrashSync(app: "radarr" | "sonarr", result: TrashSyncResult): 
           continue;
         }
         await db
-          .prepare("INSERT INTO custom_formats (name, patterns, media_types, trash_id) VALUES (?, ?, ?, ?)")
-          .run(name, JSON.stringify(groups), JSON.stringify(mediaTypes), trash.trash_id);
+          .prepare("INSERT INTO custom_formats (name, patterns, media_types, trash_id, trash_scores) VALUES (?, ?, ?, ?, ?)")
+          .run(name, JSON.stringify(groups), JSON.stringify(mediaTypes), trash.trash_id, trashScoresJson(trash));
         result.added++;
       }
     } catch (err) {

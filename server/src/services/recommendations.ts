@@ -1,10 +1,12 @@
 import { db } from "../db/index.js";
+import { finishWantedAdd } from "./addDefaults.js";
 import { getSetting } from "./settingsStore.js";
 import { isExcluded } from "./importExclusions.js";
 import { fetchWatchedFiles, getMediaServerConfig } from "./mediaServer.js";
 import { findWatchedMatch, buildWatchedIndex } from "./archival.js";
 import { autoSelectRootFolderId } from "./rootFolderSelect.js";
-import { fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } from "./metadata.js";
+import { fetchSeriesEpisodesFor } from "./metadata.js";
+import { insertNewSeriesEpisodes } from "./seriesAdd.js";
 import { log } from "./logger.js";
 
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342";
@@ -312,17 +314,11 @@ export async function runAutoRequestFromWatchHistory(): Promise<void> {
           rootFolderId,
           qualityProfileId
         );
+      await finishWantedAdd(result.lastInsertRowid);
 
       if (rec.type === "series") {
         const episodes = await fetchSeriesEpisodesFor(rec.externalIds).catch(() => []);
-        for (const ep of episodes) {
-          await db
-            .prepare(
-              `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`
-            )
-            .run(result.lastInsertRowid, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, isEpisodeMonitoredByDefault(ep) ? 1 : 0);
-        }
+        if (result.lastInsertRowid != null) await insertNewSeriesEpisodes(result.lastInsertRowid, episodes);
       }
       added++;
       log.info(`[recommendations] auto-requested "${rec.title}" (because you watched "${rec.sourceTitle}")`);

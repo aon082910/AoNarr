@@ -10,8 +10,21 @@ export interface TrashSpecification {
 
 export interface TrashCustomFormat {
   trash_id?: string;
+  /** Score sets: {"default": 1950, "anime-radarr": 975}. A quality profile picks one set. */
+  trash_scores?: Record<string, number>;
   name: string;
   specifications?: TrashSpecification[];
+}
+
+/** The format's score sets as stored (JSON), or null when it publishes none. Non-integer values are left out. */
+export function trashScoresJson(trash: Pick<TrashCustomFormat, "trash_scores">): string | null {
+  const scores = trash.trash_scores;
+  if (!scores || typeof scores !== "object" || Array.isArray(scores)) return null;
+  const clean: Record<string, number> = {};
+  for (const [set, score] of Object.entries(scores)) {
+    if (typeof score === "number" && Number.isInteger(score) && Math.abs(score) <= 2147483647) clean[set] = score;
+  }
+  return Object.keys(clean).length > 0 ? JSON.stringify(clean) : null;
 }
 
 const RESOLUTION_VALUES: Record<number, string> = { 2160: "2160p", 1080: "1080p", 720: "720p", 576: "576p", 480: "480p" };
@@ -34,6 +47,31 @@ const RELEASE_TYPE_VALUES: Record<number, string> = { 1: "single", 2: "multi", 3
 /** IndexerFlagSpecification is a bit flag in both apps; the ones AoNarr scores (4 double upload, 8 internal, 16 scene). */
 const INDEXER_FLAG_VALUES: Record<number, string> = { 1: "freeleech", 2: "halfleech", 4: "doubleupload", 8: "internal", 16: "scene" };
 
+/**
+ * LanguageSpecification value (Starr's language id) -> the tag AoNarr's release parser looks for in a
+ * title. Only languages the parser can tag appear here. English is left out on purpose: Starr
+ * treats an untagged release as the original language, so a format on English matches releases
+ * AoNarr would find no tag in. Flemish, Portuguese (Brazil) and Spanish (Latino) are left out because
+ * the parser has no separate tag for them.
+ */
+const LANGUAGE_TAGS: Record<number, string> = {
+  2: "french",
+  3: "spanish",
+  4: "german",
+  5: "italian",
+  6: "danish",
+  7: "dutch",
+  8: "japanese",
+  10: "chinese",
+  11: "russian",
+  12: "polish",
+  14: "swedish",
+  15: "norwegian",
+  18: "portuguese",
+  21: "korean",
+  26: "hindi",
+};
+
 /** TRaSH sizes are in GiB (1024 cubed bytes); AoNarr's size conditions are in decimal megabytes. */
 const MB_PER_GIB = 1073.741824;
 
@@ -51,9 +89,10 @@ function finiteNumber(value: unknown): number | null {
 }
 
 /** One specification on its own, or null when its implementation (or value) has no portable,
- * non-Radarr/Sonarr-internal AoNarr equivalent. LanguageSpecification, SourceSpecification,
- * QualityModifierSpecification, IndexerFlagSpecification, ReleaseTypeSpecification, ... all carry
- * that app's own internal enum ordinals, which aren't safe to guess at. */
+ * non-Radarr/Sonarr-internal AoNarr equivalent. SourceSpecification, QualityModifierSpecification,
+ * IndexerFlagSpecification, ReleaseTypeSpecification, ... carry that app's own internal enum
+ * ordinals, which aren't safe to guess at; LanguageSpecification's ids are shared by both apps and
+ * map through LANGUAGE_TAGS. */
 function translateSpec(spec: TrashSpecification, app: TrashApp | undefined): any | null {
   const f = fieldMap(spec.fields);
   const negate = !!spec.negate;
@@ -101,6 +140,13 @@ function translateSpec(spec: TrashSpecification, app: TrashApp | undefined): any
       const flag = app ? INDEXER_FLAG_VALUES[finiteNumber(f.value) ?? -1] : undefined;
       return flag ? { type: "indexerFlag", indexerFlags: [flag], negate } : null;
     }
+    case "LanguageSpecification": {
+      // A negated language, or "all except this language", would match every release the parser finds
+      // no tag in, which is nearly all of them; only the positive form translates faithfully.
+      if (negate || f.exceptLanguage === true) return null;
+      const tag = LANGUAGE_TAGS[finiteNumber(f.value) ?? -999];
+      return tag ? { type: "language", languages: [tag], negate: false } : null;
+    }
     default:
       return null;
   }
@@ -120,6 +166,7 @@ function mergeOr(groups: any[]): any | null {
   if (type === "qualityModifier") return { type, qualityModifiers: [...new Set(groups.flatMap((g) => g.qualityModifiers))], negate: false };
   if (type === "releaseType") return { type, releaseTypes: [...new Set(groups.flatMap((g) => g.releaseTypes))], negate: false };
   if (type === "indexerFlag") return { type, indexerFlags: [...new Set(groups.flatMap((g) => g.indexerFlags))], negate: false };
+  if (type === "language") return { type, languages: [...new Set(groups.flatMap((g) => g.languages))], negate: false };
   return null;
 }
 

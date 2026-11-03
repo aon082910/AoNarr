@@ -159,7 +159,7 @@ indexersRouter.delete(
     await db.transaction(async () => {
       const result = await db.prepare("DELETE FROM indexers WHERE id = ?").run(req.params.id);
       deleted = result.changes > 0;
-      if (deleted) await removeReleaseProfileScopeId("indexer_ids", Number(req.params.id));
+      if (deleted) await removeReleaseProfileScopeId("indexer_ids", Number(req.params.id), { disableWhenEmptied: true });
     });
     if (!deleted) throw new HttpError(404, "Indexer not found");
     const actor = auditActor(req);

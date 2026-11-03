@@ -4,7 +4,9 @@ import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getSetting } from "../services/settingsStore.js";
 import { db } from "../db/index.js";
-import { searchMetadata, fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } from "../services/metadata.js";
+import { finishWantedAdd } from "../services/addDefaults.js";
+import { searchMetadata, fetchSeriesEpisodesFor } from "../services/metadata.js";
+import { insertNewSeriesEpisodes } from "../services/seriesAdd.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { verifyProviderHit } from "../services/titleMatch.js";
@@ -116,17 +118,11 @@ async function addFromSearchResult(type: "movie" | "series", result: any): Promi
       result.backdropUrl ?? null,
       result.rating ?? null
     );
+  await finishWantedAdd(insertResult.lastInsertRowid, { releaseDate: result.releaseDate ?? null });
 
   if (type === "series") {
     const episodes = await fetchSeriesEpisodesFor(result.externalIds).catch(() => []);
-    for (const ep of episodes) {
-      await db
-        .prepare(
-          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(insertResult.lastInsertRowid, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, isEpisodeMonitoredByDefault(ep) ? 1 : 0);
-    }
+    if (insertResult.lastInsertRowid != null) await insertNewSeriesEpisodes(insertResult.lastInsertRowid, episodes);
   }
   return result.title;
 }

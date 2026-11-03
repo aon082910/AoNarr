@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { Router } from "express";
 import { db } from "../db/index.js";
+import { finishWantedAdd } from "../services/addDefaults.js";
 import { nowExpr } from "../db/asyncDb.js";
 import { mediaItemFromRow, requestFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
@@ -330,6 +331,8 @@ requestsRouter.post(
     }
     logAuditEvent(user.id, user.username, "request_submitted", b.title);
     if (outcome.autoApproved === true) {
+      // After the transaction: it may call TMDB, which must not happen while the write transaction is open.
+      await finishWantedAdd(outcome.row.media_item_id);
       logAuditEvent(user.id, user.username, "request_auto_approved", b.title);
     } else if (outcome.autoApproved === false) {
       // Already in the library under a possible duplicate title/year — leave the request
@@ -366,9 +369,12 @@ requestsRouter.post(
       return;
     }
     const { request } = outcome;
+    // After the transaction: it may call TMDB, which must not happen while the write transaction is open.
+    await finishWantedAdd(outcome.mediaRow.id);
+    const mediaRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(outcome.mediaRow.id)) ?? outcome.mediaRow;
     logAuditEvent(null, "admin", "request_approved", request.title);
     sendPush("Request approved", request.title, request.user_id).catch(() => {});
-    res.json({ ...requestFromRow(outcome.requestRow), mediaItem: mediaItemFromRow(outcome.mediaRow) });
+    res.json({ ...requestFromRow(outcome.requestRow), mediaItem: mediaItemFromRow(mediaRow) });
   })
 );
 

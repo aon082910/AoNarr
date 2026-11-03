@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "../config.js";
 import { currentBuildId, recordMigrationDone, snapshotBeforeMigration } from "./preMigrationBackup.js";
+import { DEFAULT_QUALITY_SIZES, seedQualitySizesEnabled } from "./defaultQualitySizes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -83,6 +84,7 @@ ensureColumn("library_groups", "overview", "overview TEXT");
 ensureColumn("qualities", "preferred_size_mb", "preferred_size_mb INTEGER");
 ensureColumn("custom_formats", "media_types", "media_types TEXT");
 ensureColumn("custom_formats", "trash_id", "trash_id TEXT");
+ensureColumn("custom_formats", "trash_scores", "trash_scores TEXT");
 ensureColumn("recycle_bin", "restoring", "restoring INTEGER NOT NULL DEFAULT 0");
 ensureColumn("recycle_bin", "restore_error", "restore_error TEXT");
 ensureColumn("media_items", "release_date", "release_date TEXT");
@@ -569,9 +571,15 @@ const DEFAULT_QUALITY_SEED = [
 ];
 const qualityCount = (db.prepare("SELECT COUNT(*) as c FROM qualities").get() as { c: number }).c;
 if (qualityCount === 0) {
-  const insert = db.prepare("INSERT INTO qualities (name, rank) VALUES (?, ?)");
+  const insert = db.prepare("INSERT INTO qualities (name, rank, min_size_mb, max_size_mb, preferred_size_mb) VALUES (?, ?, ?, ?, ?)");
+  const withSizes = seedQualitySizesEnabled();
   const insertMany = db.transaction((names: string[]) => {
-    names.forEach((name, rank) => insert.run(name, rank));
+    names.forEach((name, rank) => {
+      const size = withSizes ? DEFAULT_QUALITY_SIZES[name] : undefined;
+      insert.run(name, rank, size?.min ?? null, size?.max ?? null, size?.preferred ?? null);
+    });
+    // A new install reads the limits per minute; an existing one keeps its own mode (megabytes).
+    if (withSizes) db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('sizeLimitMode', 'perMinute')").run();
   });
   insertMany(DEFAULT_QUALITY_SEED);
 }

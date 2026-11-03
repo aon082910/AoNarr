@@ -1,7 +1,9 @@
 import { log } from "./logger.js";
 import { db } from "../db/index.js";
+import { finishWantedAdd } from "./addDefaults.js";
 import { getSetting } from "./settingsStore.js";
-import { fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } from "./metadata.js";
+import { fetchSeriesEpisodesFor } from "./metadata.js";
+import { insertNewSeriesEpisodes } from "./seriesAdd.js";
 import { isExcluded } from "./importExclusions.js";
 import { parsePlexExternalIds } from "./mediaServer.js";
 import { insertUnlessTmdbIdExists, RootFolderPicker } from "./importLists.js";
@@ -135,7 +137,10 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
             )
         );
         existingMovies.add(tmdbId);
-        if (inserted) added++;
+        if (inserted) {
+          await finishWantedAdd(inserted.lastInsertRowid);
+          added++;
+        }
       } else if (item.type === "show") {
         if (existingSeries.has(tmdbId)) continue;
         if (await isExcluded("series", item.title, item.year ?? null, tmdbId, "tmdb")) continue;
@@ -161,17 +166,10 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
         );
         existingSeries.add(tmdbId);
         if (!result) continue;
+        await finishWantedAdd(result.lastInsertRowid);
 
-        const mediaItemId = result.lastInsertRowid;
         const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
-        for (const ep of episodes) {
-          await db
-            .prepare(
-              `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`
-            )
-            .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, isEpisodeMonitoredByDefault(ep) ? 1 : 0);
-        }
+        if (result.lastInsertRowid != null) await insertNewSeriesEpisodes(result.lastInsertRowid, episodes);
 
         added++;
       }

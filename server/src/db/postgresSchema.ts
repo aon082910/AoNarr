@@ -76,6 +76,7 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE qualities ADD COLUMN IF NOT EXISTS preferred_size_mb INTEGER`,
   `ALTER TABLE custom_formats ADD COLUMN IF NOT EXISTS media_types TEXT`,
   `ALTER TABLE custom_formats ADD COLUMN IF NOT EXISTS trash_id TEXT`,
+  `ALTER TABLE custom_formats ADD COLUMN IF NOT EXISTS trash_scores TEXT`,
   `ALTER TABLE recycle_bin ADD COLUMN IF NOT EXISTS restoring INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE recycle_bin ADD COLUMN IF NOT EXISTS restore_error TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS release_date TEXT`,

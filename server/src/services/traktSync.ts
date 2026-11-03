@@ -1,7 +1,9 @@
 import { log } from "./logger.js";
 import { db } from "../db/index.js";
+import { finishWantedAdd } from "./addDefaults.js";
 import { getSetting } from "./settingsStore.js";
-import { fetchSeriesEpisodesFor, isEpisodeMonitoredByDefault } from "./metadata.js";
+import { fetchSeriesEpisodesFor } from "./metadata.js";
+import { insertNewSeriesEpisodes } from "./seriesAdd.js";
 import { isExcluded } from "./importExclusions.js";
 import { insertUnlessTmdbIdExists, RootFolderPicker, traktListHeaders } from "./importLists.js";
 
@@ -101,7 +103,10 @@ export async function runTraktSync(): Promise<{ added: number; error?: string; w
             )
         );
         existingMovies.add(String(tmdbId));
-        if (inserted) added++;
+        if (inserted) {
+          await finishWantedAdd(inserted.lastInsertRowid, { releaseDate: m.released ?? null });
+          added++;
+        }
       } else if (entry.show) {
         const s = entry.show;
         const tmdbId = s.ids?.tmdb;
@@ -124,17 +129,10 @@ export async function runTraktSync(): Promise<{ added: number; error?: string; w
         );
         existingSeries.add(String(tmdbId));
         if (!result) continue;
+        await finishWantedAdd(result.lastInsertRowid);
 
-        const mediaItemId = result.lastInsertRowid;
         const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
-        for (const ep of episodes) {
-          await db
-            .prepare(
-              `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`
-            )
-            .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, isEpisodeMonitoredByDefault(ep) ? 1 : 0);
-        }
+        if (result.lastInsertRowid != null) await insertNewSeriesEpisodes(result.lastInsertRowid, episodes);
 
         added++;
       }

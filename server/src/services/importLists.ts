@@ -6,15 +6,16 @@ import {
   fetchAlbumTracksFor,
   fetchArtistAlbumsFor,
   fetchSeriesEpisodesFor,
-  isEpisodeMonitoredByDefault,
   searchMetadata,
   TMDB_IMAGE_BASE,
 } from "./metadata.js";
+import { insertNewSeriesEpisodes } from "./seriesAdd.js";
 import { isExcluded } from "./importExclusions.js";
 import { findPossibleDuplicates } from "./duplicateCheck.js";
 import { queueForReview } from "./importReview.js";
 import { verifyProviderHit } from "./titleMatch.js";
 import { autoSelectRootFolderId } from "./rootFolderSelect.js";
+import { finishWantedAdd } from "./addDefaults.js";
 
 export interface ImportListRow {
   id: number;
@@ -59,11 +60,12 @@ export function withLibraryAddLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /** Exact tmdb-id lookup (the LIKE only narrows the scan; the parsed JSON decides). */
-export async function libraryHasTmdbId(type: string, tmdbId: string): Promise<boolean> {
+/** The id of the item of `type` that has this tmdb id, or null. */
+export async function findLibraryItemIdByTmdbId(type: string, tmdbId: string): Promise<number | null> {
   const rows = (await db
-    .prepare("SELECT external_ids FROM media_items WHERE type = ? AND external_ids LIKE ?")
-    .all(type, `%${tmdbId}%`)) as { external_ids: string | null }[];
-  return rows.some((row) => {
+    .prepare("SELECT id, external_ids FROM media_items WHERE type = ? AND external_ids LIKE ? ORDER BY id")
+    .all(type, `%${tmdbId}%`)) as { id: number; external_ids: string | null }[];
+  const match = rows.find((row) => {
     try {
       const parsed = JSON.parse(row.external_ids ?? "{}");
       return parsed?.tmdb != null && String(parsed.tmdb) === tmdbId;
@@ -71,6 +73,11 @@ export async function libraryHasTmdbId(type: string, tmdbId: string): Promise<bo
       return false;
     }
   });
+  return match ? Number(match.id) : null;
+}
+
+export async function libraryHasTmdbId(type: string, tmdbId: string): Promise<boolean> {
+  return (await findLibraryItemIdByTmdbId(type, tmdbId)) != null;
 }
 
 /** Runs `insert` only if no item of `type` has this tmdb id yet, atomically with respect to every
@@ -206,15 +213,9 @@ async function existingTmdbIds(type: string): Promise<Set<string>> {
 }
 
 async function insertSeriesEpisodes(mediaItemId: number | bigint | null, externalIds: Record<string, string>) {
+  if (mediaItemId == null) return;
   const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
-  for (const ep of episodes) {
-    await db
-      .prepare(
-        `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, isEpisodeMonitoredByDefault(ep) ? 1 : 0);
-  }
+  await insertNewSeriesEpisodes(mediaItemId, episodes);
 }
 
 /**
@@ -331,7 +332,10 @@ async function syncTraktList(list: ImportListRow, ctx: ListSyncContext): Promise
             )
         );
         existingMovies.add(String(tmdbId));
-        if (inserted) added++;
+        if (inserted) {
+          await finishWantedAdd(inserted.lastInsertRowid, { releaseDate: m.released ?? null });
+          added++;
+        }
       } else if (entry.show) {
         const s = entry.show;
         const tmdbId = s.ids?.tmdb;
@@ -355,6 +359,7 @@ async function syncTraktList(list: ImportListRow, ctx: ListSyncContext): Promise
         );
         existingSeries.add(String(tmdbId));
         if (!result) continue;
+        await finishWantedAdd(result.lastInsertRowid);
         await insertSeriesEpisodes(result.lastInsertRowid, externalIds);
         added++;
       }
@@ -512,6 +517,7 @@ async function syncImdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
       });
       if (!insertResult) continue;
 
+      await finishWantedAdd(insertResult.lastInsertRowid, { releaseDate: best.releaseDate ?? null });
       if (type === "series") await insertSeriesEpisodes(insertResult.lastInsertRowid, bestIds);
       added++;
     } catch (err) {
@@ -579,6 +585,7 @@ async function syncLastfmList(list: ImportListRow, ctx: ListSyncContext): Promis
           .run(title, title.toLowerCase(), JSON.stringify(externalIds), rootFolderId, ctx.qualityProfileId);
       });
       if (!insertResult) continue;
+      await finishWantedAdd(insertResult.lastInsertRowid);
       await insertArtistAlbums(insertResult.lastInsertRowid, externalIds);
       added++;
     } catch (err) {
@@ -673,6 +680,7 @@ async function syncTmdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
         );
         existingSeries.add(String(tmdbId));
         if (!result) continue;
+        await finishWantedAdd(result.lastInsertRowid);
         await insertSeriesEpisodes(result.lastInsertRowid, externalIds);
         added++;
       } else {
@@ -707,7 +715,10 @@ async function syncTmdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
             )
         );
         existingMovies.add(String(tmdbId));
-        if (inserted) added++;
+        if (inserted) {
+          await finishWantedAdd(inserted.lastInsertRowid, { releaseDate: entry.release_date ?? null });
+          added++;
+        }
       }
     } catch (err) {
       log.warn(`[importLists] TMDB list "${list.name}" failed to add an item:`, (err as Error).message);

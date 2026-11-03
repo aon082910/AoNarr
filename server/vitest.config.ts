@@ -10,7 +10,13 @@ export default defineConfig({
   test: {
     environment: "node",
     // Most suites feed the engine arbitrary release names; the product default (enforce) is tested explicitly.
-    env: { AONARR_STRICT_IDENTITY_DEFAULT: "log", AONARR_INDEXER_STARTUP_GRACE_MS: "0", AONARR_HEALTH_STARTUP_GRACE_MS: "0" },
+    // A new install starts with Starr's per-minute size limits; the suite's fixtures use releases of any size.
+    env: {
+      AONARR_STRICT_IDENTITY_DEFAULT: "log",
+      AONARR_INDEXER_STARTUP_GRACE_MS: "0",
+      AONARR_HEALTH_STARTUP_GRACE_MS: "0",
+      AONARR_SEED_QUALITY_SIZES: "0",
+    },
     fileParallelism: false,
     // Gives each test file a fresh temp AONARR_CONFIG_DIR/AONARR_DOWNLOADS_DIR before any of its
     // imports run — see tests/helpers/isolateDataDirs.ts.

@@ -4,11 +4,12 @@ import { decryptValue, encryptValue, isEncryptedValue } from "./encryption.js";
 
 /** Matches setting keys that hold a real credential/secret (as opposed to a plain preference or
  * URL) — API keys, passwords, access/bot/auth tokens, webhook URLs (a Discord/Slack webhook URL
- * *is* the credential, not just an address), and the instance's own admin API key. A substring
+ * *is* the credential, not just an address), proxy URLs (they carry the proxy's user and password),
+ * and the instance's own admin API key. A substring
  * match on the key name rather than a hardcoded list, so a newly added provider's *ApiKey/
  * *Password/*Token/*WebhookUrl setting is automatically covered without a matching edit here. */
 function isSensitiveSettingKey(key: string): boolean {
-  return /password|apikey|token|secret|privatekey|userkey|webhookurl/i.test(key);
+  return /password|apikey|token|secret|privatekey|userkey|webhookurl|proxyurl/i.test(key);
 }
 
 /**
