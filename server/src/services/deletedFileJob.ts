@@ -10,7 +10,11 @@ import { log } from "./logger.js";
  * Deleted" is applied afterwards, to the rows the scan did not re-link.
  */
 export async function runDeletedFileCheckJob(signal?: AbortSignal): Promise<void> {
-  const { missing, cleared } = await checkForDeletedFiles({ holdUnmonitor: true });
+  const { missing, cleared, aborted } = await checkForDeletedFiles({ holdUnmonitor: true });
+  if (aborted) {
+    log.warn("[deletedFileCheck] a storage location stopped answering, so the check was cut short and the follow-up library scan was skipped");
+    return;
+  }
   if (missing === 0) return;
   try {
     await scanAndImportAllLibraries(signal);

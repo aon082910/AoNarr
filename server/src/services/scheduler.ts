@@ -103,7 +103,7 @@ import { runTraktSync } from "./traktSync.js";
 import { runPlexWatchlistSync } from "./plexWatchlistSync.js";
 import { runAllImportLists } from "./importLists.js";
 import { recordDiskUsageSamples } from "./storageForecast.js";
-import { runScheduledBackup } from "./scheduledBackup.js";
+import { getBackupProblem, runScheduledBackup } from "./scheduledBackup.js";
 import { purgeExpiredRecycleBinEntries } from "./recycleBin.js";
 import { syncFromProwlarr } from "./prowlarrSync.js";
 import { rescanMissingSubtitles } from "./subtitleRescan.js";
@@ -3815,6 +3815,9 @@ export async function checkHealthAndNotify(): Promise<void> {
     }
   }
 
+  const backupProblem = getBackupProblem();
+  if (backupProblem) issues.push(backupProblem);
+
   const summary = issues.join("; ");
   const lastSummary = getSetting("lastHealthIssueSummary") ?? "";
   if (summary === lastSummary) return; // nothing changed since the last notification
@@ -3822,10 +3825,10 @@ export async function checkHealthAndNotify(): Promise<void> {
   if (summary) await notifyHealthIssue(summary);
 }
 
-/** Pushes an "Update Available" notification once per newly-seen round, instead of the System
- * page's existing on-demand check — deduped against `lastNotifiedUpdateRound` (a setting) so an
+/** Pushes an "Update Available" notification once per newly-seen build, instead of the System
+ * page's existing on-demand check — deduped against `lastNotifiedUpdate` (a setting) so an
  * admin who's simply behind for a while doesn't get renotified every single day. */
-async function checkAndNotifyUpdate(): Promise<void> {
+export async function checkAndNotifyUpdate(): Promise<void> {
   let result;
   try {
     result = await checkForUpdate();
@@ -3833,13 +3836,16 @@ async function checkAndNotifyUpdate(): Promise<void> {
     log.warn("[scheduler] update check failed:", (err as Error).message);
     return;
   }
-  if (!result.updateAvailable || result.latestRound == null) return;
+  if (!result.updateAvailable || result.latestId == null) return;
 
-  const lastNotified = parseInt(getSetting("lastNotifiedUpdateRound") ?? "", 10);
-  if (lastNotified === result.latestRound) return;
+  if (getSetting("lastNotifiedUpdate") === result.latestId) return;
 
-  setSetting("lastNotifiedUpdateRound", String(result.latestRound));
-  await notifyUpdateAvailable(`Round ${result.latestRound} — ${result.latestTitle ?? "see CHANGELOG.md"}`);
+  setSetting("lastNotifiedUpdate", result.latestId);
+  const title =
+    result.source === "docker-hub"
+      ? `A newer "${result.imageTag}" image was pushed to Docker Hub on ${result.latestPushedAt?.slice(0, 10)}${result.latestRound != null ? ` (changelog: Round ${result.latestRound} — ${result.latestTitle ?? ""})` : ""}`
+      : `Round ${result.latestRound} — ${result.latestTitle ?? "see CHANGELOG.md"}`;
+  await notifyUpdateAvailable(title);
 }
 
 // A cron step only counts within its own field: a minute step of 120 runs hourly at :00, and one

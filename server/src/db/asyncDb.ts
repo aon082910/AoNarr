@@ -70,6 +70,20 @@ class SqliteAsyncDb implements AsyncDb {
   readonly dialect = "sqlite" as const;
   constructor(private db: Database.Database) {}
 
+  // One connection serves the whole process, so BEGIN ... COMMIT on it covers every statement that runs
+  // while the callback awaits something slow, from any request: an unrelated insert joins the transaction
+  // and vanishes with its rollback. That cannot be fixed here without making every other request wait for
+  // the whole transaction (a library-scan conversion runs for minutes), so the rule stays: a transaction
+  // callback awaits only database calls (tests/transactionCallbacks.test.ts checks every call site).
+  // What this queue does fix: a second transaction() used to throw "cannot start a transaction within a
+  // transaction" while the first awaited anything; it now waits its turn.
+  private transactionQueue: Promise<void> = Promise.resolve();
+  // Tells a transaction() started from inside a transaction callback (which would wait for its own
+  // caller for ever) from one started by another request: the first throws, as it always did.
+  // The marker is an object that is switched off when the transaction ends: async work started inside the
+  // callback keeps this context for good (a timer, a fire-and-forget promise), and must not read as nested later.
+  private readonly insideTransaction = new AsyncLocalStorage<{ active: boolean }>();
+
   prepare(sql: string): AsyncStatement {
     const stmt = this.db.prepare(sql);
     return {
@@ -87,14 +101,26 @@ class SqliteAsyncDb implements AsyncDb {
   }
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    this.db.exec("BEGIN");
+    if (this.insideTransaction.getStore()?.active) throw new Error("cannot start a transaction within a transaction");
+    const previous = this.transactionQueue;
+    let release!: () => void;
+    const finished = new Promise<void>((resolve) => (release = resolve));
+    this.transactionQueue = previous.then(() => finished);
+    await previous;
+    const scope = { active: true };
     try {
-      const result = await fn();
-      this.db.exec("COMMIT");
-      return result;
-    } catch (err) {
-      this.db.exec("ROLLBACK");
-      throw err;
+      this.db.exec("BEGIN");
+      try {
+        const result = await this.insideTransaction.run(scope, fn);
+        this.db.exec("COMMIT");
+        return result;
+      } catch (err) {
+        this.db.exec("ROLLBACK");
+        throw err;
+      }
+    } finally {
+      scope.active = false;
+      release();
     }
   }
 

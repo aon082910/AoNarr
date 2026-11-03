@@ -1,4 +1,18 @@
+import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** An image built without `--build-arg BUILD_TIME` still knows when it was built: the Dockerfiles write the
+ * time to /app/.build-time in that case. The update check and the copy of the database taken before
+ * migrations are both keyed on it, and used to do nothing without the build argument. A dev run has no file. */
+function readBuildTimeFile(): string | null {
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    return fs.readFileSync(path.join(here, "..", ".build-time"), "utf-8").trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 const configDir = process.env.AONARR_CONFIG_DIR ?? path.resolve(process.cwd(), "..", "data", "config");
 const downloadsDir = process.env.AONARR_DOWNLOADS_DIR ?? path.resolve(process.cwd(), "..", "data", "downloads");
@@ -33,6 +47,6 @@ export const config = {
   rssSyncIntervalMinutes: Number(process.env.AONARR_RSS_SYNC_INTERVAL_MINUTES ?? 15),
   // Baked in at image build time (see Dockerfile --build-arg) so the update checker can tell
   // "this running container" apart from "what's currently on Docker Hub" for the same tag.
-  buildTime: process.env.AONARR_BUILD_TIME ?? null,
+  buildTime: process.env.AONARR_BUILD_TIME || readBuildTimeFile(),
   imageTag: process.env.AONARR_IMAGE_TAG ?? null,
 };

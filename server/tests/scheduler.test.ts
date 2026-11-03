@@ -50,6 +50,11 @@ vi.mock("../src/services/notifications.js", () => ({
   notifyUpdateAvailable: (...args: unknown[]) => notifyUpdateAvailable(...args),
 }));
 
+const checkForUpdate = vi.fn();
+vi.mock("../src/services/updateCheck.js", () => ({
+  checkForUpdate: (...args: unknown[]) => checkForUpdate(...args),
+}));
+
 const fetchCollectionChildrenFor = vi.fn();
 vi.mock("../src/services/metadata.js", () => ({
   fetchCollectionChildrenFor: (...args: unknown[]) => fetchCollectionChildrenFor(...args),
@@ -105,6 +110,7 @@ let pollQueue: (typeof import("../src/services/scheduler.js"))["pollQueue"];
 let cleanupStalledDownloads: (typeof import("../src/services/scheduler.js"))["cleanupStalledDownloads"];
 let pruneOldFailedQueueItems: (typeof import("../src/services/scheduler.js"))["pruneOldFailedQueueItems"];
 let checkHealthAndNotify: (typeof import("../src/services/scheduler.js"))["checkHealthAndNotify"];
+let checkAndNotifyUpdate: (typeof import("../src/services/scheduler.js"))["checkAndNotifyUpdate"];
 let runSeedGoalCleanup: (typeof import("../src/services/scheduler.js"))["runSeedGoalCleanup"];
 let startScheduler: (typeof import("../src/services/scheduler.js"))["startScheduler"];
 let ImportSkippedError: (typeof import("../src/services/importer.js"))["ImportSkippedError"];
@@ -138,6 +144,7 @@ beforeAll(async () => {
     cleanupStalledDownloads,
     pruneOldFailedQueueItems,
     checkHealthAndNotify,
+    checkAndNotifyUpdate,
     runSeedGoalCleanup,
     startScheduler,
     chooseBestResult,
@@ -166,6 +173,8 @@ beforeEach(async () => {
   notifyHealthIssue.mockReset();
   notifyManualInteractionRequired.mockReset().mockResolvedValue(undefined);
   notifyUpdateAvailable.mockReset();
+  checkForUpdate.mockReset();
+  setSetting("lastNotifiedUpdate", "");
   fetchCollectionChildrenFor.mockReset().mockResolvedValue({ provider: null, children: [] });
   findUpgradeCandidates.mockReset().mockResolvedValue([]);
   registerJob.mockReset();
@@ -1795,6 +1804,25 @@ describe("checkHealthAndNotify", () => {
     expect(notifyHealthIssue).not.toHaveBeenCalled();
   });
 
+  it("reports a failed scheduled backup, once per distinct text, and nothing while backups are switched off (RB2)", async () => {
+    setSetting("backupEnabled", "1");
+    setSetting("backupProblem", "Scheduled backup failed: disk full");
+    try {
+      await checkHealthAndNotify();
+      await checkHealthAndNotify();
+      expect(notifyHealthIssue).toHaveBeenCalledTimes(1);
+      expect(notifyHealthIssue).toHaveBeenCalledWith(expect.stringContaining("Scheduled backup failed: disk full"));
+
+      setSetting("backupEnabled", "0");
+      notifyHealthIssue.mockReset();
+      await checkHealthAndNotify(); // the summary changed back to empty: nothing to say
+      expect(notifyHealthIssue).not.toHaveBeenCalled();
+    } finally {
+      setSetting("backupProblem", "");
+      setSetting("backupEnabled", "0");
+    }
+  });
+
   it("flags a root folder below its low-disk-space threshold", async () => {
     const folder = (await db.prepare("INSERT INTO root_folders (path, media_type) VALUES ('/x', 'movie')").run()).lastInsertRowid as number;
     await db.prepare("INSERT INTO disk_usage_samples (root_folder_id, free_bytes, total_bytes) VALUES (?, 1, 1000)").run(folder); // ~0% free
@@ -1802,6 +1830,58 @@ describe("checkHealthAndNotify", () => {
     await checkHealthAndNotify();
 
     expect(notifyHealthIssue).toHaveBeenCalledWith(expect.stringContaining("low on disk space"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkAndNotifyUpdate
+// ---------------------------------------------------------------------------
+
+describe("checkAndNotifyUpdate (RB5)", () => {
+  const hubResult = {
+    updateAvailable: true,
+    source: "docker-hub",
+    imageTag: "combined",
+    latestPushedAt: "2026-11-02T12:00:00Z",
+    latestId: "2026-11-02T12:00:00Z",
+    latestRound: 372,
+    latestTitle: "Selectable UI designs",
+  };
+
+  it("announces a newer Docker Hub image once, not on every daily run", async () => {
+    checkForUpdate.mockResolvedValue(hubResult);
+
+    await checkAndNotifyUpdate();
+    await checkAndNotifyUpdate();
+
+    expect(notifyUpdateAvailable).toHaveBeenCalledTimes(1);
+    expect(notifyUpdateAvailable).toHaveBeenCalledWith(expect.stringContaining('"combined" image was pushed to Docker Hub on 2026-11-02'));
+  });
+
+  it("announces again when a still newer image is pushed", async () => {
+    checkForUpdate.mockResolvedValue(hubResult);
+    await checkAndNotifyUpdate();
+    checkForUpdate.mockResolvedValue({ ...hubResult, latestPushedAt: "2026-11-09T12:00:00Z", latestId: "2026-11-09T12:00:00Z" });
+
+    await checkAndNotifyUpdate();
+
+    expect(notifyUpdateAvailable).toHaveBeenCalledTimes(2);
+  });
+
+  it("says nothing when there is no update, or when the check fails", async () => {
+    checkForUpdate.mockResolvedValue({ ...hubResult, updateAvailable: false });
+    await checkAndNotifyUpdate();
+    checkForUpdate.mockRejectedValue(new Error("Docker Hub lookup failed: HTTP 429"));
+    await checkAndNotifyUpdate();
+    expect(notifyUpdateAvailable).not.toHaveBeenCalled();
+  });
+
+  it("names the round for a changelog based check", async () => {
+    checkForUpdate.mockResolvedValue({ updateAvailable: true, source: "changelog", imageTag: null, latestPushedAt: null, latestId: "Round 400", latestRound: 400, latestTitle: "New things" });
+
+    await checkAndNotifyUpdate();
+
+    expect(notifyUpdateAvailable).toHaveBeenCalledWith("Round 400 — New things");
   });
 });
 

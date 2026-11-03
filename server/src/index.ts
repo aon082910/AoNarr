@@ -12,6 +12,7 @@ import { migrateScreenscraperArtwork } from "./services/metadata.js";
 import { resetInterruptedRestores } from "./services/recycleBin.js";
 import { removeStaleImportTemps } from "./services/importer.js";
 import { waitForQueueImports } from "./services/downloadClient.js";
+import { backfillMissingAlbumTracks } from "./services/libraryScan.js";
 
 // Without these, an unhandled rejection or a synchronous throw outside Express's own request
 // cycle (a background job, a stray unawaited promise, an event-emitter callback) crashes the
@@ -54,6 +55,9 @@ const SWEEP_DIR_DELAY_MS = 15;
  * further still so the first couple of minutes after a restart or update — when an admin is most
  * likely actively poking at the UI — are left completely undisturbed by this background sweep. */
 const SWEEP_STARTUP_DELAY_MS = 2 * 60 * 1000;
+/** The album track backfill re-walks the folder of every album that has a file but no track rows. It ran
+ * before the port opened, so on a large library with sleeping disks the web UI waited for it. */
+const ALBUM_BACKFILL_DELAY_MS = 30 * 1000;
 
 /** An import cut off by a restart leaves a `.aonarr-tmp-*` partial copy beside its destination; the
  * next import to that same file removes it, but one whose destination is never imported again
@@ -83,6 +87,9 @@ const server = app.listen(config.port, () => {
   log.info(`AoNarr server listening on port ${config.port}`);
   startScheduler();
   restartIrcFeeds().catch((err) => log.warn("[irc] failed to start feeds:", err.message));
+  setTimeout(() => {
+    backfillMissingAlbumTracks().catch((err) => log.warn("[startup] album track backfill failed:", err.message));
+  }, ALBUM_BACKFILL_DELAY_MS);
   setTimeout(() => {
     sweepStaleImportTemps().catch((err) => log.warn("[startup] stale import temp sweep failed:", err.message));
   }, SWEEP_STARTUP_DELAY_MS);

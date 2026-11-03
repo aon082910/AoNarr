@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
@@ -10,6 +9,9 @@ import { deleteMediaItemCascade } from "./media.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { renameOneMediaItem, removeEmptyParents } from "../services/importer.js";
 import { log } from "../services/logger.js";
+import { statfsAsync } from "../services/fsAsync.js";
+
+const ROOT_FOLDER_STATFS_TIMEOUT_MS = 5000;
 
 export const rootFoldersRouter = Router();
 rootFoldersRouter.use(requireAdmin);
@@ -19,10 +21,12 @@ rootFoldersRouter.get(
   asyncHandler(async (_req, res) => {
     const rows = await db.prepare("SELECT * FROM root_folders").all();
     res.json(
-      rows.map((row) => {
-        const folder = rootFolderFromRow(row);
-        try {
-          const stat = fs.statfsSync(folder.path);
+      await Promise.all(
+        rows.map(async (row) => {
+          const folder = rootFolderFromRow(row);
+          // statfsAsync: a dead mount shows as unknown free space for that folder instead of freezing the server.
+          const stat = await statfsAsync(folder.path, ROOT_FOLDER_STATFS_TIMEOUT_MS).catch(() => null);
+          if (!stat) return { ...folder, freeBytes: null, totalBytes: null, percentUsed: null };
           const freeBytes = stat.bavail * stat.bsize;
           const totalBytes = stat.blocks * stat.bsize;
           // Unrounded — rootFolderSelect.ts's isRootFolderOverQuota() compares this same percentage
@@ -30,10 +34,8 @@ rootFoldersRouter.get(
           // match that unrounded comparison exactly (round only for display, in the frontend).
           const percentUsed = totalBytes > 0 ? ((totalBytes - freeBytes) / totalBytes) * 100 : null;
           return { ...folder, freeBytes, totalBytes, percentUsed };
-        } catch {
-          return { ...folder, freeBytes: null, totalBytes: null, percentUsed: null };
-        }
-      })
+        })
+      )
     );
   })
 );

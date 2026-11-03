@@ -114,8 +114,8 @@ describe("GET /api/root-folders", () => {
 
   it("reports the space the server can actually use, not blocks reserved for root", async () => {
     const { id, dir } = await createRootFolder("space-report", "movie");
-    const realStatfs = fs.statfsSync;
-    vi.spyOn(fs, "statfsSync").mockImplementation(((p: string, ...rest: unknown[]) =>
+    const realStatfs = fs.promises.statfs;
+    vi.spyOn(fs.promises, "statfs").mockImplementation((async (p: string, ...rest: unknown[]) =>
       p === dir ? ({ bfree: 30, bavail: 10, blocks: 100, bsize: 1000 } as any) : (realStatfs as any)(p, ...rest)) as any);
 
     const res = await request(app).get("/api/root-folders").set("X-Api-Key", apiKey);

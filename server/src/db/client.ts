@@ -4,14 +4,29 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "../config.js";
+import { currentBuildId, recordMigrationDone, snapshotBeforeMigration } from "./preMigrationBackup.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
 
+// Read before opening: `new Database` creates an empty file, which would make a fresh install look like
+// an existing one. See preMigrationBackup.ts.
+const dbExistedBeforeOpen = fs.existsSync(config.dbPath) && fs.statSync(config.dbPath).size > 0;
+
 export const db = new Database(config.dbPath);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+
+// A copy of the database before this build's schema and column migrations touch it (only when the build
+// changed since the last start, see preMigrationBackup.ts). A failure is reported in Health, never fatal.
+const buildId = currentBuildId();
+const preMigrationBackup = snapshotBeforeMigration(db, dbExistedBeforeOpen, buildId);
+if (preMigrationBackup.kind === "written") console.log(`[startup] saved a copy of the database before migrating: ${preMigrationBackup.file}`);
+if (preMigrationBackup.kind === "skipped" && dbExistedBeforeOpen && !buildId && process.env.NODE_ENV === "production") {
+  console.warn("[startup] no copy of the database was saved before migrating: this image has no build time (see Dockerfile BUILD_TIME)");
+}
+if (preMigrationBackup.kind === "failed") console.error(`[startup] could not save a copy of the database before migrating: ${preMigrationBackup.error}`);
 
 const schemaSql = fs.readFileSync(path.join(__dirname, "schema.sql"), "utf-8");
 db.exec(schemaSql);
@@ -735,3 +750,6 @@ export function backfillMissingRootFolders(): number {
   return changes;
 }
 backfillMissingRootFolders();
+
+// Every migration above finished: the next start of this same build does not copy the database again.
+recordMigrationDone(buildId, preMigrationBackup);

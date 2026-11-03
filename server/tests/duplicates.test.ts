@@ -26,7 +26,8 @@ async function insertImportEvent(mediaItemId: number, quality: string | null, se
 
 describe("findRepeatedImports", () => {
   it("ignores an item imported only once — that's the normal case, not a repeat", async () => {
-    const { findRepeatedImports } = await import("../src/services/duplicates.js");
+    const { findRepeatedImports, clearRepeatedImportsCache } = await import("../src/services/duplicates.js");
+    clearRepeatedImportsCache();
     const itemId = await insertMovie("Imported Once");
     await insertImportEvent(itemId, "1080p", 100);
 
@@ -35,7 +36,8 @@ describe("findRepeatedImports", () => {
   });
 
   it("flags an item imported more than once, listing every quality it was imported at", async () => {
-    const { findRepeatedImports } = await import("../src/services/duplicates.js");
+    const { findRepeatedImports, clearRepeatedImportsCache } = await import("../src/services/duplicates.js");
+    clearRepeatedImportsCache();
     const itemId = await insertMovie("Imported Twice");
     await insertImportEvent(itemId, "720p", 200);
     await insertImportEvent(itemId, "1080p", 100);
@@ -49,7 +51,8 @@ describe("findRepeatedImports", () => {
   });
 
   it("labels a repeated episode import with its season/episode instead of just the show's title", async () => {
-    const { findRepeatedImports } = await import("../src/services/duplicates.js");
+    const { findRepeatedImports, clearRepeatedImportsCache } = await import("../src/services/duplicates.js");
+    clearRepeatedImportsCache();
     const showId = Number(
       (
         await db
@@ -76,7 +79,8 @@ describe("findRepeatedImports", () => {
   });
 
   it("keeps a repeated episode import for one show separate from a repeated import of a different episode of the same show", async () => {
-    const { findRepeatedImports } = await import("../src/services/duplicates.js");
+    const { findRepeatedImports, clearRepeatedImportsCache } = await import("../src/services/duplicates.js");
+    clearRepeatedImportsCache();
     const showId = Number(
       (
         await db
@@ -109,7 +113,8 @@ describe("findRepeatedImports", () => {
   });
 
   it("sorts the most-repeated item first", async () => {
-    const { findRepeatedImports } = await import("../src/services/duplicates.js");
+    const { findRepeatedImports, clearRepeatedImportsCache } = await import("../src/services/duplicates.js");
+    clearRepeatedImportsCache();
     const twiceId = await insertMovie("Twice Sort");
     await insertImportEvent(twiceId, null, 200);
     await insertImportEvent(twiceId, null, 190);
@@ -125,12 +130,57 @@ describe("findRepeatedImports", () => {
   });
 
   it("skips a malformed history row instead of throwing", async () => {
-    const { findRepeatedImports } = await import("../src/services/duplicates.js");
+    const { findRepeatedImports, clearRepeatedImportsCache } = await import("../src/services/duplicates.js");
+    clearRepeatedImportsCache();
     const itemId = await insertMovie("Malformed Data Row");
     await db
       .prepare("INSERT INTO history (media_item_id, event_type, data, created_at) VALUES (?, 'imported', ?, ?)")
       .run(itemId, "{not valid json", new Date().toISOString());
 
     await expect(findRepeatedImports()).resolves.not.toThrow();
+  });
+
+  it("reuses one scan for repeated calls until the cache is cleared (RB4)", async () => {
+    const { findRepeatedImports, clearRepeatedImportsCache } = await import("../src/services/duplicates.js");
+    clearRepeatedImportsCache();
+    const itemId = await insertMovie("Cached Scan");
+    await insertImportEvent(itemId, "720p", 50);
+    await insertImportEvent(itemId, "1080p", 40);
+
+    const first = await findRepeatedImports();
+    expect(first.some((r) => r.mediaItemId === itemId)).toBe(true);
+
+    const laterId = await insertMovie("Cached Scan Later");
+    await insertImportEvent(laterId, "720p", 30);
+    await insertImportEvent(laterId, "1080p", 20);
+
+    expect(await findRepeatedImports()).toBe(first);
+    expect(first.some((r) => r.mediaItemId === laterId)).toBe(false);
+
+    clearRepeatedImportsCache();
+    expect((await findRepeatedImports()).some((r) => r.mediaItemId === laterId)).toBe(true);
+  });
+
+  it("answers two calls that overlap from the same scan", async () => {
+    const { findRepeatedImports, clearRepeatedImportsCache } = await import("../src/services/duplicates.js");
+    clearRepeatedImportsCache();
+    const [a, b] = await Promise.all([findRepeatedImports(), findRepeatedImports()]);
+    expect(a).toBe(b);
+  });
+});
+
+describe("dashboard indexes (RB4)", () => {
+  it("watch_events has an index on watched_at, so the recently-watched list does not scan and sort the table", async () => {
+    if (db.dialect === "sqlite") {
+      const plan = (await db
+        .prepare("EXPLAIN QUERY PLAN SELECT * FROM watch_events ORDER BY watched_at DESC LIMIT 50")
+        .all()) as { detail: string }[];
+      const detail = plan.map((r) => r.detail).join(" | ");
+      expect(detail).toContain("idx_watch_events_watched_at");
+      expect(detail).not.toContain("TEMP B-TREE");
+    } else {
+      const rows = (await db.prepare("SELECT indexname FROM pg_indexes WHERE tablename = 'watch_events'").all()) as { indexname: string }[];
+      expect(rows.map((r) => r.indexname)).toContain("idx_watch_events_watched_at");
+    }
   });
 });

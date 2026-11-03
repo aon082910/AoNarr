@@ -312,10 +312,14 @@ one book.
 - **Active session list + revoke** — Users page lists every currently-active household session
   (user, last-active time, sign-in time, device/browser user agent) with a one-click Revoke that
   force-logs-out that device immediately.
-- **Scheduled automatic backups** — optionally configure a backup directory, interval (hours), and
-  keep-count in System; an hourly check writes a new timestamped DB snapshot once the interval has
-  elapsed and rotates out the oldest backups beyond the keep-count. Separate from the existing
-  one-click manual backup/restore.
+- **Scheduled automatic backups** — on by default (daily, keep 7) into `Backups/scheduled` in the
+  config volume; the backup directory, interval (hours) and keep-count can be changed in System. An
+  hourly check writes a new timestamped DB snapshot once the interval has elapsed and rotates out the
+  oldest scheduled backups beyond the keep-count (a backup taken with Backup Now is never rotated). A
+  failed run shows on the Health tab. The zip runs on a worker thread, and a restore checks the
+  uploaded database before touching the live one. When a new image starts for the first time AoNarr
+  also saves a copy of the database in `Backups/pre-migration` (newest 3 kept) before its schema
+  migrations run. Separate from the existing one-click manual backup/restore.
 - **CSV export of library** — an admin-only "Export CSV" button on the Library page (respecting the
   current type filter) and `GET /api/media/export.csv` download a flat CSV of the library for
   spreadsheet tracking outside the app.

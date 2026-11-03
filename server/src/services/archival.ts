@@ -6,6 +6,7 @@ import { getSetting } from "./settingsStore.js";
 import { fetchWatchedFiles, getMediaServerConfig, type WatchedFile } from "./mediaServer.js";
 import { recycleFile } from "./recycleBin.js";
 import { createOfflineStorageCheck } from "./deletedFileCheck.js";
+import { createYielder } from "./fsAsync.js";
 
 /**
  * Plex/Jellyfin/Emby usually mount the library at a different path than AoNarr sees (e.g. Plex's
@@ -228,8 +229,10 @@ export async function getUpcomingArchivals(): Promise<ArchivalCandidate[]> {
 
   const candidates: ArchivalCandidate[] = [];
 
+  const giveEventLoopATurn = createYielder(); // a request path: the in-memory matching must not hold the event loop
   const singleItems = (await db.prepare("SELECT * FROM media_items WHERE has_file = 1 AND protected = 0 AND path IS NOT NULL").all()) as any[];
   for (const item of singleItems) {
+    await giveEventLoopATurn();
     const match = findWatchedMatch(item.path, watchedIndex);
     if (!match) continue;
     const retentionDays = resolveRetentionDays(item.id, afterDays, overridesByItem);
@@ -251,6 +254,7 @@ export async function getUpcomingArchivals(): Promise<ArchivalCandidate[]> {
     )
     .all()) as any[];
   for (const ep of episodes) {
+    await giveEventLoopATurn();
     const match = findWatchedMatch(ep.file_path, watchedIndex);
     if (!match) continue;
     const retentionDays = resolveRetentionDays(ep.media_item_id, afterDays, overridesByItem);
@@ -272,6 +276,7 @@ export async function getUpcomingArchivals(): Promise<ArchivalCandidate[]> {
     )
     .all()) as any[];
   for (const sub of subItems) {
+    await giveEventLoopATurn();
     const match = findWatchedMatch(sub.file_path, watchedIndex);
     if (!match) continue;
     const retentionDays = resolveRetentionDays(sub.media_item_id, afterDays, overridesByItem);
@@ -318,11 +323,13 @@ export async function runAutoArchival(): Promise<void> {
   // A file on an unmounted share or a dead rclone/debrid mount looks already gone, and the recycle
   // bin reports a missing file as removed: its row would be cleared and unmonitored for good.
   const isOffline = await createOfflineStorageCheck("archival");
+  const giveEventLoopATurn = createYielder(); // the matching below is in memory: nothing else lets timers and HTTP run
 
   const singleItems = (await db
     .prepare("SELECT * FROM media_items WHERE has_file = 1 AND protected = 0 AND path IS NOT NULL")
     .all()) as any[];
   for (const item of singleItems) {
+    await giveEventLoopATurn();
     const match = findWatchedMatch(item.path, watchedIndex);
     if (!match) continue;
     const retentionDays = resolveRetentionDays(item.id, afterDays, overridesByItem);
@@ -351,6 +358,7 @@ export async function runAutoArchival(): Promise<void> {
     )
     .all()) as any[];
   for (const ep of episodes) {
+    await giveEventLoopATurn();
     const match = findWatchedMatch(ep.file_path, watchedIndex);
     if (!match) continue;
     const retentionDays = resolveRetentionDays(ep.media_item_id, afterDays, overridesByItem);
@@ -376,6 +384,7 @@ export async function runAutoArchival(): Promise<void> {
     )
     .all()) as any[];
   for (const sub of subItems) {
+    await giveEventLoopATurn();
     const match = findWatchedMatch(sub.file_path, watchedIndex);
     if (!match) continue;
     const retentionDays = resolveRetentionDays(sub.media_item_id, afterDays, overridesByItem);

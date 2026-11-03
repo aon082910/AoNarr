@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -22,6 +23,16 @@ vi.mock("../src/services/scheduledBackup.js", async (importOriginal) => {
     },
   };
 });
+
+/** A real, tiny SQLite database with the tables every AoNarr database has: a restore now opens the uploaded
+ * file and checks it before answering, so a bare "SQLite format 3" header no longer passes. */
+function validBackupDb(): Buffer {
+  const raw = new Database(":memory:");
+  raw.exec("CREATE TABLE media_items (id INTEGER PRIMARY KEY, title TEXT); CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);");
+  const bytes = raw.serialize();
+  raw.close();
+  return bytes;
+}
 
 let app: Express;
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
@@ -156,7 +167,7 @@ describe("POST /api/system/backup/restore — encryption key", () => {
       vi.useFakeTimers({ toFake: ["setTimeout"] });
       const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
       try {
-        const sqliteHeader = Buffer.concat([Buffer.from("SQLite format 3\0", "utf-8"), Buffer.alloc(84)]);
+        const sqliteHeader = validBackupDb();
         const res = await request(app)
           .post("/api/system/backup/restore")
           .set("X-Api-Key", apiKey)
@@ -315,7 +326,6 @@ describe("POST /api/system/backup/restore — running imports", () => {
     async () => {
       const { config } = await import("../src/config.js");
       const { db: sqliteDb } = await import("../src/db/client.js");
-      const Database = (await import("better-sqlite3")).default;
       vi.useFakeTimers({ toFake: ["setTimeout"] });
       const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
       // Stops the restore at its destructive step, so this file's own database survives the test.
@@ -324,7 +334,7 @@ describe("POST /api/system/backup/restore — running imports", () => {
       });
       const importing = await holdImport(9001);
       try {
-        const sqliteHeader = Buffer.concat([Buffer.from("SQLite format 3\0", "utf-8"), Buffer.alloc(84)]);
+        const sqliteHeader = validBackupDb();
         const res = await request(app)
           .post("/api/system/backup/restore")
           .set("X-Api-Key", apiKey)
@@ -374,7 +384,7 @@ describe("POST /api/system/backup/restore — running imports", () => {
       });
       const poll = await runQueuePoll([9101, 9102]);
       try {
-        const sqliteHeader = Buffer.concat([Buffer.from("SQLite format 3\0", "utf-8"), Buffer.alloc(84)]);
+        const sqliteHeader = validBackupDb();
         const res = await request(app)
           .post("/api/system/backup/restore")
           .set("X-Api-Key", apiKey)
@@ -516,5 +526,88 @@ describe("restoredDbNeedsBundleKey", () => {
       expect(await restoredDbNeedsBundleKey(Buffer.from(otherKey), true)).toBe(true);
       expect(await restoredDbNeedsBundleKey(Buffer.from(otherKey), false)).toBe(false);
     });
+  });
+});
+
+describe("GET /api/system/backup (Backup Now)", () => {
+  it("writes a manual-named bundle into the default folder when none is set, where the schedule never rotates it, and lists it (RB2)", async () => {
+    const { config } = await import("../src/config.js");
+    const defaultDir = path.join(config.configDir, "Backups", "scheduled");
+    fs.rmSync(defaultDir, { recursive: true, force: true });
+    try {
+      const res = await request(app).get("/api/system/backup").set("X-Api-Key", apiKey).buffer(true).parse((r, cb) => {
+        const chunks: Buffer[] = [];
+        r.on("data", (c: Buffer) => chunks.push(c));
+        r.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+      expect(res.status).toBe(200);
+
+      const written = fs.readdirSync(defaultDir);
+      expect(written).toHaveLength(1);
+      expect(written[0]).toMatch(/^aonarr-manual-.*\.aonarrbackup$/);
+
+      const list = await request(app).get("/api/system/backups").set("X-Api-Key", apiKey);
+      expect(list.body.backups.map((b: { fileName: string }) => b.fileName)).toEqual(written);
+    } finally {
+      fs.rmSync(defaultDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("POST /api/system/backup/restore refuses an unusable backup before changing anything (RB10)", () => {
+  async function restoreAttempt(body: Buffer) {
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    try {
+      const res = await request(app).post("/api/system/backup/restore").set("X-Api-Key", apiKey).set("Content-Type", "application/octet-stream").send(body);
+      expect(exit).not.toHaveBeenCalled();
+      return res;
+    } finally {
+      exit.mockRestore();
+    }
+  }
+
+  it.skipIf(process.env.AONARR_DATABASE_DRIVER === "postgres")("answers 400 for a file that has the SQLite header and nothing behind it", async () => {
+    const res = await restoreAttempt(Buffer.concat([Buffer.from("SQLite format 3\0", "utf-8"), Buffer.alloc(84)]));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/cannot be restored/);
+  });
+
+  it.skipIf(process.env.AONARR_DATABASE_DRIVER === "postgres")("answers 400 for another program's SQLite database", async () => {
+    const raw = new Database(":memory:");
+    raw.exec("CREATE TABLE unrelated (id INTEGER)");
+    const bytes = raw.serialize();
+    raw.close();
+    const res = await restoreAttempt(bytes);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/not an AoNarr database/);
+  });
+
+  it("answers 400, not a bare 500, for a truncated bundle", async () => {
+    const zip = new AdmZip();
+    zip.addFile("db.db", validBackupDb());
+    const whole = zip.toBuffer();
+    const res = await restoreAttempt(whole.subarray(0, Math.floor(whole.length / 2)));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/could not be read/);
+  });
+});
+
+describe("GET /api/system/health shows a failed backup (RB2)", () => {
+  afterEach(() => {
+    setSetting("backupEnabled", "0");
+    setSetting("backupProblem", "");
+  });
+
+  it("adds the failure to the config warnings while scheduled backups are on, and drops it when they are off", async () => {
+    setSetting("backupEnabled", "1");
+    setSetting("backupProblem", "Scheduled backup failed: disk full");
+
+    let res = await request(app).get("/api/system/health").set("X-Api-Key", apiKey);
+    expect(res.status).toBe(200);
+    expect(res.body.configWarnings).toContainEqual({ key: "backup_failed", message: "Scheduled backup failed: disk full" });
+
+    setSetting("backupEnabled", "0");
+    res = await request(app).get("/api/system/health").set("X-Api-Key", apiKey);
+    expect(res.body.configWarnings.some((w: { key: string }) => w.key === "backup_failed")).toBe(false);
   });
 });

@@ -21,7 +21,7 @@ The API's own options — including the optional AONARR_CORS_ALLOWED_ORIGINS, fo
   <WebUI>http://[IP]:[PORT:9876]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/aon082910/AoNarr/main/templates/aonarr-web.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/aon082910/AoNarr/main/web/public/icon.svg</Icon>
-  <ExtraParams/>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>

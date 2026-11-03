@@ -49,6 +49,9 @@ RUN GOSU_ARCH="$(dpkg --print-architecture)" \
     && chmod +x /usr/local/bin/gosu
 ARG BUILD_TIME=""
 ENV NODE_ENV=production
+# A file call stuck on a dead mount holds one libuv thread for as long as the mount hangs; the default of 4
+# would let a few of them stall DNS, async fs and zlib for the whole process.
+ENV UV_THREADPOOL_SIZE=16
 ENV AONARR_CONFIG_DIR=/config
 ENV AONARR_BUILD_TIME=$BUILD_TIME
 ENV AONARR_IMAGE_TAG=server
@@ -58,6 +61,9 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY CHANGELOG.md ./
+# Without --build-arg BUILD_TIME the image still gets a build time (config.ts reads this file): the update
+# check and the database copy taken before migrations are keyed on it.
+RUN if [ -z "$BUILD_TIME" ]; then date -u +%Y-%m-%dT%H:%M:%SZ > /app/.build-time; fi
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

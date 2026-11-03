@@ -727,3 +727,55 @@ describe("checkForDeletedFiles — unreachable mount inside a root folder", () =
     expect(await db.prepare("SELECT has_file, path, monitored FROM media_items WHERE id = ?").get(id)).toEqual({ has_file: 0, path: null, monitored: 0 });
   });
 });
+
+describe("checkForDeletedFiles on a large library and a hung mount (RB1, RB11)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps timers and HTTP running while it walks thousands of rows", async () => {
+    const { checkForDeletedFiles } = await import("../src/services/deletedFileCheck.js");
+    const present = realFile("walk-present.mkv");
+    await db.transaction(async () => {
+      const insert = db.prepare(
+        `INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, path) VALUES ('movie', 'Walk', 'walk', 1, 1, 'unknown', ?)`
+      );
+      for (let i = 0; i < 4000; i++) await insert.run(present);
+    });
+    let ticks = 0;
+    const ticker = setInterval(() => ticks++, 2);
+    try {
+      const result = await checkForDeletedFiles();
+      expect(result.checked).toBeGreaterThanOrEqual(4000);
+      expect(result.missing).toBe(0);
+      expect(result.aborted).toBe(false);
+      // The old loop (a sync existsSync plus an awaited statement per row) recorded none.
+      expect(ticks).toBeGreaterThan(0);
+    } finally {
+      clearInterval(ticker);
+      await db.prepare("DELETE FROM media_items WHERE title = 'Walk'").run();
+    }
+  }, 60_000);
+
+  it("stops cleanly when a mount stops answering: reports it, keeps the hung file, and still rolls up what it cleared", async () => {
+    const { checkForDeletedFiles } = await import("../src/services/deletedFileCheck.js");
+    const hungPath = path.join(tmpDir, "hang-mount", "Movie (2020)", "movie.mkv");
+    const goneId = await insertMovie(goneFile("hang-test-gone.mkv"));
+    const hungId = await insertMovie(hungPath);
+    const real = fs.promises.access;
+    vi.spyOn(fs.promises, "access").mockImplementation(((p: unknown, ...rest: unknown[]) =>
+      String(p).includes("hang-mount") ? new Promise<void>(() => {}) : (real as any)(p, ...rest)) as any);
+    try {
+      const result = await checkForDeletedFiles({ fsTimeoutMs: 40 });
+
+      expect(result.aborted).toBe(true);
+      // The hung file is not read as gone ...
+      expect(await db.prepare("SELECT has_file, path FROM media_items WHERE id = ?").get(hungId)).toEqual({ has_file: 1, path: hungPath });
+      // ... and a file that really is gone, checked before the mount stalled, was still cleared and reported.
+      expect(await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(goneId)).toEqual({ has_file: 0 });
+      expect(result.cleared.mediaItems).toContain(goneId);
+    } finally {
+      await db.prepare("DELETE FROM media_items WHERE id IN (?, ?)").run(goneId, hungId);
+    }
+  });
+});

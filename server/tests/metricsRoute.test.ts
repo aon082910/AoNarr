@@ -106,8 +106,8 @@ describe("GET /api/metrics", () => {
   it("reports the free space the server can actually use, not blocks reserved for root", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-metrics-reserved-"));
     const id = Number((await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, 'movie')").run(dir)).lastInsertRowid);
-    const realStatfs = fs.statfsSync;
-    vi.spyOn(fs, "statfsSync").mockImplementation(((p: string, ...rest: unknown[]) =>
+    const realStatfs = fs.promises.statfs;
+    vi.spyOn(fs.promises, "statfs").mockImplementation((async (p: string, ...rest: unknown[]) =>
       p === dir ? ({ bfree: 30, bavail: 10, blocks: 100, bsize: 1000 } as any) : (realStatfs as any)(p, ...rest)) as any);
     vi.useFakeTimers({ toFake: ["Date"] });
     // Later than every earlier test's clock, so the cached disk gauges are recomputed.

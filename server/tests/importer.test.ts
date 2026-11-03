@@ -2405,7 +2405,8 @@ describe("placeAlbumFiles", () => {
   });
 
   it("records a manual import of an album's tracks, one call per track, as one import of the album", async () => {
-    const { findRepeatedImports } = await import("../src/services/duplicates.js");
+    const { findRepeatedImports, clearRepeatedImportsCache } = await import("../src/services/duplicates.js");
+    clearRepeatedImportsCache();
     const folder = await insertRootFolder("artist");
     const { artistId, albumId } = await insertArtistAlbum(folder.id);
     const names = ["01 - Track One.mp3", "02 - Track Two.mp3", "03 - Track Three.mp3"];

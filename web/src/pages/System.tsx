@@ -43,6 +43,10 @@ interface UpdateCheckResult {
   latestRound: number | null;
   latestTitle: string | null;
   updateAvailable: boolean;
+  source?: "docker-hub" | "changelog";
+  imageTag?: string | null;
+  currentBuildTime?: string | null;
+  latestPushedAt?: string | null;
 }
 
 interface ArchivalCandidate {
@@ -746,10 +750,11 @@ export default function System() {
       <h2>Updates</h2>
       <div className="form-panel">
         <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
-          AoNarr ships as a rolling build (no numbered releases), so this compares the changelog
-          round this container was built from against the latest one on GitHub's main branch —
-          not a semver check. A newer round means new code to pull (rebuild/pull a fresh image),
-          not something this button can install for you.
+          AoNarr ships as a rolling build (no numbered releases). A container built from a Docker
+          image compares its build time with when Docker Hub's copy of the same tag was last pushed;
+          a local or dev build compares the changelog round with the latest one on GitHub's main
+          branch. Either way a newer build means pulling a fresh image, not something this button
+          can install for you.
         </p>
         <button className="secondary" onClick={runUpdateCheck} disabled={checkingUpdate}>
           {checkingUpdate ? "Checking..." : "Check for updates"}
@@ -757,7 +762,15 @@ export default function System() {
         {updateCheckError && <p style={{ color: "var(--danger)" }}>{updateCheckError}</p>}
         {updateCheck && (
           <p style={{ marginTop: 10 }}>
-            Running: Round {updateCheck.currentRound ?? "?"}
+            {updateCheck.source === "docker-hub" && (
+              <>
+                Running: image "{updateCheck.imageTag}" built {updateCheck.currentBuildTime ?? "at an unknown time"}
+                <br />
+                Docker Hub: pushed {updateCheck.latestPushedAt ?? "at an unknown time"}
+                <br />
+              </>
+            )}
+            Changelog here: Round {updateCheck.currentRound ?? "?"}
             {updateCheck.currentTitle ? ` — ${updateCheck.currentTitle}` : ""}
             <br />
             Latest on GitHub: Round {updateCheck.latestRound ?? "?"}
@@ -1040,23 +1053,26 @@ export default function System() {
             key: "scheduledBackups",
             label: "Scheduled Backups",
             description: "Periodic local + optional S3 backups",
-            badge: settings.backupEnabled === "1" ? "Enabled" : "Disabled",
-            badgeOk: settings.backupEnabled === "1",
+            badge: settings.backupEnabled === "0" ? "Disabled" : "Enabled",
+            badgeOk: settings.backupEnabled !== "0",
             render: () => (
               <div>
                 <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
                   Periodically writes a timestamped copy of the same database snapshot into a folder on
                   disk (e.g. a mapped Unraid share), keeping only the most recent N copies. Runs on an
                   hourly check, so a new backup lands within an hour of the configured interval elapsing.
+                  On by default: with no directory set, backups go to Backups/scheduled in the config
+                  volume. A backup you take with Backup Now is never deleted by the schedule. A failed run
+                  is shown on the Health tab.
                 </p>
                 <label htmlFor="system-enable-scheduled-backups-1">Enable scheduled backups</label>
                 <select id="system-enable-scheduled-backups-1"
                   key={settings.backupEnabled ?? "backup-enabled-empty"}
-                  defaultValue={settings.backupEnabled ?? "0"}
+                  defaultValue={settings.backupEnabled ?? "1"}
                   onChange={(e) => saveSetting("backupEnabled", e.target.value)}
                 >
-                  <option value="0">Disabled</option>
                   <option value="1">Enabled</option>
+                  <option value="0">Disabled</option>
                 </select>
                 <label htmlFor="system-backup-dir">Backup directory (path inside the container)</label>
                 <div className="toolbar">
@@ -1064,7 +1080,7 @@ export default function System() {
                     id="system-backup-dir"
                     key={settings.backupDir ?? "backup-dir-empty"}
                     defaultValue={settings.backupDir ?? ""}
-                    placeholder="/backups"
+                    placeholder="Default: Backups/scheduled in the config volume"
                     onBlur={(e) => saveBackupDir(e.target.value)}
                     style={{ flex: 1 }}
                   />
@@ -1164,7 +1180,7 @@ export default function System() {
       <h2 style={{ marginTop: 24 }}>Existing Backups</h2>
       {backups.length === 0 ? (
         <p className="empty">
-          {settings.backupDir ? "No backups yet — use Backup Now above, or wait for the next scheduled run." : "Set a backup directory above to see existing backups here."}
+          No backups yet — use Backup Now above, or wait for the next scheduled run.
         </p>
       ) : (
         <table>

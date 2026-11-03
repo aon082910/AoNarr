@@ -3,6 +3,7 @@ import path from "node:path";
 import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
+import { FS_CALL_TIMEOUT_MS, StorageTimeoutError, createYielder, pathExistsAsync } from "./fsAsync.js";
 
 /** A readable directory with at least one entry. Reads only the first entry: this runs once per
  * missing file, and a root folder can hold thousands of show folders. */
@@ -173,9 +174,10 @@ export interface ClearedFileRows {
  * unmonitor just the ones still missing afterwards (unmonitorStillMissing).
  */
 export async function checkForDeletedFiles(
-  options: { holdUnmonitor?: boolean } = {}
-): Promise<{ checked: number; missing: number; cleared: ClearedFileRows }> {
+  options: { holdUnmonitor?: boolean; fsTimeoutMs?: number } = {}
+): Promise<{ checked: number; missing: number; cleared: ClearedFileRows; aborted: boolean }> {
   const unmonitor = getSetting("unmonitorDeletedFiles") === "1" && !options.holdUnmonitor;
+  const fsTimeoutMs = options.fsTimeoutMs ?? FS_CALL_TIMEOUT_MS;
   let checked = 0;
   let missing = 0;
   const cleared: ClearedFileRows = { mediaItems: [], episodes: [], subItems: [] };
@@ -188,6 +190,23 @@ export async function checkForDeletedFiles(
   // populated with its links while the mount they point into is down, so the links' targets are
   // checked too.
   const isOffline = await createOfflineStorageCheck("deletedFileCheck");
+  // Whole-library loop: each file test is async and the loop yields every few ms, so the API, SSE and the
+  // Docker health check keep answering while it runs (see fsAsync.ts). A mount that stops answering aborts
+  // the check with a StorageTimeoutError, not "every file under it is gone".
+  const giveEventLoopATurn = createYielder();
+  let aborted = false;
+  // A mount that stops answering ends the loops (the file is left as it was, never read as gone); what was
+  // already cleared is still rolled up below, and the job skips its follow-up scan, which would hit the same mount.
+  const fileExists = async (filePath: string): Promise<boolean> => {
+    try {
+      return await pathExistsAsync(filePath, fsTimeoutMs);
+    } catch (err) {
+      if (!(err instanceof StorageTimeoutError)) throw err;
+      aborted = true;
+      log.warn(`[deletedFileCheck] ${err.message} - stopping the check here`);
+      return true;
+    }
+  };
 
   // Each update is also matched on the path that was read: a file imported or renamed onto the row
   // since then must not be cleared.
@@ -197,7 +216,9 @@ export async function checkForDeletedFiles(
   }[];
   for (const row of items) {
     checked++;
-    if (fs.existsSync(row.path) || isOffline(row.path)) continue;
+    await giveEventLoopATurn();
+    if (aborted) break;
+    if ((await fileExists(row.path)) || isOffline(row.path)) continue;
     const result = await db
       .prepare(
         `UPDATE media_items SET has_file = 0, path = NULL, size_bytes = NULL, media_info = NULL, auto_search_misses = 0${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND path = ?`
@@ -214,7 +235,9 @@ export async function checkForDeletedFiles(
     .all()) as { id: number; file_path: string }[];
   for (const row of episodes) {
     checked++;
-    if (fs.existsSync(row.file_path) || isOffline(row.file_path)) continue;
+    await giveEventLoopATurn();
+    if (aborted) break;
+    if ((await fileExists(row.file_path)) || isOffline(row.file_path)) continue;
     const result = await db
       .prepare(
         `UPDATE episodes SET has_file = 0, file_path = NULL, size_bytes = NULL, media_info = NULL, auto_search_misses = 0${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND file_path = ?`
@@ -231,7 +254,9 @@ export async function checkForDeletedFiles(
     .all()) as { id: number; file_path: string }[];
   for (const row of subItems) {
     checked++;
-    if (fs.existsSync(row.file_path) || isOffline(row.file_path)) continue;
+    await giveEventLoopATurn();
+    if (aborted) break;
+    if ((await fileExists(row.file_path)) || isOffline(row.file_path)) continue;
     const result = await db
       .prepare(
         `UPDATE sub_items SET has_file = 0, file_path = NULL, size_bytes = NULL, media_info = NULL, auto_search_misses = 0${unmonitor ? ", monitored = 0" : ""} WHERE id = ? AND file_path = ?`
@@ -261,7 +286,7 @@ export async function checkForDeletedFiles(
       `[deletedFileCheck] found ${missing} file(s) no longer on disk out of ${checked} checked${unmonitor ? " — unmonitored" : ""}`
     );
   }
-  return { checked, missing, cleared };
+  return { checked, missing, cleared, aborted };
 }
 
 /** The "Unmonitor Deleted" half of checkForDeletedFiles, for rows it cleared with `holdUnmonitor`: only

@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
-import { checkForUpdate } from "../src/services/updateCheck.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { checkForUpdate, UPDATE_PUSH_GRACE_MS } from "../src/services/updateCheck.js";
+import { config } from "../src/config.js";
 
 function mockLocalChangelog(content: string | { throws: true }): void {
   const original = fs.readFileSync;
@@ -24,9 +27,14 @@ function mockRemoteFetch(response: { ok: boolean; status?: number; text?: string
   );
 }
 
+const originalImageTag = config.imageTag;
+const originalBuildTime = config.buildTime;
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  config.imageTag = originalImageTag;
+  config.buildTime = originalBuildTime;
 });
 
 describe("checkForUpdate", () => {
@@ -114,5 +122,119 @@ describe("checkForUpdate", () => {
     const result = await checkForUpdate();
 
     expect(result.currentTitle).toBe("Padded Title");
+  });
+});
+
+function mockHubAndGithub(opts: { hub: { ok: boolean; status?: number; body?: unknown }; github?: { ok: boolean; text?: string } | "throws" }): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(async (url: string) => {
+    if (String(url).includes("hub.docker.com")) {
+      if (!opts.hub.ok) return { ok: false, status: opts.hub.status ?? 500 } as any;
+      return { ok: true, json: async () => opts.hub.body ?? {} } as any;
+    }
+    if (opts.github === "throws") throw new Error("github unreachable");
+    const g = opts.github ?? { ok: true, text: "## Round 372 — Remote\n" };
+    if (!g.ok) return { ok: false, status: 503 } as any;
+    return { ok: true, text: async () => g.text ?? "" } as any;
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+describe("checkForUpdate on a built image (RB5)", () => {
+  const BUILT = "2026-10-20T10:00:00Z";
+
+  it("is up to date when the tag was pushed just after this image was built, whatever the changelog rounds say", async () => {
+    config.imageTag = "combined";
+    config.buildTime = BUILT;
+    // The bundled changelog is older than GitHub's, which used to read as "update available" for ever.
+    mockLocalChangelog("## Round 349 — Old\n");
+    mockHubAndGithub({ hub: { ok: true, body: { tag_last_pushed: "2026-10-20T10:12:00Z" } }, github: { ok: true, text: "## Round 372 — New\n" } });
+
+    const result = await checkForUpdate();
+
+    expect(result.source).toBe("docker-hub");
+    expect(result.updateAvailable).toBe(false);
+    expect(result.currentRound).toBe(349);
+    expect(result.latestRound).toBe(372);
+  });
+
+  it("reports an update when the tag was pushed well after this image was built", async () => {
+    config.imageTag = "combined";
+    config.buildTime = BUILT;
+    mockLocalChangelog("## Round 372 — Same\n");
+    const pushed = new Date(new Date(BUILT).getTime() + UPDATE_PUSH_GRACE_MS + 60_000).toISOString();
+    mockHubAndGithub({ hub: { ok: true, body: { tag_last_pushed: pushed } }, github: { ok: true, text: "## Round 372 — Same\n" } });
+
+    const result = await checkForUpdate();
+
+    expect(result.updateAvailable).toBe(true);
+    expect(result.latestPushedAt).toBe(pushed);
+    expect(result.latestId).toBe(pushed);
+  });
+
+  it("still answers when GitHub is unreachable, because the rounds are only for display", async () => {
+    config.imageTag = "combined";
+    config.buildTime = BUILT;
+    mockLocalChangelog("## Round 372 — Same\n");
+    mockHubAndGithub({ hub: { ok: true, body: { last_updated: "2026-11-01T00:00:00Z" } }, github: "throws" });
+
+    const result = await checkForUpdate();
+
+    expect(result.updateAvailable).toBe(true);
+    expect(result.latestRound).toBeNull();
+  });
+
+  it("throws when Docker Hub cannot be read, instead of guessing", async () => {
+    config.imageTag = "combined";
+    config.buildTime = BUILT;
+    mockLocalChangelog("## Round 372 — Same\n");
+    mockHubAndGithub({ hub: { ok: false, status: 429 } });
+
+    await expect(checkForUpdate()).rejects.toThrow(/429/);
+  });
+
+  it("does not trust a build time that names no zone, and uses the changelog instead", async () => {
+    config.imageTag = "combined";
+    config.buildTime = "2026-10-20 10:00:00";
+    mockLocalChangelog("## Round 10 — Local\n");
+    const fetchMock = mockHubAndGithub({ hub: { ok: true, body: { tag_last_pushed: "2027-01-01T00:00:00Z" } }, github: { ok: true, text: "## Round 10 — Local\n" } });
+
+    const result = await checkForUpdate();
+
+    expect(result.source).toBe("changelog");
+    expect(result.updateAvailable).toBe(false);
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes("hub.docker.com"))).toBe(false);
+  });
+
+  it("is up to date when the image was pushed hours after the build (build, test, push)", async () => {
+    config.imageTag = "combined";
+    config.buildTime = BUILT;
+    mockLocalChangelog("## Round 372 — Same\n");
+    mockHubAndGithub({ hub: { ok: true, body: { tag_last_pushed: "2026-10-20T14:30:00Z" } }, github: { ok: true, text: "## Round 372 — Same\n" } });
+
+    expect((await checkForUpdate()).updateAvailable).toBe(false);
+  });
+
+  it("falls back to the changelog when the build time is not a date", async () => {
+    config.imageTag = "combined";
+    config.buildTime = "not-a-date";
+    mockLocalChangelog("## Round 10 — Local\n");
+    const fetchMock = mockHubAndGithub({ hub: { ok: true, body: {} }, github: { ok: true, text: "## Round 12 — Remote\n" } });
+
+    const result = await checkForUpdate();
+
+    expect(result.source).toBe("changelog");
+    expect(result.updateAvailable).toBe(true);
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes("hub.docker.com"))).toBe(false);
+  });
+});
+
+describe("the changelog bundled into the image (RB5)", () => {
+  it("server/CHANGELOG.md is the same file as the repository's CHANGELOG.md, so the server image cannot ship a stale one", () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const serverCopy = path.join(here, "..", "CHANGELOG.md");
+    const rootCopy = path.join(here, "..", "..", "CHANGELOG.md");
+    if (!fs.existsSync(rootCopy)) return; // the test container mounts only server/
+    expect(fs.readFileSync(serverCopy, "utf-8").replace(/\r\n/g, "\n")).toBe(fs.readFileSync(rootCopy, "utf-8").replace(/\r\n/g, "\n"));
   });
 });

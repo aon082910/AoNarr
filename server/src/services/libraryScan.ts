@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { db } from "../db/index.js";
+import { createYielder } from "./fsAsync.js";
 import { getMediaTypeConfig, isPlaceholderParent, isProbeableFile, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { parseReleaseTitle, FILE_NAME, type ParsedRelease } from "./releaseParser.js";
@@ -2837,6 +2838,8 @@ export async function backfillEpisodicAndCollectionHasFile(): Promise<void> {
  */
 export async function backfillMissingAlbumTracks(): Promise<void> {
   let fixed = 0;
+  // Runs after the port is open (index.ts), so it must not hold the event loop: each album is a folder walk.
+  const giveEventLoopATurn = createYielder();
   for (const type of MEDIA_TYPE_KEYS) {
     const cfg = getMediaTypeConfig(type);
     if (cfg.shape !== "collection" || !cfg.multiFilePerChild) continue;
@@ -2851,6 +2854,9 @@ export async function backfillMissingAlbumTracks(): Promise<void> {
       .all(type)) as { id: number; file_path: string }[];
 
     for (const album of albums) {
+      await giveEventLoopATurn();
+      // A scan running in the meantime may have filled this album's tracks since the list was read.
+      if (await db.prepare("SELECT 1 AS x FROM tracks WHERE sub_item_id = ? LIMIT 1").get(album.id)) continue;
       // Recursive — a multi-disc album's file_path is the album's own folder, with tracks actually
       // living one level deeper in per-disc subfolders (CD1/CD2/...), not directly inside it.
       const files: string[] = [];

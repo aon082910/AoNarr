@@ -692,6 +692,9 @@ CREATE TABLE IF NOT EXISTS watch_events (
 CREATE INDEX IF NOT EXISTS idx_watch_events_media_item_id ON watch_events(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_watch_events_episode_id ON watch_events(episode_id);
 CREATE INDEX IF NOT EXISTS idx_watch_events_sub_item_id ON watch_events(sub_item_id);
+-- The Dashboard recently-watched list reads ORDER BY watched_at DESC LIMIT 50 every minute, and without this
+-- it scans and sorts every row (124 ms per call at 660,000 rows).
+CREATE INDEX IF NOT EXISTS idx_watch_events_watched_at ON watch_events(watched_at);
 
 -- Per-release-group grab outcome history — a group that keeps producing releases that fail to
 -- import (fake/mislabeled/corrupt) or get blocklisted is a weak tiebreaker signal against one

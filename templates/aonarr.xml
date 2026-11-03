@@ -21,7 +21,7 @@ Point the Downloads and Media paths at the same shares your download client and 
   <WebUI>http://[IP]:[PORT:9876]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/aon082910/AoNarr/main/templates/aonarr.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/aon082910/AoNarr/main/web/public/icon.svg</Icon>
-  <ExtraParams/>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>

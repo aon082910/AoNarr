@@ -3,6 +3,114 @@
 All notable changes to AoNarr, newest first. See README.md's Verification section for the full
 build/test log behind each round.
 
+## Round 372 — Selectable UI designs (Classic + six redesigns)
+
+Added an in-app design picker. **Classic is the default and is unchanged** — nothing looks different
+until a user picks another design. The choice is per-browser (`localStorage`, key `aonarr_design`),
+like the light/dark theme and layout-width toggles, and every design supports both light and dark.
+
+### Added
+
+- **Six designs** — Midnight (refined slate-blue), Aurora (violet/teal, large rounded cards), Ember
+  (warm charcoal + amber), Noir (true black + gold, posters first), Paper (editorial ink, serif
+  headings, square corners), Terminal (monospace, dense, green). Source in `web/src/designs/`:
+  `modern.css` is the shared structural layer (every rule scoped under `:root[data-design]`, all
+  colors/radii/fonts/density from tokens), and `<id>.css` holds one design's tokens + signature rules.
+  Uses native CSS nesting, which Vite/esbuild lowers to plain selectors in the build.
+- **Picker** — palette button next to the theme toggle in the sidebar footer and the top bar
+  (`DesignToggle` → modal), plus an **Appearance** tab on the Account page (reachable by household
+  accounts too). `DesignPicker` is a native radio group with a live mini-preview per design, drawn
+  from that design's own tokens.
+- **`theme-init.js`** applies the saved design before React renders (no flash), and accepts
+  `?design=<id>` (e.g. `/?design=classic`) as a recovery link.
+
+### Fixed (in the new designs only — Classic is untouched)
+
+- Filled buttons and poster status strips now meet 4.5:1 text contrast (the original is 3.2:1 on
+  primary buttons, 2.3:1 white-on-green).
+- Visible `:focus-visible` rings on every control (the original has none).
+- Hover/pressed states use theme-aware tokens, so they show in light mode too.
+- 12px minimum text, 44px touch targets on coarse pointers, `prefers-reduced-motion` respected.
+- Palette contrast for all 12 design/theme combinations verified numerically (text ≥7:1, muted,
+  accent text, on-accent, status colors ≥4.5:1).
+
+### Known limitation
+
+- An admin's custom theme (Settings → General, free-form CSS served from `/api/theme.css`) is applied
+  on top of everything, but a selected design's rules are scoped under `:root[data-design]` and so
+  outrank plain `:root { --var }` or single-class overrides. Custom themes are reliable under
+  Classic; under another design they may need higher specificity. Not changed in this round.
+
+## Round 371 — Fixed a duplicate-season episode bug (multi-provider episode merge)
+
+Reported: "A Pup Named Scooby-Doo"'s season 4 was the same 5 episodes as the end of season 3, just
+reordered — one metadata provider splits a show's episodes into a different season count than
+another, and AoNarr's merge logic had no way to notice the two lists overlapped.
+
+### Fixed
+
+- **`mergeEpisodesIntoItem()`** (the shared insert-if-missing logic behind Refresh,
+  Match All Providers, and a new show's first episode sync) deduped an incoming episode only by
+  season+episode number, never by title — so a second provider's own season split for the same
+  real episodes always looked like new ones. Added a title-based dedup check (the same
+  exact-normalized-match convention already used elsewhere in this file): a non-placeholder title
+  that already matches a tracked episode is now treated as the same episode under different
+  numbering and backfills its air date instead of duplicating it. Two different episodes that both
+  happen to carry a generic placeholder title ("Episode 5") are explicitly excluded from the check,
+  so they're never wrongly merged into each other.
+- **A library-wide sweep found the same pattern in 158 shows.** After separating real bugs from
+  coincidence (course lecture titles and talk-show segment titles both naturally recur across
+  different real episodes and needed excluding as false positives — see the CHANGELOG-adjacent
+  session notes / project memory for the classification method), **4,065 phantom duplicate episode
+  rows were removed across 91 shows**, backfilling 2,431 air dates onto the surviving rows first.
+  42 pairs across 9 shows turned out to be two genuinely separate downloaded files for the same
+  episode (real wasted disk space, not a database bug) — left untouched pending a decision on
+  whether to recycle the extra file.
+
+### Tests
+
+- `mergeEpisodesIntoItem`: the exact "A Pup Named Scooby-Doo" regression (a second provider's
+  differently-numbered episode list gets treated as duplicates, not new episodes, backfilling air
+  dates onto the existing rows) and a negative case (two different episodes sharing only a generic
+  placeholder title are never merged into each other).
+
+## Round 370 — Duration column, a real Background Jobs widget, bulk-selected actions, icon-only
+topbar controls, and a Missing page broken down by library
+
+### Added
+
+- **Duration column** on the Library table/poster views for every type where a row's own runtime
+  is actually known and meaningful (Movies, Sports PPV) — deliberately excluded from TV Shows/Anime
+  (their `runtimeMinutes` is a single EPISODE's length, not the whole show's) and from ROMs (no game
+  metadata provider supplies a runtime at all). Shows in the default column set on fresh installs.
+- **A real Background Jobs widget** — Scan & Import, Refresh, Match All Providers, and Organize &
+  Rename were all fire-and-forget before this ("check the Logs page later"); they now report live
+  progress through a new server-side tracker (`services/backgroundJobs.ts`), shown in a floating
+  panel that can be minimized and stays visible across page navigation. The Media Analyzer's own
+  "Analyze Now" progress is folded into the same widget. A job whose total item count isn't known
+  yet shows an animated indeterminate bar instead of a misleading static full one.
+- **Bulk-selected Refresh / Match All Providers / Organize & Rename** — selecting items on a Library
+  page now offers these three actions scoped to just the selection instead of the whole library,
+  sharing the same background-job tracking/progress and the same "only one run at a time per type"
+  guard as the whole-library buttons.
+- **Icon-only theme/layout/log-out topbar controls** — new hand-drawn Sun/Moon, Maximize/Minimize,
+  and Log Out icons (`components/NavIcons.tsx`) replace the text-only buttons from an earlier round.
+- **Missing page broken down by library** — previously grouped by shape (three lumped sections that
+  mixed Online Videos/Books/Music together, and TV Shows/Anime/Sports/Adult together); now one
+  section per actual library type, in the same order as the sidebar.
+
+### Fixed
+
+- **Previous/Next pagination no longer jumps to the top of the page.** Clicking Prev/Next at the
+  bottom of a list (Library pages and 8 other paginated pages sharing `components/Pagination.tsx`)
+  used to leave the viewport wherever it landed once the new page rendered — usually the top —
+  forcing a full re-scroll to get back to the pagination controls. Root cause was two-fold: a
+  React rendering race (a page's new rows and its `loading` flag commit in separate renders, so
+  scrolling the instant `loading` clears could still measure the old page's layout) and a `useEffect`
+  cleanup-timing bug (a second, unrelated `loading` flicker was canceling the pending scroll via
+  React's automatic effect cleanup). Fixed by tracking the scroll timer in a ref instead of a
+  cleanup function.
+
 ## Round 349 — Fixed 3 of Round 348's known limitations, corrected an undocumented Round 348 fix
 
 An investigation into Round 348's documented limitations found that 3 of the 4 items were actually

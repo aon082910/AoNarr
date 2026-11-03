@@ -23,7 +23,7 @@ export interface RepeatedImport {
  * literally sitting side by side on disk — it reconstructs the pattern from the import history
  * instead, which is what actually indicates the behavior worth reviewing.
  */
-export async function findRepeatedImports(): Promise<RepeatedImport[]> {
+async function findRepeatedImportsUncached(): Promise<RepeatedImport[]> {
   const rows = (await db
     .prepare("SELECT media_item_id, data, created_at FROM history WHERE event_type = 'imported' ORDER BY created_at ASC")
     .all()) as { media_item_id: number; data: string | null; created_at: string }[];
@@ -85,4 +85,34 @@ export async function findRepeatedImports(): Promise<RepeatedImport[]> {
   }
 
   return out.sort((a, b) => b.importCount - a.importCount);
+}
+
+/** Loads and parses every 'imported' history row, and history is never pruned, so the scan grows
+ * with every import ever made (1.1 s with no timer tick at 200,000 imports). The Dashboard and the
+ * System page both reach it through /system/health. A few minutes of staleness is harmless for a
+ * "worth reviewing" hint; same TTL and in-flight sharing as upgradeCandidates.ts. */
+const REPEATED_IMPORTS_TTL_MS = 5 * 60 * 1000;
+let repeatedImportsCache: { at: number; repeats: RepeatedImport[] } | null = null;
+let repeatedImportsInFlight: Promise<RepeatedImport[]> | null = null;
+
+/** Test-only: a test that inserts history rows and calls findRepeatedImports() straight after needs
+ * a fresh scan, not whatever an earlier test cached. */
+export function clearRepeatedImportsCache(): void {
+  repeatedImportsCache = null;
+  repeatedImportsInFlight = null;
+}
+
+export function findRepeatedImports(): Promise<RepeatedImport[]> {
+  if (repeatedImportsCache && Date.now() - repeatedImportsCache.at < REPEATED_IMPORTS_TTL_MS) {
+    return Promise.resolve(repeatedImportsCache.repeats);
+  }
+  repeatedImportsInFlight ??= findRepeatedImportsUncached()
+    .then((repeats) => {
+      repeatedImportsCache = { at: Date.now(), repeats };
+      return repeats;
+    })
+    .finally(() => {
+      repeatedImportsInFlight = null;
+    });
+  return repeatedImportsInFlight;
 }

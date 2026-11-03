@@ -5,7 +5,10 @@ import { findRepeatedImports } from "../services/duplicates.js";
 import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { getHttpMetricsSamples } from "../services/httpMetrics.js";
-import fs from "node:fs";
+import { statfsAsync } from "../services/fsAsync.js";
+
+/** A scrape or status page must not wait out a dead mount. */
+const METRICS_STATFS_TIMEOUT_MS = 5000;
 
 export const metricsRouter = Router();
 
@@ -51,17 +54,15 @@ async function computeExpensiveGauges(): Promise<ExpensiveGauges> {
   const diskFree: Sample[] = [];
   const diskTotal: Sample[] = [];
   for (const f of folders) {
-    try {
-      const stat = fs.statfsSync(f.path);
-      // Identified by id/name, never the host path: the path would tell an anonymous caller how
-      // the server's storage is laid out.
-      const labels: Record<string, string> = { root_folder_id: String(f.id), media_type: f.mediaType };
-      if (f.name) labels.name = f.name;
-      diskFree.push({ labels, value: stat.bavail * stat.bsize });
-      diskTotal.push({ labels, value: stat.blocks * stat.bsize });
-    } catch {
-      // path not reachable — skip this folder's sample rather than emit a bogus 0
-    }
+    // statfsAsync: a dead mount costs this folder's sample, not the whole process (see fsAsync.ts).
+    const stat = await statfsAsync(f.path, METRICS_STATFS_TIMEOUT_MS).catch(() => null);
+    if (!stat) continue; // path not reachable — skip this folder's sample rather than emit a bogus 0
+    // Identified by id/name, never the host path: the path would tell an anonymous caller how
+    // the server's storage is laid out.
+    const labels: Record<string, string> = { root_folder_id: String(f.id), media_type: f.mediaType };
+    if (f.name) labels.name = f.name;
+    diskFree.push({ labels, value: stat.bavail * stat.bsize });
+    diskTotal.push({ labels, value: stat.blocks * stat.bsize });
   }
   return { repeatedImports, upgradeCandidates, diskFree, diskTotal };
 }

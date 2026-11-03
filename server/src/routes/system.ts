@@ -11,6 +11,12 @@ import { nowOffsetHoursExpr } from "../db/asyncDb.js";
 import { db as sqliteDb } from "../db/client.js";
 import {
   BACKUP_BUNDLE_EXTENSION,
+  MANUAL_BACKUP_PREFIX,
+  rotateManualBackups,
+  noteManualBackupSucceeded,
+  getBackupDir,
+  getBackupProblem,
+  checkSqliteBackup,
   writeBackupBundle,
   readBackupBundle,
   looksLikeBackupBundle,
@@ -40,6 +46,7 @@ import { findLibraryMismatches } from "../services/libraryValidation.js";
 import { getMediaServerConfig } from "../services/mediaServer.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
+import { createYielder, statfsAsync } from "../services/fsAsync.js";
 
 export const systemRouter = Router();
 systemRouter.use(requireAdmin);
@@ -270,19 +277,17 @@ systemRouter.get(
     const diskSpace = await Promise.all(
       folders.map(async (f) => {
         const forecast = await getStorageForecast(f.id);
-        try {
-          const stat = fs.statfsSync(f.path);
-          return {
-            path: f.path,
-            mediaType: f.mediaType,
-            // bavail, not bfree: the server runs unprivileged and can't use root-reserved blocks.
-            freeBytes: stat.bavail * stat.bsize,
-            totalBytes: stat.blocks * stat.bsize,
-            daysUntilFull: forecast?.daysUntilFull ?? null,
-          };
-        } catch {
-          return { path: f.path, mediaType: f.mediaType, freeBytes: null, totalBytes: null, daysUntilFull: null };
-        }
+        // statfsAsync: a dead mount reads as unknown free space for that folder, not a frozen server.
+        const stat = await statfsAsync(f.path, 5000).catch(() => null);
+        if (!stat) return { path: f.path, mediaType: f.mediaType, freeBytes: null, totalBytes: null, daysUntilFull: null };
+        return {
+          path: f.path,
+          mediaType: f.mediaType,
+          // bavail, not bfree: the server runs unprivileged and can't use root-reserved blocks.
+          freeBytes: stat.bavail * stat.bsize,
+          totalBytes: stat.blocks * stat.bsize,
+          daysUntilFull: forecast?.daysUntilFull ?? null,
+        };
       })
     );
 
@@ -405,6 +410,9 @@ systemRouter.get(
       configWarnings.push({ key: "no_download_client", message: "No enabled download client configured — grabs have nowhere to download to." });
     }
 
+    const backupProblem = getBackupProblem();
+    if (backupProblem) configWarnings.push({ key: "backup_failed", message: backupProblem });
+
     res.json({
       configWarnings,
       indexers: indexerHealth,
@@ -503,6 +511,7 @@ systemRouter.get(
     );
 
     const scanStartedAt = new Date().toISOString();
+    const giveEventLoopATurn = createYielder();
     const orphaned: { path: string; sizeBytes: number }[] = [];
     let skippedDirs = 0;
 
@@ -510,11 +519,14 @@ systemRouter.get(
       const extensions = getMediaTypeConfig(folder.mediaType).extensions;
       const since = !full && folder.lastScannedAt ? new Date(folder.lastScannedAt).getTime() : null;
 
-      const walk = (dir: string, insideKnownDir = false) => {
+      // Async, and yielding every few ms: the recursive readdirSync walk stalled the whole process for
+      // 301 ms per 50,000 files, and a hung mount would have stopped it for good (see fsAsync.ts).
+      const walk = async (dir: string, insideKnownDir = false): Promise<void> => {
+        await giveEventLoopATurn();
         const allKnown = insideKnownDir || knownDirs.has(path.resolve(dir));
         let entries: fs.Dirent[];
         try {
-          entries = fs.readdirSync(dir, { withFileTypes: true });
+          entries = await fs.promises.readdir(dir, { withFileTypes: true });
         } catch {
           return;
         }
@@ -527,7 +539,7 @@ systemRouter.get(
         let scanOwnFiles = true;
         if (since !== null) {
           try {
-            scanOwnFiles = fs.statSync(dir).mtimeMs > since;
+            scanOwnFiles = (await fs.promises.stat(dir)).mtimeMs > since;
           } catch {
             scanOwnFiles = false;
           }
@@ -537,7 +549,7 @@ systemRouter.get(
         for (const entry of entries) {
           const full = path.join(dir, entry.name);
           if (entry.isDirectory()) {
-            walk(full, allKnown);
+            await walk(full, allKnown);
           } else if (
             scanOwnFiles &&
             !allKnown &&
@@ -545,14 +557,14 @@ systemRouter.get(
             !knownPaths.has(full)
           ) {
             try {
-              orphaned.push({ path: full, sizeBytes: fs.statSync(full).size });
+              orphaned.push({ path: full, sizeBytes: (await fs.promises.stat(full)).size });
             } catch {
               orphaned.push({ path: full, sizeBytes: 0 });
             }
           }
         }
       };
-      walk(folder.path);
+      await walk(folder.path);
       await db.prepare("UPDATE root_folders SET last_scanned_at = ? WHERE id = ?").run(scanStartedAt, folder.id);
     }
 
@@ -615,27 +627,27 @@ const PG_DUMP_MAGIC = "PGDMP";
  * with the scheduled-backup job so both paths produce identically-restorable files. Bundling the
  * key means a restore onto a different config volume can still decrypt every stored credential.
  *
- * When a backup directory is configured (Settings → Backup), the bundle is written straight there
- * (same "aonarr-backup-<stamp>.aonarrbackup" naming the scheduled job uses) so it shows up in
- * "/backups" below immediately, matching how Radarr's own "Backup Now" populates its own list —
- * "backup now" and "the scheduled job" both just mean "write one of these files." Falls back to a
- * throwaway temp file (today's behavior) when no directory is configured, since there's nowhere to
- * list it from anyway. Either way, the response streamed back to the browser is identical. */
+ * The bundle is written straight into the backup directory (Settings → Backup, or the config
+ * volume's Backups/scheduled when none is set) so it shows up in "/backups" below immediately, matching
+ * how Radarr's own "Backup Now" populates its own list. It is named "aonarr-manual-<stamp>", not the
+ * scheduled job's "aonarr-backup-" prefix, because only scheduled backups are rotated out by the
+ * keep-count: a backup an admin took on purpose is never deleted by the schedule (only the newest
+ * MANUAL_BACKUP_KEEP of them are kept, so repeated downloads cannot fill the disk). */
 systemRouter.get(
   "/backup",
   asyncHandler(async (req, res) => {
-    const dir = getSetting("backupDir");
+    const dir = getBackupDir();
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const fileName = `aonarr-backup-${stamp}.${BACKUP_BUNDLE_EXTENSION}`;
-    if (dir) fs.mkdirSync(dir, { recursive: true });
-    const destPath = dir ? path.join(dir, fileName) : path.join(os.tmpdir(), fileName);
+    const fileName = `${MANUAL_BACKUP_PREFIX}${stamp}.${BACKUP_BUNDLE_EXTENSION}`;
+    fs.mkdirSync(dir, { recursive: true });
+    const destPath = path.join(dir, fileName);
     await writeBackupBundle(destPath);
+    rotateManualBackups(dir);
+    noteManualBackupSucceeded();
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "backup_downloaded");
     res.download(destPath, fileName, (err) => {
-      // Only clean up the throwaway temp-file case — a backup written into the configured
-      // directory stays there so it shows up in the list, same as a scheduled backup would.
-      if (!dir) fs.unlink(destPath, () => {});
+      // The file stays in the backup directory so it shows up in the list, same as a scheduled one.
       // Throwing here lands in process-level uncaughtException, not the route's error handler —
       // the handler promise already resolved when res.download() was called.
       if (err && !res.headersSent) res.status(500).json({ error: `Backup download failed: ${err.message}` });
@@ -653,8 +665,7 @@ const BACKUP_FILE_EXTENSIONS = [`.${BACKUP_BUNDLE_EXTENSION}`, ".db", ".dump"];
  * directory) and anything that isn't one of this app's own backup file extensions, so these routes
  * can only ever touch a file this app itself could have written here. */
 function resolveBackupFilePath(fileName: string): string {
-  const dir = getSetting("backupDir");
-  if (!dir) throw new HttpError(400, "No backup directory is configured");
+  const dir = getBackupDir();
   if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName.includes("..")) {
     throw new HttpError(400, "Invalid backup file name");
   }
@@ -671,8 +682,8 @@ function resolveBackupFilePath(fileName: string): string {
 systemRouter.get(
   "/backups",
   asyncHandler(async (req, res) => {
-    const dir = getSetting("backupDir");
-    if (!dir || !fs.existsSync(dir)) {
+    const dir = getBackupDir();
+    if (!fs.existsSync(dir)) {
       res.json({ backups: [] });
       return;
     }
@@ -763,9 +774,13 @@ systemRouter.post(
     let dbBuffer: Buffer = uploaded;
     let keyBuffer: Buffer | null = null;
     if (looksLikeBackupBundle(uploaded)) {
-      const bundle = readBackupBundle(uploaded);
-      dbBuffer = bundle.dbBuffer;
-      keyBuffer = bundle.keyBuffer;
+      try {
+        const bundle = await readBackupBundle(uploaded);
+        dbBuffer = bundle.dbBuffer;
+        keyBuffer = bundle.keyBuffer;
+      } catch (err) {
+        throw new HttpError(400, `The backup bundle could not be read: ${(err as Error).message}`);
+      }
     }
 
     if (db.dialect === "postgres") {
@@ -813,6 +828,10 @@ systemRouter.post(
     if (dbBuffer.length < SQLITE_MAGIC.length || dbBuffer.toString("utf-8", 0, SQLITE_MAGIC.length) !== SQLITE_MAGIC) {
       throw new HttpError(400, "Uploaded file is not a valid SQLite database (or backup bundle)");
     }
+    // Before "restored" is answered and the live file is touched: a file that fails here would
+    // otherwise be swapped in and make every restart fail the same way.
+    const unusable = await checkSqliteBackup(dbBuffer);
+    if (unusable) throw new HttpError(400, `This backup cannot be restored: ${unusable}.`);
 
     // In WAL mode, recently-committed transactions can live only in the -wal file until the next
     // automatic checkpoint (every ~1000 pages) — without an explicit one here, a raw copy of just
