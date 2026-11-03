@@ -602,12 +602,12 @@ describe("GET /api/system/health shows a failed backup (RB2)", () => {
     setSetting("backupEnabled", "1");
     setSetting("backupProblem", "Scheduled backup failed: disk full");
 
-    let res = await request(app).get("/api/system/health").set("X-Api-Key", apiKey);
+    let res = await request(app).get("/api/system/health?refresh=1").set("X-Api-Key", apiKey);
     expect(res.status).toBe(200);
     expect(res.body.configWarnings).toContainEqual({ key: "backup_failed", message: "Scheduled backup failed: disk full" });
 
     setSetting("backupEnabled", "0");
-    res = await request(app).get("/api/system/health").set("X-Api-Key", apiKey);
+    res = await request(app).get("/api/system/health?refresh=1").set("X-Api-Key", apiKey);
     expect(res.body.configWarnings.some((w: { key: string }) => w.key === "backup_failed")).toBe(false);
   });
 });

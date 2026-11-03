@@ -577,6 +577,24 @@ describe("placeFile — single shape (movie)", () => {
     expect(history.event_type).toBe("imported");
   });
 
+  it("refuses to place into a root folder that does not exist, instead of creating the whole tree (MM5)", async () => {
+    const missing = path.join(libraryDir, "unmounted-share-movies");
+    const rootId = Number((await db.prepare("INSERT INTO root_folders (path, media_type, name) VALUES (?, 'movie', 'ghost')").run(missing)).lastInsertRowid);
+    const movie = await insertMovie({ root_folder_id: rootId, has_file: 0 });
+    const src = writeDownloadFile("ghost-source.mkv");
+
+    const failure = await placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null }).catch((e) => e);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/does not exist or is not a folder \(is the share mounted\?\)/);
+    // Not a final skip: a share that is not mounted yet comes back, and a plain error is retried (15 min, 1 h, 6 h).
+    const { ImportSkippedError } = await import("../src/services/importer.js");
+    expect(failure).not.toBeInstanceOf(ImportSkippedError);
+
+    expect(fs.existsSync(missing)).toBe(false); // nothing was created
+    expect(fs.existsSync(src)).toBe(true); // and the download is still there for a manual import
+    expect(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(movie.id)) as any).has_file).toBe(0);
+  });
+
   it("fires notifyUpgraded instead when the item already had a file", async () => {
     const folder = await insertRootFolder("movie");
     const oldPath = writeDownloadFile("old-location.mkv");

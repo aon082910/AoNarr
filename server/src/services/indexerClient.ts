@@ -4,6 +4,7 @@ import { getMediaTypeConfig, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { getSetting } from "./settingsStore.js";
 import { config } from "../config.js";
 import { recordIndexerHealth } from "./indexerHealth.js";
+import { db } from "../db/index.js";
 import { categoriesFor } from "./indexerCategories.js";
 import { parseReleaseTitle } from "./releaseParser.js";
 import { identityKey } from "./releaseIdentity.js";
@@ -1005,6 +1006,86 @@ const FAILURE_BACKOFF_MS = [5, 15, 60, 180, 360, 1440].map((minutes) => minutes 
 const consecutiveFailures = new Map<number, number>();
 
 /**
+ * For the first minutes after the process starts a failing search does not raise the failure count (Sonarr's
+ * `inStartupGracePeriod`): after a reboot the network, the VPN or the indexer's own container may simply not
+ * be up yet, and those failures used to count toward a multi-hour backoff. Counts and waits loaded from the
+ * database still apply. AONARR_INDEXER_STARTUP_GRACE_MS overrides the 15 minutes (0 turns it off).
+ */
+const STARTUP_GRACE_MS = Number(process.env.AONARR_INDEXER_STARTUP_GRACE_MS ?? 15 * 60 * 1000);
+const PROCESS_STARTED_AT = Date.now();
+/** One log line per indexer for the whole grace period, not one per failed search. */
+const graceWarned = new Set<number>();
+function inStartupGrace(): boolean {
+  return Date.now() - PROCESS_STARTED_AT < STARTUP_GRACE_MS;
+}
+
+/**
+ * The failure backoff survives a restart: it is written to indexer_status whenever it changes and read back
+ * by loadIndexerStatuses() at startup. After every restart each dead indexer used to be tried again at full
+ * cost, with its 20-second timeouts, until it had failed its way back up the ladder. The in-memory maps stay
+ * the working copy; the writes are best effort (a failed write only loses persistence).
+ */
+/** Writes for one indexer run one after another (on Postgres two pooled connections could otherwise commit them in
+ * the wrong order and leave a stale row). */
+const persistChains = new Map<number, Promise<unknown>>();
+let persistFailureLogged = false;
+
+function persistIndexerStatus(indexerId: number): void {
+  // The state is read when the write runs, not now, so the last write always carries the latest values.
+  const write = async (): Promise<void> => {
+    const failures = consecutiveFailures.get(indexerId) ?? 0;
+    const until = backoffUntil.get(indexerId);
+    if (failures === 0 && until === undefined) {
+      await db.prepare("DELETE FROM indexer_status WHERE indexer_id = ?").run(indexerId);
+      return;
+    }
+    const toIso = (ms: number | undefined) => (ms === undefined ? null : new Date(ms).toISOString());
+    await db
+      .prepare(
+        `INSERT INTO indexer_status (indexer_id, consecutive_failures, backoff_until, backoff_reason, backoff_set_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(indexer_id) DO UPDATE SET consecutive_failures = excluded.consecutive_failures,
+           backoff_until = excluded.backoff_until, backoff_reason = excluded.backoff_reason, backoff_set_at = excluded.backoff_set_at`
+      )
+      .run(indexerId, failures, toIso(until), backoffReason.get(indexerId) ?? null, toIso(backoffSetAt.get(indexerId)));
+  };
+  const previous = persistChains.get(indexerId) ?? Promise.resolve();
+  const next = previous.then(write).catch((err) => {
+    // Best effort, but not silent: a missing table or a closed database means the backoff will not survive a restart.
+    if (!persistFailureLogged) {
+      persistFailureLogged = true;
+      log.warn("[indexerClient] could not save an indexer's failure state (it will not survive a restart):", (err as Error).message);
+    }
+  });
+  persistChains.set(indexerId, next);
+  void next.finally(() => {
+    if (persistChains.get(indexerId) === next) persistChains.delete(indexerId);
+  });
+}
+
+/** Reads the persisted backoffs back into memory. Call once at startup, after the database is up. A wait that
+ * has already passed is dropped, but the failure count stays so the next failure continues the ladder. */
+export async function loadIndexerStatuses(): Promise<void> {
+  const rows = (await db.prepare("SELECT * FROM indexer_status").all()) as {
+    indexer_id: number;
+    consecutive_failures: number;
+    backoff_until: string | null;
+    backoff_reason: string | null;
+    backoff_set_at: string | null;
+  }[];
+  for (const row of rows) {
+    if (row.consecutive_failures > 0) consecutiveFailures.set(row.indexer_id, row.consecutive_failures);
+    const until = row.backoff_until ? Date.parse(row.backoff_until) : NaN;
+    if (Number.isFinite(until) && until > Date.now() && (row.backoff_reason === "rate-limit" || row.backoff_reason === "failures")) {
+      backoffUntil.set(row.indexer_id, until);
+      backoffReason.set(row.indexer_id, row.backoff_reason);
+      const setAt = row.backoff_set_at ? Date.parse(row.backoff_set_at) : NaN;
+      backoffSetAt.set(row.indexer_id, Number.isFinite(setAt) ? setAt : Date.now());
+    }
+  }
+}
+
+/**
  * Proactive per-indexer "Query Limit" (requests/hour) — distinct from the reactive 429 backoff
  * above, which only kicks in *after* an indexer has already rejected a request. This stops AoNarr
  * from ever sending the request that would trigger a 429 (or a ban) in the first place, for an
@@ -1075,6 +1156,7 @@ export function clearIndexerBackoff(indexerId: number): void {
   backoffReason.delete(indexerId);
   backoffSetAt.delete(indexerId);
   consecutiveFailures.delete(indexerId);
+  persistIndexerStatus(indexerId);
 }
 
 /** The admin's edit or test of an indexer ends a backoff it earned by failing (a key that has since
@@ -1105,6 +1187,7 @@ function noteSearchFailure(indexer: Indexer, err: unknown): void {
   backoffUntil.set(indexer.id, Date.now() + ms);
   backoffReason.set(indexer.id, "rate-limit");
   backoffSetAt.set(indexer.id, Date.now());
+  persistIndexerStatus(indexer.id);
   log.warn(`[indexerClient] "${indexer.name}" is rate limiting requests — backing off for ${backoffText(ms)}`);
 }
 
@@ -1117,12 +1200,28 @@ function recordSearchFailure(indexer: Indexer, err: unknown, startedAt: number, 
   // outage that did it. The admin's own search of a backed-off indexer tried it on purpose, and does
   // not lengthen the wait.
   if (isIndexerBackedOff(indexer.id) && ((backoffSetAt.get(indexer.id) ?? 0) >= startedAt || interactive)) return;
-  const failures = (consecutiveFailures.get(indexer.id) ?? 0) + 1;
+  const before = consecutiveFailures.get(indexer.id) ?? 0;
+  if (inStartupGrace()) {
+    // Not counted: see STARTUP_GRACE_MS. A level loaded from the database keeps its wait, a fresh one gets none.
+    if (!graceWarned.has(indexer.id)) {
+      graceWarned.add(indexer.id);
+      log.warn(`[indexerClient] "${indexer.name}" failed a search during start-up (${(err as Error).message}) — not backing off yet`);
+    }
+    if (before === 0) return;
+    const held = FAILURE_BACKOFF_MS[Math.min(before, FAILURE_BACKOFF_MS.length) - 1];
+    backoffUntil.set(indexer.id, Date.now() + held);
+    backoffReason.set(indexer.id, "failures");
+    backoffSetAt.set(indexer.id, Date.now());
+    persistIndexerStatus(indexer.id);
+    return;
+  }
+  const failures = before + 1;
   consecutiveFailures.set(indexer.id, failures);
   const ms = FAILURE_BACKOFF_MS[Math.min(failures, FAILURE_BACKOFF_MS.length) - 1];
   backoffUntil.set(indexer.id, Date.now() + ms);
   backoffReason.set(indexer.id, "failures");
   backoffSetAt.set(indexer.id, Date.now());
+  persistIndexerStatus(indexer.id);
   log.warn(`[indexerClient] "${indexer.name}" failed ${failures} search(es) in a row (${(err as Error).message}) — backing off for ${backoffText(ms)}`);
 }
 
@@ -1161,7 +1260,7 @@ export async function searchIndexer(
     } else {
       throw new Error(`Unknown indexer protocol "${indexer.protocol}"`);
     }
-    consecutiveFailures.delete(indexer.id);
+    if (consecutiveFailures.delete(indexer.id)) persistIndexerStatus(indexer.id);
     if (backoffReason.get(indexer.id) === "failures") clearIndexerBackoff(indexer.id);
     await recordIndexerHealth(indexer.id, true, Date.now() - startedAt, null);
     return results;
@@ -1244,7 +1343,7 @@ export async function fetchRecentReleases(indexer: Indexer, group: { cats: strin
     } else {
       return { results: [], newest: null };
     }
-    consecutiveFailures.delete(indexer.id);
+    if (consecutiveFailures.delete(indexer.id)) persistIndexerStatus(indexer.id);
     if (backoffReason.get(indexer.id) === "failures") clearIndexerBackoff(indexer.id);
     await recordIndexerHealth(indexer.id, true, Date.now() - startedAt, null);
     return feed;

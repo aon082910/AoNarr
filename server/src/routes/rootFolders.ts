@@ -10,6 +10,7 @@ import { auditActor, logAuditEvent } from "../services/audit.js";
 import { renameOneMediaItem, removeEmptyParents } from "../services/importer.js";
 import { log } from "../services/logger.js";
 import { statfsAsync } from "../services/fsAsync.js";
+import { validateNewRootFolder } from "../services/rootFolderCheck.js";
 
 const ROOT_FOLDER_STATFS_TIMEOUT_MS = 5000;
 
@@ -46,7 +47,8 @@ rootFoldersRouter.post(
     const b = req.body ?? {};
     if (!b.path || !b.mediaType) throw new HttpError(400, "path and mediaType are required");
     if (!isValidMediaType(b.mediaType)) throw new HttpError(400, `Unknown media type "${b.mediaType}"`);
-    const result = await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, ?)").run(b.path, b.mediaType);
+    const folderPath = await validateNewRootFolder(b.path);
+    const result = await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, ?)").run(folderPath, b.mediaType);
     const row = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(rootFolderFromRow(row));
   })

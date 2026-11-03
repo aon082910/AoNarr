@@ -65,7 +65,8 @@ import {
   queueItemFromRow,
 } from "../db/mappers.js";
 import { downloadsFolderHasEntries, importQueueItem, ImportSkippedError, ReleaseFaultError } from "./importer.js";
-import { notifyFailed, notifyGrabbed, notifyHealthIssue, notifyManualInteractionRequired, notifyUpdateAvailable } from "./notifications.js";
+import { notifyFailed, notifyGrabbed, notifyHealthIssue, notifyHealthRestored, notifyManualInteractionRequired, notifyUpdateAvailable } from "./notifications.js";
+import { getHealthReport, inHealthStartupGrace } from "./healthReport.js";
 import { checkForUpdate } from "./updateCheck.js";
 import { checkIndexerHealth } from "./indexerClient.js";
 import { sceneIndexFor, syncAllSceneNumbering } from "./sceneNumbering.js";
@@ -115,11 +116,12 @@ import { getGroupReputation, recordGroupFailure } from "./releaseGroupStats.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { findUpgradeCandidates, isDirectSource } from "./upgradeCandidates.js";
 import { fetchCollectionChildrenFor } from "./metadata.js";
-import { scanAndImportAllLibraries, refreshAllLibraries, childListProviderIds } from "./libraryScan.js";
+import { scanAndImportAllLibraries, refreshAllLibraries, refreshNewChildren, childListProviderIds } from "./libraryScan.js";
 import { getSetting } from "./settingsStore.js";
 import { getMediaServerConfig, triggerFullMediaServerScan } from "./mediaServer.js";
 import { syncWatchStatusFromMediaServer } from "./mediaServerWebhook.js";
-import { registerJob, runJobNow, startAllJobs } from "./jobRegistry.js";
+import { catchUpMissedJobs, hydrateJobHistory, registerJob, runJobNow, startAllJobs } from "./jobRegistry.js";
+import { runHousekeeping } from "./housekeeping.js";
 import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
 
 /** Runs `fn` over `items` with at most `concurrency` in flight at once — plain `Promise.all` would
@@ -3774,55 +3776,35 @@ export async function pruneOldFailedQueueItems(): Promise<void> {
  * only a *change* in what's wrong (new issue, resolved issue, or recovery) fires again.
  */
 export async function checkHealthAndNotify(): Promise<void> {
-  const issues: string[] = [];
-
-  const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(indexerFromRow);
-  for (const idx of indexers as any[]) {
-    try {
-      const result = await checkIndexerHealth(idx);
-      if (!result.ok) issues.push(`Indexer "${idx.name}" is unreachable`);
-    } catch {
-      issues.push(`Indexer "${idx.name}" is unreachable`);
-    }
+  const report = await getHealthReport({ refresh: true });
+  const lastSourcesRaw = getSetting("lastHealthIssueSources");
+  let lastSources: string[] = [];
+  try {
+    lastSources = lastSourcesRaw ? (JSON.parse(lastSourcesRaw) as string[]) : [];
+  } catch {
+    lastSources = [];
   }
-
-  const clients = await rowsToDownloadClients();
-  for (const client of clients) {
-    try {
-      await getDownloadClientAdapter(client.type).getStatus(client, []);
-    } catch {
-      issues.push(`Download client "${client.name}" is unreachable`);
-    }
-  }
-
-  const DISK_WARN_PERCENT_FREE = 10;
-  const rootFolders = (await db.prepare("SELECT id, path, min_free_space_gb FROM root_folders").all()) as {
-    id: number;
-    path: string;
-    min_free_space_gb: number | null;
-  }[];
-  for (const folder of rootFolders) {
-    const latest = (await db
-      .prepare("SELECT free_bytes, total_bytes FROM disk_usage_samples WHERE root_folder_id = ? ORDER BY sampled_at DESC LIMIT 1")
-      .get(folder.id)) as { free_bytes: number; total_bytes: number } | undefined;
-    if (!latest || !Number(latest.total_bytes)) continue;
-    const percentFree = (Number(latest.free_bytes) / Number(latest.total_bytes)) * 100;
-    const freeGb = Number(latest.free_bytes) / 1e9;
-    if (percentFree < DISK_WARN_PERCENT_FREE) {
-      issues.push(`"${folder.path}" is low on disk space (${Math.round(percentFree)}% free)`);
-    } else if (folder.min_free_space_gb != null && freeGb < folder.min_free_space_gb) {
-      issues.push(`"${folder.path}" is below its configured minimum free space (${Math.round(freeGb)}GB free, minimum ${folder.min_free_space_gb}GB)`);
-    }
-  }
-
-  const backupProblem = getBackupProblem();
-  if (backupProblem) issues.push(backupProblem);
-
-  const summary = issues.join("; ");
   const lastSummary = getSetting("lastHealthIssueSummary") ?? "";
-  if (summary === lastSummary) return; // nothing changed since the last notification
+
+  // For the first minutes after a start, problems that often clear by themselves (a download client or a share
+  // that comes up after AoNarr) are not announced when they are new, so a reboot does not send a "health issue"
+  // and then, when they recover, a "restored". One that was already announced before the restart is kept: leaving
+  // it out would send a false "restored" now and the same "issue" again when the grace ends.
+  const grace = inHealthStartupGrace();
+  const issues = report.issues.filter((i) => !(grace && i.transient && !lastSources.includes(i.source)));
+
+  // Compared by the kind of problem (its stable source key), not by the text: the text carries counts, times and
+  // paths that change while the problem stays the same (a backoff that steps up, a growing failure count), and
+  // each change used to send the same problem again as a new notice.
+  const sources = [...new Set(issues.map((i) => i.source))].sort();
+  const known = !!lastSourcesRaw; // an install from before this key existed has only the text
+  if (known ? sources.join("\n") === [...lastSources].sort().join("\n") : issues.length === 0 && !lastSummary) return;
+
+  const summary = issues.map((i) => i.message).join("; ");
+  setSetting("lastHealthIssueSources", JSON.stringify(sources));
   setSetting("lastHealthIssueSummary", summary);
   if (summary) await notifyHealthIssue(summary);
+  else if (lastSummary || lastSources.length > 0) await notifyHealthRestored(lastSummary || lastSources.join(", "));
 }
 
 /** Pushes an "Update Available" notification once per newly-seen build, instead of the System
@@ -3953,7 +3935,8 @@ export function startScheduler() {
     key: "autoArchival",
     name: "Watch-status Auto-Archival",
     scheduleType: "cron",
-    defaultSchedule: "0 */6 * * *",
+    defaultSchedule: "5 */6 * * *",
+    heavy: true,
     run: () => runAutoArchival(),
   });
 
@@ -3982,7 +3965,7 @@ export function startScheduler() {
     key: "mediaServerScanSync",
     name: "Media Server Library Scan",
     scheduleType: "cron",
-    defaultSchedule: "0 */6 * * *",
+    defaultSchedule: "10 */6 * * *",
     run: async () => {
       if (getSetting("mediaServerScanSyncEnabled") !== "1" || !getMediaServerConfig()) return;
       await triggerFullMediaServerScan();
@@ -3994,7 +3977,7 @@ export function startScheduler() {
     key: "traktSync",
     name: "Trakt List Sync",
     scheduleType: "cron",
-    defaultSchedule: "0 */12 * * *",
+    defaultSchedule: "15 */12 * * *",
     run: async () => {
       const r = await runTraktSync();
       // Thrown so the Jobs page records the run as failed; runTraktSync reports errors, never throws.
@@ -4010,7 +3993,7 @@ export function startScheduler() {
     key: "plexWatchlistSync",
     name: "Plex Watchlist Sync",
     scheduleType: "cron",
-    defaultSchedule: "0 */12 * * *",
+    defaultSchedule: "20 */12 * * *",
     run: async () => {
       const r = await runPlexWatchlistSync();
       if (r.error) throw new Error(r.error);
@@ -4023,7 +4006,7 @@ export function startScheduler() {
     key: "importLists",
     name: "Import Lists",
     scheduleType: "cron",
-    defaultSchedule: "0 */12 * * *",
+    defaultSchedule: "25 */12 * * *",
     run: (signal) => runAllImportLists(signal),
   });
 
@@ -4031,7 +4014,7 @@ export function startScheduler() {
     key: "diskUsageSampling",
     name: "Disk Usage Sampling",
     scheduleType: "cron",
-    defaultSchedule: "0 0 * * *",
+    defaultSchedule: "30 0 * * *",
     run: async () => recordDiskUsageSamples(),
   });
 
@@ -4039,7 +4022,7 @@ export function startScheduler() {
     key: "stalledDownloadCleanup",
     name: "Stalled Download Cleanup",
     scheduleType: "cron",
-    defaultSchedule: "0 * * * *",
+    defaultSchedule: "35 * * * *",
     run: async () => {
       await cleanupStalledDownloads();
       await pruneOldFailedQueueItems();
@@ -4050,7 +4033,7 @@ export function startScheduler() {
     key: "prowlarrSync",
     name: "Prowlarr Indexer Sync",
     scheduleType: "cron",
-    defaultSchedule: "0 */6 * * *",
+    defaultSchedule: "40 */6 * * *",
     run: async () => {
       const r = await syncFromProwlarr();
       if (r.error) log.warn(`[scheduler] Prowlarr sync: ${r.error}`);
@@ -4062,7 +4045,7 @@ export function startScheduler() {
     key: "jackettSync",
     name: "Jackett Indexer Sync",
     scheduleType: "cron",
-    defaultSchedule: "0 */6 * * *",
+    defaultSchedule: "42 */6 * * *",
     run: async () => {
       const r = await syncFromJackett();
       if (r.error) log.warn(`[scheduler] Jackett sync: ${r.error}`);
@@ -4075,6 +4058,8 @@ export function startScheduler() {
     name: "Corrupt Media Check",
     scheduleType: "cron",
     defaultSchedule: "0 4 * * 0",
+    heavy: true,
+    catchUp: true,
     run: async (signal) => {
       const r = await checkForCorruptMedia(signal);
       if (r.corrupt > 0) log.info(`[scheduler] corrupt media check: ${r.corrupt} of ${r.checked} file(s) failed validation`);
@@ -4087,7 +4072,8 @@ export function startScheduler() {
     scheduleType: "cron",
     // Daily rather than corruptMediaCheck's weekly cadence — this only queries media_items, no
     // file I/O, so it's cheap enough to run far more often than a job that opens every file.
-    defaultSchedule: "0 5 * * *",
+    defaultSchedule: "30 5 * * *",
+    heavy: true,
     run: async () => {
       const r = await runScheduledDuplicateCheck();
       if (r.newGroups > 0) log.info(`[scheduler] duplicate check: ${r.newGroups} new duplicate group(s) found`);
@@ -4098,15 +4084,27 @@ export function startScheduler() {
     key: "recycleBinCleanup",
     name: "Recycle Bin Cleanup",
     scheduleType: "cron",
-    defaultSchedule: "0 3 * * *",
+    defaultSchedule: "15 3 * * *",
+    heavy: true,
     run: () => purgeExpiredRecycleBinEntries(),
+  });
+
+  registerJob({
+    key: "housekeeping",
+    name: "Housekeeping",
+    scheduleType: "cron",
+    defaultSchedule: "30 3 * * *",
+    heavy: true,
+    run: async (signal) => {
+      await runHousekeeping(signal);
+    },
   });
 
   registerJob({
     key: "autoUpgrade",
     name: "Auto Upgrade",
     scheduleType: "cron",
-    defaultSchedule: "0 */6 * * *",
+    defaultSchedule: "45 */6 * * *",
     run: () => runAutoUpgrade(),
   });
 
@@ -4114,7 +4112,7 @@ export function startScheduler() {
     key: "videoChannelCheck",
     name: "Video Channel Check",
     scheduleType: "cron",
-    defaultSchedule: "0 */4 * * *",
+    defaultSchedule: "50 */4 * * *",
     run: () => checkVideoChannels(),
   });
 
@@ -4122,7 +4120,7 @@ export function startScheduler() {
     key: "autoRequestFromWatchHistory",
     name: "Auto-Request from Watch History",
     scheduleType: "cron",
-    defaultSchedule: "0 5 * * *",
+    defaultSchedule: "45 5 * * *",
     run: () => runAutoRequestFromWatchHistory(),
   });
 
@@ -4130,7 +4128,8 @@ export function startScheduler() {
     key: "subtitleRescan",
     name: "Subtitle Rescan",
     scheduleType: "cron",
-    defaultSchedule: "0 4 * * *",
+    defaultSchedule: "30 4 * * *",
+    heavy: true,
     run: () => rescanMissingSubtitles(),
   });
 
@@ -4138,7 +4137,7 @@ export function startScheduler() {
     key: "podcastFeedCheck",
     name: "Podcast Feed Check",
     scheduleType: "cron",
-    defaultSchedule: "0 */2 * * *",
+    defaultSchedule: "55 */2 * * *",
     run: () => checkPodcastFeeds(),
   });
 
@@ -4147,7 +4146,18 @@ export function startScheduler() {
     name: "Library Scan & Import",
     scheduleType: "cron",
     defaultSchedule: "0 5 * * *",
+    heavy: true,
     run: (signal) => scanAndImportAllLibraries(signal),
+  });
+
+  registerJob({
+    key: "newChildrenRefresh",
+    name: "Refresh New Episodes and Releases",
+    scheduleType: "cron",
+    defaultSchedule: "15 1,13 * * *",
+    run: async (signal) => {
+      await refreshNewChildren(signal);
+    },
   });
 
   registerJob({
@@ -4155,6 +4165,8 @@ export function startScheduler() {
     name: "Library Refresh",
     scheduleType: "cron",
     defaultSchedule: "0 6 * * 0",
+    heavy: true,
+    catchUp: true,
     run: (signal) => refreshAllLibraries(signal),
   });
 
@@ -4170,7 +4182,7 @@ export function startScheduler() {
     key: "seedGoalCleanup",
     name: "Seed Goal Cleanup",
     scheduleType: "cron",
-    defaultSchedule: "0 * * * *",
+    defaultSchedule: "38 * * * *",
     run: () => runSeedGoalCleanup(),
   });
 
@@ -4179,6 +4191,7 @@ export function startScheduler() {
     name: "Deleted File Check",
     scheduleType: "cron",
     defaultSchedule: "0 3 * * *",
+    heavy: true,
     run: (signal) => runDeletedFileCheckJob(signal),
   });
 
@@ -4187,6 +4200,7 @@ export function startScheduler() {
     name: "Scene Numbering Sync (TheXEM)",
     scheduleType: "cron",
     defaultSchedule: "0 2 * * 0",
+    catchUp: true,
     run: () => syncAllSceneNumbering(),
   });
 
@@ -4202,11 +4216,15 @@ export function startScheduler() {
     key: "scheduledBackup",
     name: "Scheduled Backup",
     scheduleType: "cron",
-    defaultSchedule: "0 * * * *",
+    defaultSchedule: "12 * * * *",
     run: () => runScheduledBackup(),
   });
 
   startAllJobs();
+  // Last results from job_runs (so the Jobs page survives a restart), then the weekly jobs a restart skipped.
+  hydrateJobHistory()
+    .then(() => catchUpMissedJobs())
+    .catch((err) => log.warn("[scheduler] could not load job history:", (err as Error).message));
 
   log.info(
     `[scheduler] started: auto-search "${autoSearchSchedule}" (interval ${config.searchIntervalMinutes}m), queue poll every ${config.queuePollIntervalSeconds}s`

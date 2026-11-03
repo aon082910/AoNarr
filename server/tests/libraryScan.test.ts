@@ -48,6 +48,7 @@ let backfillEpisodicAndCollectionHasFile: (typeof import("../src/services/librar
 let backfillMissingAlbumTracks: (typeof import("../src/services/libraryScan.js"))["backfillMissingAlbumTracks"];
 let scanAndImportAllLibraries: (typeof import("../src/services/libraryScan.js"))["scanAndImportAllLibraries"];
 let refreshAllLibraries: (typeof import("../src/services/libraryScan.js"))["refreshAllLibraries"];
+let refreshNewChildren: (typeof import("../src/services/libraryScan.js"))["refreshNewChildren"];
 let mergeEpisodesIntoItem: (typeof import("../src/services/libraryScan.js"))["mergeEpisodesIntoItem"];
 let matchAdditionalProviders: (typeof import("../src/services/libraryScan.js"))["matchAdditionalProviders"];
 let matchProvidersForLibrary: (typeof import("../src/services/libraryScan.js"))["matchProvidersForLibrary"];
@@ -72,6 +73,7 @@ beforeAll(async () => {
     backfillMissingAlbumTracks,
     scanAndImportAllLibraries,
     refreshAllLibraries,
+    refreshNewChildren,
     mergeEpisodesIntoItem,
     matchAdditionalProviders,
     matchProvidersForLibrary,
@@ -2925,5 +2927,92 @@ describe("scanAndImportLibrary — files that are not a title's own (MM3)", () =
     const result = await scanAndImportLibrary("movie");
 
     expect(result).toMatchObject({ created: 0 });
+  });
+});
+
+describe("refreshNewChildren — the cheap 12-hourly pass (RB12)", () => {
+  async function insertShow(title: string, fields: { status?: string; monitored?: number; externalIds?: Record<string, string> | null } = {}): Promise<number> {
+    const ids = fields.externalIds === undefined ? { tmdb: String(Math.floor(Math.random() * 1e6)) } : fields.externalIds;
+    return Number(
+      (
+        await db
+          .prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status, external_ids) VALUES ('series', ?, ?, ?, 0, ?, ?)`)
+          .run(title, title.toLowerCase(), fields.monitored ?? 1, fields.status ?? "Returning Series", ids ? JSON.stringify(ids) : null)
+      ).lastInsertRowid
+    );
+  }
+
+  it("adds the episodes the provider lists that a returning, matched, monitored show does not have", async () => {
+    const id = await insertShow("Returning Show Alpha");
+    fetchSeriesEpisodesFor.mockResolvedValue([{ seasonNumber: 2, episodeNumber: 1, title: "New Season", airDate: new Date().toISOString().slice(0, 10), overview: "x" }]);
+
+    const result = await refreshNewChildren();
+
+    expect(result.childrenAdded).toBeGreaterThanOrEqual(1);
+    const ep = (await db.prepare("SELECT * FROM episodes WHERE media_item_id = ?").get(id)) as any;
+    expect(ep).toMatchObject({ season_number: 2, episode_number: 1, title: "New Season" });
+  });
+
+  it("does not look at a show that has ended, is not monitored or has no provider ids", async () => {
+    const ended = await insertShow("Finished Show Beta", { status: "Ended" });
+    const cancelled = await insertShow("Cancelled Show Gamma", { status: "Canceled" });
+    const unmonitored = await insertShow("Unmonitored Show Delta", { monitored: 0 });
+    const unmatched = await insertShow("Unmatched Show Epsilon", { externalIds: null });
+    fetchSeriesEpisodesFor.mockClear();
+    fetchSeriesEpisodesFor.mockResolvedValue([{ seasonNumber: 1, episodeNumber: 1, title: "Nope", airDate: "2020-01-01", overview: "x" }]);
+
+    await refreshNewChildren();
+
+    for (const id of [ended, cancelled, unmonitored, unmatched]) {
+      expect(await db.prepare("SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ?").get(id)).toMatchObject({ c: 0 });
+    }
+  });
+
+  it("never rewrites a show's title, ids, overview or poster: that is the weekly full refresh's job", async () => {
+    const id = await insertShow("Quiet Show Zeta");
+    await db.prepare("UPDATE media_items SET overview = 'kept overview', poster_url = 'kept.jpg' WHERE id = ?").run(id);
+    searchMetadata.mockResolvedValue([{ title: "Something Else", year: 1999, overview: "WRONG", posterUrl: "wrong.jpg", externalIds: { tmdb: "1" } }]);
+    fetchByExternalId.mockResolvedValue({ title: "Something Else", year: 1999, overview: "WRONG", posterUrl: "wrong.jpg", externalIds: { tmdb: "1" } });
+    const before = (await db.prepare("SELECT title, external_ids, overview, poster_url FROM media_items WHERE id = ?").get(id)) as any;
+
+    await refreshNewChildren();
+
+    expect(await db.prepare("SELECT title, external_ids, overview, poster_url FROM media_items WHERE id = ?").get(id)).toEqual(before);
+    expect(searchMetadata).not.toHaveBeenCalled();
+    expect(fetchByExternalId).not.toHaveBeenCalled();
+  });
+
+  it("one show failing does not stop the others, and stops promptly when aborted", async () => {
+    const bad = await insertShow("Failing Show Eta");
+    const good = await insertShow("Working Show Theta");
+    fetchSeriesEpisodesFor.mockImplementation(async (ids: Record<string, string>) => {
+      const badIds = JSON.parse(((await db.prepare("SELECT external_ids FROM media_items WHERE id = ?").get(bad)) as any).external_ids);
+      if (ids.tmdb === badIds.tmdb) throw new Error("provider down");
+      return [{ seasonNumber: 1, episodeNumber: 1, title: "Fine", airDate: "2020-01-01", overview: "x" }];
+    });
+
+    await refreshNewChildren();
+    expect(await db.prepare("SELECT COUNT(*) AS c FROM episodes WHERE media_item_id = ?").get(good)).toMatchObject({ c: 1 });
+
+    const controller = new AbortController();
+    controller.abort();
+    fetchSeriesEpisodesFor.mockClear();
+    expect(await refreshNewChildren(controller.signal)).toEqual({ checked: 0, childrenAdded: 0 });
+    expect(fetchSeriesEpisodesFor).not.toHaveBeenCalled();
+  });
+
+  it("leaves a type alone while its full refresh is running", async () => {
+    await insertShow("Busy Show Iota");
+    fetchSeriesEpisodesFor.mockClear();
+    // The full refresh holds the per-type slot while it walks the items; every provider call takes a moment.
+    searchMetadata.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve([]), 30)));
+    await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series', 'Unmatched Slow', 'unmatched slow', 1, 0, 'missing')").run();
+    const full = refreshLibraryMetadata("series");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const result = await refreshNewChildren();
+    expect(result.checked).toBe(0); // the series slot is taken
+
+    await full;
   });
 });

@@ -757,3 +757,27 @@ CREATE TABLE IF NOT EXISTS rss_sync_state (
   last_run_at TEXT,
   PRIMARY KEY (indexer_id, feed_key)
 );
+
+-- One row per run of a scheduled job, so the Jobs page keeps its last result across a restart, a run
+-- missed while the app was down can be caught up, and a job that keeps failing shows in Health.
+-- Trimmed to 30 days by the housekeeping job.
+CREATE TABLE IF NOT EXISTS job_runs (
+  id SERIAL PRIMARY KEY,
+  job_key TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL,
+  error TEXT,
+  duration_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_job_runs_job_key_started_at ON job_runs(job_key, started_at);
+
+-- An indexer's failure backoff, kept across a restart (it used to start from zero, so after every
+-- restart each dead indexer was tried again at full cost). Written by services/indexerClient.ts.
+CREATE TABLE IF NOT EXISTS indexer_status (
+  indexer_id INTEGER PRIMARY KEY REFERENCES indexers(id) ON DELETE CASCADE,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  backoff_until TEXT,
+  backoff_reason TEXT,
+  backoff_set_at TEXT
+);

@@ -2386,3 +2386,62 @@ describe("Round 20 — Blackhole output: folders first, never our own drop or a 
     expect(update.status).toBe("downloading");
   });
 });
+
+// ---------------------------------------------------------------------------
+// healthNotes (DL13)
+// ---------------------------------------------------------------------------
+
+describe("healthNotes — settings that delete or move a download before AoNarr imports it (DL13)", () => {
+  function qbitPreferences(prefs: Record<string, unknown>) {
+    return routedFetch([
+      { test: (u) => u.includes("/auth/login"), response: ok({}, { headers: new Headers({ "set-cookie": "SID=abc123; Path=/" }) }) },
+      { test: (u) => u.includes("/app/preferences"), response: ok(prefs) },
+    ]);
+  }
+
+  it("qbittorrent: flags a ratio limit that removes the torrent", async () => {
+    vi.stubGlobal("fetch", qbitPreferences({ max_ratio_enabled: true, max_ratio: 1, max_ratio_act: 1 }));
+    const notes = await getDownloadClientAdapter("qbittorrent").healthNotes!(await insertClient({ type: "qbittorrent" }));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatch(/remove torrents when they reach their ratio/);
+  });
+
+  it("qbittorrent: flags 'remove torrent and its files' on a seeding time limit too", async () => {
+    vi.stubGlobal("fetch", qbitPreferences({ max_ratio_enabled: false, max_seeding_time_enabled: true, max_ratio_act: 3 }));
+    expect(await getDownloadClientAdapter("qbittorrent").healthNotes!(await insertClient({ type: "qbittorrent" }))).toHaveLength(1);
+  });
+
+  it("qbittorrent: says nothing for pause, for super seeding, or when no limit is on", async () => {
+    for (const prefs of [
+      { max_ratio_enabled: true, max_ratio_act: 0 },
+      { max_ratio_enabled: true, max_ratio_act: 2 },
+      { max_ratio_enabled: false, max_seeding_time_enabled: false, max_ratio_act: 1 },
+    ]) {
+      vi.stubGlobal("fetch", qbitPreferences(prefs));
+      expect(await getDownloadClientAdapter("qbittorrent").healthNotes!(await insertClient({ type: "qbittorrent" }))).toEqual([]);
+    }
+  });
+
+  it("sabnzbd: flags sorting that moves the finished download, and deleting every finished job", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      ok({ config: { misc: { enable_tv_sorting: "1", enable_movie_sorting: 0, enable_date_sorting: 0, history_retention_option: "all-delete" } } })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const notes = await getDownloadClientAdapter("sabnzbd").healthNotes!(await insertClient({ type: "sabnzbd", api_key: "k" }));
+
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toMatch(/sorting/);
+    expect(notes[1]).toMatch(/history at once/);
+    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(url.searchParams.get("mode")).toBe("get_config");
+    expect(url.searchParams.get("section")).toBe("misc");
+  });
+
+  it("sabnzbd: says nothing when sorting is off and the history is kept, or when the keys are not returned", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ config: { misc: { enable_tv_sorting: "0", history_retention_option: "all" } } })));
+    expect(await getDownloadClientAdapter("sabnzbd").healthNotes!(await insertClient({ type: "sabnzbd", api_key: "k" }))).toEqual([]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ok({ config: {} })));
+    expect(await getDownloadClientAdapter("sabnzbd").healthNotes!(await insertClient({ type: "sabnzbd", api_key: "k" }))).toEqual([]);
+  });
+});

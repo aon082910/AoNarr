@@ -2898,6 +2898,58 @@ export async function scanAndImportAllLibraries(signal?: AbortSignal): Promise<v
   }
 }
 
+/** A series that has ended or been cancelled gets no new episodes; everything else (returning, in
+ * production, unknown) may. Providers word the status many ways, so this matches loosely. */
+function isFinishedStatus(status: string | null | undefined): boolean {
+  return /\b(ended|cancel+ed|canceled|completed|finished)\b/i.test(status ?? "");
+}
+
+/**
+ * The cheap half of Refresh, for the 12-hourly job: for every monitored, already-matched show (that has not
+ * ended), artist, author or series, asks the provider for the child list and adds the episodes, albums or
+ * books it lists that the item does not have yet. It does not re-pull any show's overview, poster or
+ * ratings and it never touches a title or id, which is the full Refresh's job once a week. Before this,
+ * `libraryRefresh` (weekly) was the only scheduled job that added children to an existing item, so a weekly
+ * show's new episode could be up to a week late before AoNarr even looked for it (Sonarr rescans every
+ * series every 12 hours, Radarr, Lidarr and Readarr every 24).
+ */
+export async function refreshNewChildren(signal?: AbortSignal): Promise<{ checked: number; childrenAdded: number }> {
+  let checked = 0;
+  let childrenAdded = 0;
+  for (const type of MEDIA_TYPE_KEYS) {
+    if (signal?.aborted) break;
+    const typeConfig = getMediaTypeConfig(type);
+    // A single item (movie, ROM) has no children, and the sequential-fallback types add children by rescanning
+    // their folders, which the library scan job already does.
+    if (typeConfig.shape === "single" || typeConfig.sequentialEpisodeFallback) continue;
+    // Shares the full refresh's slot, so the two never walk the same items at once.
+    if (refreshesInProgress.has(type)) continue;
+    refreshesInProgress.add(type);
+    try {
+      const items = (await db
+        .prepare("SELECT * FROM media_items WHERE type = ? AND monitored = 1 AND external_ids IS NOT NULL AND external_ids != '{}'")
+        .all(type)) as any[];
+      for (const item of items) {
+        if (signal?.aborted) break;
+        if (typeConfig.shape === "episodic" && isFinishedStatus(item.status)) continue;
+        if (isPlaceholderParent(item)) continue;
+        const ids = childListProviderIds(item);
+        if (Object.keys(ids).length === 0) continue;
+        checked++;
+        try {
+          childrenAdded += await syncMissingChildren(item.id, typeConfig, ids, undefined, childListIsOwn(item, ids), true);
+        } catch (err) {
+          log.warn(`[libraryScan] could not check "${item.title}" for new ${typeConfig.shape === "episodic" ? "episodes" : "releases"}:`, (err as Error).message);
+        }
+      }
+    } finally {
+      refreshesInProgress.delete(type);
+    }
+  }
+  if (childrenAdded > 0) log.info(`[libraryScan] new-episode refresh: ${childrenAdded} episode(s)/release(s) added across ${checked} item(s) checked`);
+  return { checked, childrenAdded };
+}
+
 export async function refreshAllLibraries(signal?: AbortSignal): Promise<void> {
   for (const type of MEDIA_TYPE_KEYS) {
     if (signal?.aborted) return;

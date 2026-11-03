@@ -320,6 +320,16 @@ one book.
   uploaded database before touching the live one. When a new image starts for the first time AoNarr
   also saves a copy of the database in `Backups/pre-migration` (newest 3 kept) before its schema
   migrations run. Separate from the existing one-click manual backup/restore.
+- **Health, jobs and housekeeping** — the Health page keeps its result for ten minutes (Refresh runs the
+  checks now) and also reports a missing, empty or read-only root folder, a failing job or import list,
+  a recycle bin that cannot be written, a download that AoNarr cannot see (a wrong remote path mapping), a
+  client setting that deletes or moves downloads before import, and a library type no indexer searches; a
+  "restored" notice follows when everything clears. Every job run is kept in the database (the Jobs page keeps
+  its last result across restarts and a weekly job a restart skipped runs two minutes after the next start); the
+  library-walking jobs are marked heavy and run one at a time. A daily housekeeping job (03:30) trims old
+  history, watch history, audit log and job runs (keeping the latest watch row of each title) and shrinks the
+  database file about monthly when that frees a worthwhile amount. Root folders must exist, be writable and not
+  overlap each other when they are added, and an import never creates a missing root folder.
 - **CSV export of library** — an admin-only "Export CSV" button on the Library page (respecting the
   current type filter) and `GET /api/media/export.csv` download a flat CSV of the library for
   spreadsheet tracking outside the app.

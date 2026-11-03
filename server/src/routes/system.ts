@@ -47,6 +47,9 @@ import { getMediaServerConfig } from "../services/mediaServer.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
 import { createYielder, statfsAsync } from "../services/fsAsync.js";
+import { getBuildInfo } from "../services/buildInfo.js";
+import { runJobWithResult } from "../services/jobRegistry.js";
+import { getHealthReport } from "../services/healthReport.js";
 
 export const systemRouter = Router();
 systemRouter.use(requireAdmin);
@@ -171,7 +174,7 @@ systemRouter.get(
 systemRouter.get(
   "/logs",
   asyncHandler(async (req, res) => {
-    const level = req.query.level as "info" | "warn" | "error" | undefined;
+    const level = req.query.level as "debug" | "info" | "warn" | "error" | undefined;
     const search = req.query.search as string | undefined;
     const since = req.query.since as string | undefined;
     res.json(getRecentLogs({ level, search, since }));
@@ -244,8 +247,6 @@ systemRouter.get(
   })
 );
 
-const APP_VERSION = "0.1.0";
-
 systemRouter.get(
   "/status",
   asyncHandler(async (_req, res) => {
@@ -273,6 +274,7 @@ systemRouter.get(
 
     await recordDiskUsageSamples();
 
+    const build = await getBuildInfo();
     const folders = ((await db.prepare("SELECT * FROM root_folders").all()) as any[]).map(rootFolderFromRow);
     const diskSpace = await Promise.all(
       folders.map(async (f) => {
@@ -292,7 +294,8 @@ systemRouter.get(
     );
 
     res.json({
-      version: APP_VERSION,
+      version: build.appVersion,
+      build,
       nodeVersion: process.version,
       platform: os.platform(),
       uptimeSeconds: Math.round(process.uptime()),
@@ -305,126 +308,16 @@ systemRouter.get(
   })
 );
 
-const STUCK_QUEUE_HOURS = 6;
-
 /**
- * A one-stop health view combining what every individual *Starr app can only tell you about
- * itself: indexer reachability, queue items stuck longer than expected, and pending requests.
+ * A one-stop health view combining what every individual *Starr app can only tell you about itself:
+ * indexer reachability, queue items stuck longer than expected, pending requests, missing or read-only root
+ * folders, failing jobs and import lists, the recycle bin, backups and download-client settings. Built by
+ * services/healthReport.ts and kept for two minutes between page loads; `?refresh=1` runs the checks again.
  */
 systemRouter.get(
   "/health",
-  asyncHandler(async (_req, res) => {
-    const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(indexerFromRow);
-    // Historical recent-attempt data (from indexer_health, see services/indexerHealth.ts) alongside
-    // the live reachability check below — an indexer can pass a live "is it up right now" check
-    // while still having been unreliable over its last 50 real search attempts, and vice versa.
-    await attachIndexerHealth(indexers as any[]);
-    const indexerHealth = await Promise.all(
-      indexers.map(async (idx: any) => ({
-        id: idx.id,
-        name: idx.name,
-        ...(await checkIndexerHealth(idx)),
-        recent: idx.health,
-      }))
-    );
-
-    const stuckQueueRows = (await db
-      .prepare(
-        `SELECT q.id, q.title, q.status, q.added_at AS "addedAt", m.title AS "mediaTitle" FROM queue q
-         JOIN media_items m ON m.id = q.media_item_id
-         WHERE q.status IN ('queued','downloading')
-         AND q.added_at <= ${nowOffsetHoursExpr(db, -STUCK_QUEUE_HOURS)}`
-      )
-      .all()) as any[];
-
-    const pendingRequests = Number(
-      ((await db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get()) as { c: number }).c
-    );
-
-    const repeatedImports = await findRepeatedImports();
-    const upgradeCandidates = await findUpgradeCandidates();
-
-    const downloadClients = ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all()) as any[]).map(
-      downloadClientFromRow
-    );
-    const downloadClientHealth = await Promise.all(
-      downloadClients.map(async (client) => {
-        try {
-          await getDownloadClientAdapter(client.type).getStatus(client, []);
-          return { id: client.id, name: client.name, ok: true };
-        } catch (err) {
-          return { id: client.id, name: client.name, ok: false, error: (err as Error).message };
-        }
-      })
-    );
-
-    const DISK_WARN_PERCENT_FREE = 10;
-    const rootFolders = (await db.prepare("SELECT id, path, min_free_space_gb FROM root_folders").all()) as {
-      id: number;
-      path: string;
-      min_free_space_gb: number | null;
-    }[];
-    const diskWarnings = (
-      await Promise.all(
-        rootFolders.map(async (folder) => {
-          const latest = (await db
-            .prepare("SELECT free_bytes, total_bytes FROM disk_usage_samples WHERE root_folder_id = ? ORDER BY sampled_at DESC LIMIT 1")
-            .get(folder.id)) as { free_bytes: number; total_bytes: number } | undefined;
-          if (!latest || !Number(latest.total_bytes)) return null;
-          const percentFree = (Number(latest.free_bytes) / Number(latest.total_bytes)) * 100;
-          // Radarr-style per-folder minimum free space (GB) — independent of the global percent
-          // threshold above, since a huge drive at 8% free might still have hundreds of GB left
-          // (not actually urgent), while a small drive at 15% free might have almost none (is).
-          const freeGb = Number(latest.free_bytes) / 1e9;
-          const belowMinFreeSpace = folder.min_free_space_gb != null && freeGb < folder.min_free_space_gb;
-          if (percentFree >= DISK_WARN_PERCENT_FREE && !belowMinFreeSpace) return null;
-          return {
-            rootFolderId: folder.id,
-            path: folder.path,
-            percentFree: Math.round(percentFree * 10) / 10,
-            freeGb: Math.round(freeGb * 10) / 10,
-            minFreeSpaceGb: folder.min_free_space_gb,
-          };
-        })
-      )
-    ).filter((w): w is NonNullable<typeof w> => w !== null);
-
-    // Config-completeness warnings — distinct from the reachability/rate checks above, which all
-    // assume something is already configured and only report on how well it's working. A fresh or
-    // partially set-up instance has none of those to report, so without this an admin who dismissed
-    // the onboarding checklist (web/src/pages/Onboarding.tsx) once has no ongoing signal that a
-    // whole library type still has, say, no root folder and will never actually import anything.
-    const [rootFolderCount, indexerCount, downloadClientCount] = await Promise.all([
-      db.prepare("SELECT COUNT(*) AS c FROM root_folders").get() as Promise<{ c: number }>,
-      db.prepare("SELECT COUNT(*) AS c FROM indexers WHERE enabled = 1").get() as Promise<{ c: number }>,
-      db.prepare("SELECT COUNT(*) AS c FROM download_clients WHERE enabled = 1").get() as Promise<{ c: number }>,
-    ]);
-    const configWarnings: { key: string; message: string }[] = [];
-    if (Number(rootFolderCount.c) === 0) {
-      configWarnings.push({ key: "no_root_folder", message: "No root folder configured — nothing has anywhere to import to yet." });
-    }
-    if (Number(indexerCount.c) === 0) {
-      configWarnings.push({ key: "no_indexer", message: "No enabled indexer configured — searches will never find anything." });
-    }
-    if (Number(downloadClientCount.c) === 0) {
-      configWarnings.push({ key: "no_download_client", message: "No enabled download client configured — grabs have nowhere to download to." });
-    }
-
-    const backupProblem = getBackupProblem();
-    if (backupProblem) configWarnings.push({ key: "backup_failed", message: backupProblem });
-
-    res.json({
-      configWarnings,
-      indexers: indexerHealth,
-      downloadClients: downloadClientHealth,
-      stuckQueue: stuckQueueRows,
-      stuckQueueThresholdHours: STUCK_QUEUE_HOURS,
-      pendingRequests,
-      repeatedImports,
-      upgradeCandidates,
-      diskWarnings,
-      diskWarnPercentFree: DISK_WARN_PERCENT_FREE,
-    });
+  asyncHandler(async (req, res) => {
+    res.json(await getHealthReport({ refresh: req.query.refresh === "1" }));
   })
 );
 
@@ -437,10 +330,27 @@ systemRouter.get(
   })
 );
 
+/** Why a run-now button could not start its job, in words for the admin. */
+function skippedRunMessage(what: string, outcome: { reason: string; holder?: string }): string {
+  switch (outcome.reason) {
+    case "already-running":
+      return `${what} is already running (or waiting to run).`;
+    case "busy":
+      return `${what} cannot start now: "${outcome.holder}" is running, and only one heavy job runs at a time. Try again when it has finished.`;
+    case "stopped":
+      return `${what} cannot start: scheduled jobs are stopped for a shutdown or a restore.`;
+    default:
+      return `${what} could not start (${outcome.reason}).`;
+  }
+}
+
 systemRouter.post(
   "/archival/run",
   asyncHandler(async (_req, res) => {
-    await runAutoArchival();
+    // Through the job registry: never beside the scheduled run of the same job (archival moves files),
+    // in the heavy-job queue, and recorded in the job history.
+    const outcome = await runJobWithResult("autoArchival", () => runAutoArchival(), { immediate: true });
+    if (outcome.status === "skipped") throw new HttpError(409, skippedRunMessage("Archival", outcome));
     res.json({ ran: true });
   })
 );
@@ -448,14 +358,18 @@ systemRouter.post(
 systemRouter.post(
   "/trakt-sync/run",
   asyncHandler(async (_req, res) => {
-    res.json(await runTraktSync());
+    const outcome = await runJobWithResult("traktSync", () => runTraktSync(), { immediate: true });
+    if (outcome.status === "skipped") throw new HttpError(409, skippedRunMessage("Trakt sync", outcome));
+    res.json(outcome.value);
   })
 );
 
 systemRouter.post(
   "/plex-watchlist-sync/run",
   asyncHandler(async (_req, res) => {
-    res.json(await runPlexWatchlistSync());
+    const outcome = await runJobWithResult("plexWatchlistSync", () => runPlexWatchlistSync(), { immediate: true });
+    if (outcome.status === "skipped") throw new HttpError(409, skippedRunMessage("Plex watchlist sync", outcome));
+    res.json(outcome.value);
   })
 );
 

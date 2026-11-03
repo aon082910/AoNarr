@@ -49,4 +49,6 @@ export const config = {
   // "this running container" apart from "what's currently on Docker Hub" for the same tag.
   buildTime: process.env.AONARR_BUILD_TIME || readBuildTimeFile(),
   imageTag: process.env.AONARR_IMAGE_TAG ?? null,
+  // The git commit the image was built from (Dockerfile --build-arg GIT_COMMIT), shown on System, Status.
+  commit: process.env.AONARR_COMMIT || null,
 };

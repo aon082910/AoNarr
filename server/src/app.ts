@@ -86,6 +86,7 @@ import { duplicatesRouter } from "./routes/duplicates.js";
 import { corruptMediaReviewRouter } from "./routes/corruptMediaReview.js";
 import { themeRouter } from "./routes/theme.js";
 import { friendLibrariesRouter } from "./routes/friendLibraries.js";
+import { loadIndexerStatuses } from "./services/indexerClient.js";
 
 /**
  * download_clients.password/.api_key, irc_feeds.sasl_pass, ai_providers.api_key, indexers.api_key,
@@ -285,6 +286,7 @@ function skipsPreflight(req: express.Request): boolean {
 export async function createApp(): Promise<Express> {
   await initDb();
   await loadSettingsCache();
+  await loadIndexerStatuses().catch((err) => log.warn("[startup] could not load the indexer failure state:", (err as Error).message));
   await reencryptLegacyCredentials();
   await ensureBluray720pQuality();
   await loadQualityCaches();

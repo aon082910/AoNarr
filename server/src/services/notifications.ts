@@ -87,6 +87,7 @@ export const EVENT_KEYS = [
   "failed",
   "duplicatesFound",
   "healthIssue",
+  "healthRestored",
   "manualInteractionRequired",
   "updateAvailable",
 ] as const;
@@ -462,5 +463,17 @@ export async function notifyHealthIssue(summary: string): Promise<void> {
     text: renderTemplate("notifyTemplateHealthIssue", DEFAULT_TEMPLATES.healthIssue, { summary }),
     color: 0xe05c5c,
     payload: { event: "healthIssue", summary },
+  });
+}
+
+/** The "restored" half of the health notification (Sonarr sends both): everything the last "Health issue" listed has
+ * cleared. Its own event key, so a webhook that acts on "healthIssue" is not raised when everything is fine again. */
+export async function notifyHealthRestored(previousSummary: string): Promise<void> {
+  const shown = previousSummary.length > 1500 ? `${previousSummary.slice(0, 1500)}...` : previousSummary;
+  await fanOut({
+    title: "Health restored",
+    text: `Everything is healthy again. It had been reporting: ${shown}`,
+    color: 0x4fbf6a,
+    payload: { event: "healthRestored", summary: previousSummary },
   });
 }

@@ -8,6 +8,7 @@ import { config } from "../config.js";
 import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
 import { fitFileName } from "./pathNames.js";
+import { StorageTimeoutError, guardedFsCall, statAsync } from "./fsAsync.js";
 
 function recycleBinRoot(): string {
   return getSetting("recycleBinDir") || path.join(config.configDir, "recycle-bin");
@@ -69,6 +70,32 @@ export async function recycleBinProblem(files: string[]): Promise<string | null>
     // Can't read the space: not a reason to refuse; recycleFile reports a real failure.
   }
   return null;
+}
+
+/**
+ * Whether the recycle bin folder is writable right now, for Health (recycleBinProblem checks it only when files
+ * are about to go in). Null when it is off, fine, or not created yet (it is created by the first file that goes in:
+ * a health check must not create it, which on an unmounted share would build the tree on the container's own disk).
+ * Every call is bounded, so a bin on a dead mount cannot hang the health report.
+ */
+export async function recycleBinFolderProblem(): Promise<string | null> {
+  if (!isRecycleBinEnabled()) return null;
+  const root = recycleBinRoot();
+  const probe = path.join(root, `.write-test-${crypto.randomBytes(4).toString("hex")}`);
+  try {
+    try {
+      await statAsync(root, 10_000);
+    } catch (err) {
+      if (err instanceof StorageTimeoutError) throw err;
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
+    }
+    await guardedFsCall("write-probe", probe, 10_000, () => fsp.writeFile(probe, "x"));
+    await guardedFsCall("rm-probe", probe, 10_000, () => fsp.rm(probe, { force: true }));
+    return null;
+  } catch (err) {
+    return `the recycle bin folder "${root}" is not writable (${(err as Error).message})`;
+  }
 }
 
 /** Moves a file into the recycle bin (type-namespaced, original filename kept) instead of

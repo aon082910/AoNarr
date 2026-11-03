@@ -48,12 +48,14 @@ RUN GOSU_ARCH="$(dpkg --print-architecture)" \
     && curl -L "https://github.com/tianon/gosu/releases/download/1.17/gosu-${GOSU_ARCH}" -o /usr/local/bin/gosu \
     && chmod +x /usr/local/bin/gosu
 ARG BUILD_TIME=""
+ARG GIT_COMMIT=""
 ENV NODE_ENV=production
 # A file call stuck on a dead mount holds one libuv thread for as long as the mount hangs; the default of 4
 # would let a few of them stall DNS, async fs and zlib for the whole process.
 ENV UV_THREADPOOL_SIZE=16
 ENV AONARR_CONFIG_DIR=/config
 ENV AONARR_BUILD_TIME=$BUILD_TIME
+ENV AONARR_COMMIT=$GIT_COMMIT
 ENV AONARR_IMAGE_TAG=server
 ENV PUID=99
 ENV PGID=100

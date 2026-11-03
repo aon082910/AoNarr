@@ -1,0 +1,301 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import { setupTestDb } from "./helpers/testDb.js";
+import type { __setHealthTimeoutsForTests as SetTimeouts } from "../src/services/healthReport.js";
+
+let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
+let getHealthReport: (typeof import("../src/services/healthReport.js"))["getHealthReport"];
+let setHealthTimeouts: typeof SetTimeouts;
+let clearHealthReportCache: (typeof import("../src/services/healthReport.js"))["clearHealthReportCache"];
+let registerJob: (typeof import("../src/services/jobRegistry.js"))["registerJob"];
+let setSetting: (key: string, value: string) => void;
+let baseDir: string;
+let uniqueCounter = 0;
+
+beforeAll(async () => {
+  ({ db } = await setupTestDb());
+  ({ getHealthReport, clearHealthReportCache, __setHealthTimeoutsForTests: setHealthTimeouts } = await import("../src/services/healthReport.js"));
+  ({ registerJob } = await import("../src/services/jobRegistry.js"));
+  ({ setSetting } = await import("../src/services/settingsStore.js"));
+  baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-health-"));
+});
+
+beforeEach(async () => {
+  clearHealthReportCache();
+  for (const table of ["queue", "import_lists", "indexer_status", "indexers", "download_clients", "root_folders", "job_runs"]) {
+    await db.prepare(`DELETE FROM ${table}`).run();
+  }
+  setSetting("backupEnabled", "0");
+  setSetting("backupProblem", "");
+  setSetting("recycleBinDir", "");
+  // Every indexer and client probe fails fast and offline.
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+async function issuesOf(sourcePrefix?: string) {
+  clearHealthReportCache();
+  const report = await getHealthReport({ refresh: true });
+  return sourcePrefix ? report.issues.filter((i) => i.source.startsWith(sourcePrefix)) : report.issues;
+}
+
+describe("getHealthReport — the checks Sonarr has and AoNarr lacked (RB8)", () => {
+  it("reports a root folder that is gone, as an issue that may clear by itself after a reboot", async () => {
+    const id = Number((await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, 'movie')").run(path.join(baseDir, "unmounted"))).lastInsertRowid);
+
+    const issues = await issuesOf("root-folder:");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ source: `root-folder:${id}`, severity: "warning", transient: true });
+    expect(issues[0].message).toContain("Is the share mounted?");
+  });
+
+  it("reports an import list whose last sync failed, and ignores one that is disabled", async () => {
+    await db.prepare("INSERT INTO import_lists (name, type, url, enabled, last_error) VALUES ('Trakt Watchlist', 'trakt', 'u', 1, 'HTTP 401')").run();
+    await db.prepare("INSERT INTO import_lists (name, type, url, enabled, last_error) VALUES ('Old List', 'trakt', 'u', 0, 'HTTP 500')").run();
+    await db.prepare("INSERT INTO import_lists (name, type, url, enabled, last_error) VALUES ('Fine List', 'trakt', 'u', 1, '')").run();
+
+    const issues = await issuesOf("import-list:");
+
+    expect(issues.map((i) => i.message)).toEqual(['Import list "Trakt Watchlist" failed its last sync: HTTP 401']);
+  });
+
+  it("reports a job whose last three runs failed", async () => {
+    const key = `health-job-${++uniqueCounter}`;
+    registerJob({ key, name: "Flaky Sync", scheduleType: "cron", defaultSchedule: "0 3 * * *", run: async () => {} });
+    for (const hour of [1, 2, 3]) {
+      await db
+        .prepare("INSERT INTO job_runs (job_key, started_at, finished_at, status, error) VALUES (?, ?, ?, 'error', 'HTTP 503')")
+        .run(key, `2026-03-01T0${hour}:00:00.000Z`, `2026-03-01T0${hour}:00:01.000Z`);
+    }
+
+    const issues = await issuesOf(`job:${key}`);
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toBe('Job "Flaky Sync" failed its last 3 runs: HTTP 503');
+  });
+
+  it("reports a failed backup both as a config warning and as an issue", async () => {
+    setSetting("backupEnabled", "1");
+    setSetting("backupProblem", "Scheduled backup failed: disk full");
+
+    const report = await getHealthReport({ refresh: true });
+
+    expect(report.configWarnings).toContainEqual({ key: "backup_failed", message: "Scheduled backup failed: disk full" });
+    expect(report.issues.find((i) => i.source === "backup")?.message).toBe("Scheduled backup failed: disk full");
+  });
+
+  it("reports an unwritable recycle bin as an error", async () => {
+    const blocker = path.join(baseDir, `bin-blocker-${++uniqueCounter}`);
+    fs.writeFileSync(blocker, "x");
+    setSetting("recycleBinDir", path.join(blocker, "bin"));
+
+    const issues = await issuesOf("recycle-bin");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ severity: "error" });
+    expect(issues[0].message).toContain("not writable");
+  });
+
+  it("reports a library type that no enabled indexer searches", async () => {
+    const folder = path.join(baseDir, `tv-${++uniqueCounter}`);
+    fs.mkdirSync(folder);
+    await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, 'series')").run(folder);
+    await db.prepare("INSERT INTO indexers (name, protocol, url, media_types, enabled) VALUES ('Movies Only', 'torznab', 'http://x', 'movie', 1)").run();
+
+    const issues = await issuesOf("no-indexer-for:");
+
+    expect(issues.map((i) => i.message)).toEqual(['No enabled indexer searches the "series" library, so nothing for it will ever be found']);
+  });
+
+  it("reports an indexer that is being left alone after failures, from the stored state, until it is over", async () => {
+    const id = Number((await db.prepare("INSERT INTO indexers (name, protocol, url, media_types, enabled) VALUES ('Flaky', 'torznab', 'http://x', 'movie', 1)").run()).lastInsertRowid);
+    await db
+      .prepare("INSERT INTO indexer_status (indexer_id, consecutive_failures, backoff_until, backoff_reason, backoff_set_at) VALUES (?, 3, ?, 'failures', ?)")
+      .run(id, new Date(Date.now() + 3_600_000).toISOString(), new Date().toISOString());
+
+    let issues = await issuesOf("indexer-backoff:");
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('Indexer "Flaky" is not being searched until');
+    expect(issues[0].message).toContain("3 failed search(es) in a row");
+
+    await db.prepare("UPDATE indexer_status SET backoff_until = ?").run(new Date(Date.now() - 1000).toISOString());
+    issues = await issuesOf("indexer-backoff:");
+    expect(issues).toEqual([]);
+  });
+});
+
+describe("getHealthReport — download clients (DL13)", () => {
+  async function addClient(type = "qbittorrent"): Promise<number> {
+    return Number(
+      (await db.prepare("INSERT INTO download_clients (name, type, host, port, enabled) VALUES ('Seedbox', ?, 'client.local', 8080, 1)").run(type)).lastInsertRowid
+    );
+  }
+
+  async function addCompletedDownload(clientId: number, downloadPath: string): Promise<void> {
+    const mediaId = Number(
+      (await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie', 'M', 'm', 1, 0, 'missing')").run()).lastInsertRowid
+    );
+    await db
+      .prepare("INSERT INTO queue (media_item_id, title, download_client_id, status, download_path) VALUES (?, 'Release', ?, 'completed', ?)")
+      .run(mediaId, clientId, downloadPath);
+  }
+
+  it("reports a finished download whose reported folder AoNarr cannot see, once per client", async () => {
+    const clientId = await addClient();
+    await addCompletedDownload(clientId, "/data/downloads/Missing.Movie.2020");
+    await addCompletedDownload(clientId, "/data/downloads/Missing.Movie.2021");
+
+    const issues = await issuesOf("download-path:");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('Download client "Seedbox" reports a finished download at');
+    expect(issues[0].message).toContain("Remote Path Mappings");
+  });
+
+  it("says nothing when the reported folder exists", async () => {
+    const clientId = await addClient();
+    const dir = path.join(baseDir, `done-${++uniqueCounter}`);
+    fs.mkdirSync(dir);
+    await addCompletedDownload(clientId, dir);
+
+    expect(await issuesOf("download-path:")).toEqual([]);
+  });
+
+  it("includes what a client's own settings would do to a download", async () => {
+    await addClient("qbittorrent");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).includes("/auth/login")) return { ok: true, status: 200, text: async () => "Ok.", headers: new Headers({ "set-cookie": "SID=1" }) };
+        if (String(url).includes("/app/preferences")) {
+          return { ok: true, status: 200, json: async () => ({ max_ratio_enabled: true, max_ratio: 1, max_ratio_act: 1 }) };
+        }
+        return { ok: true, status: 200, json: async () => [], text: async () => "[]" };
+      })
+    );
+
+    const issues = await issuesOf("download-client-config:");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toMatch(/^Download client "Seedbox": is set to remove torrents/);
+  });
+});
+
+describe("getHealthReport — keeping the result (RB8)", () => {
+  it("serves the same report to a second page load without running the checks again, until refreshed", async () => {
+    const first = await getHealthReport({ refresh: true });
+    const second = await getHealthReport();
+    expect(second).toBe(first);
+
+    const refreshed = await getHealthReport({ refresh: true });
+    expect(refreshed).not.toBe(first);
+    expect(refreshed.checkedAt >= first.checkedAt).toBe(true);
+  });
+
+  it("does not ping an indexer on a page load once the report is cached", async () => {
+    await db.prepare("INSERT INTO indexers (name, protocol, url, media_types, enabled) VALUES ('Pinged', 'torznab', 'http://idx.local', 'movie', 1)").run();
+    const fetchMock = vi.fn().mockRejectedValue(new Error("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getHealthReport({ refresh: true });
+    const callsAfterBuild = fetchMock.mock.calls.length;
+    expect(callsAfterBuild).toBeGreaterThan(0);
+
+    await getHealthReport();
+    await getHealthReport();
+    expect(fetchMock.mock.calls.length).toBe(callsAfterBuild);
+  });
+
+  it("shares one run between callers that arrive together", async () => {
+    clearHealthReportCache();
+    const [a, b] = await Promise.all([getHealthReport({ refresh: true }), getHealthReport({ refresh: true })]);
+    expect(a).toBe(b);
+  });
+});
+
+describe("getHealthReport — review fixes", () => {
+  it("does not call an import list's 'items not added' warning a failure (F5)", async () => {
+    await db
+      .prepare("INSERT INTO import_lists (name, type, url, enabled, last_error) VALUES ('Mixed List', 'trakt', 'u', 1, ?)")
+      .run("Added 5; 3 item(s) not added: no root folder is configured for series, book");
+    expect(await issuesOf("import-list:")).toEqual([]);
+  });
+
+  it("does not ask for an indexer for a podcast or video library, nor when an IRC feed or Soulseek serves the type (F6)", async () => {
+    const make = (name: string) => {
+      const dir = path.join(baseDir, `${name}-${++uniqueCounter}`);
+      fs.mkdirSync(dir);
+      return dir;
+    };
+    await db.prepare("INSERT INTO indexers (name, protocol, url, media_types, enabled) VALUES ('Movies Only', 'torznab', 'http://x', 'movie', 1)").run();
+    await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, 'podcast')").run(make("pod"));
+    await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, 'video')").run(make("vid"));
+    expect(await issuesOf("no-indexer-for:")).toEqual([]);
+
+    await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, 'artist')").run(make("music"));
+    expect((await issuesOf("no-indexer-for:")).map((i) => i.source)).toEqual(["no-indexer-for:artist"]);
+    await db.prepare("INSERT INTO download_clients (name, type, host, port, enabled) VALUES ('slskd', 'slskd', 'h', 5030, 1)").run();
+    expect(await issuesOf("no-indexer-for:")).toEqual([]);
+
+    await db.prepare("DELETE FROM download_clients").run();
+    await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, 'series')").run(make("tv"));
+    expect((await issuesOf("no-indexer-for:")).length).toBe(2);
+    await db
+      .prepare("INSERT INTO irc_feeds (name, host, nickname, channel, announce_regex, enabled) VALUES ('Feed', 'irc.x', 'me', '#c', '.*', 1)")
+      .run();
+    expect(await issuesOf("no-indexer-for:")).toEqual([]);
+    await db.prepare("DELETE FROM irc_feeds").run();
+  });
+
+  it("does not create a missing recycle bin folder, and says nothing about one that is not there yet (F4)", async () => {
+    const bin = path.join(baseDir, `never-created-${++uniqueCounter}`);
+    setSetting("recycleBinDir", bin);
+    expect(await issuesOf("recycle-bin")).toEqual([]);
+    expect(fs.existsSync(bin)).toBe(false);
+  });
+
+  it("gives up on a check that never finishes and still returns the rest of the report (F4)", async () => {
+    const dir = path.join(baseDir, `hung-root-${++uniqueCounter}`);
+    fs.mkdirSync(dir);
+    await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, 'movie')").run(dir);
+    const realStat = fs.promises.stat;
+    const spy = vi.spyOn(fs.promises, "stat").mockImplementation(((p: unknown, ...rest: unknown[]) =>
+      String(p) === dir ? new Promise(() => {}) : (realStat as any)(p, ...rest)) as any);
+    setHealthTimeouts({ check: 80 });
+    try {
+      clearHealthReportCache();
+      const started = Date.now();
+      const report = await getHealthReport({ refresh: true });
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(Array.isArray(report.issues)).toBe(true);
+      expect(report.issues.some((i) => i.source.startsWith("root-folder:"))).toBe(false); // that check was given up on
+    } finally {
+      setHealthTimeouts({ check: 60_000 });
+      spy.mockRestore();
+    }
+  });
+
+  it("does not hold every later caller when a whole build never finishes (F4)", async () => {
+    setHealthTimeouts({ build: 50 });
+    // A client probe that never answers makes the build itself stall.
+    await db.prepare("INSERT INTO download_clients (name, type, host, port, enabled) VALUES ('Mute', 'qbittorrent', 'mute.local', 8080, 1)").run();
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    try {
+      clearHealthReportCache();
+      await expect(getHealthReport({ refresh: true })).rejects.toThrow(/did not finish/);
+      // the next caller starts a fresh build instead of inheriting the stuck one
+      setHealthTimeouts({ build: 3 * 60 * 1000 });
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+      const report = await getHealthReport({ refresh: true });
+      expect(report.downloadClients[0]).toMatchObject({ name: "Mute", ok: false });
+    } finally {
+      setHealthTimeouts({ build: 3 * 60 * 1000 });
+    }
+  });
+});

@@ -21,6 +21,17 @@ interface DiskSpaceEntry {
 
 interface SystemStatus {
   version: string;
+  build?: {
+    appVersion: string;
+    buildTime: string | null;
+    imageTag: string | null;
+    commit: string | null;
+    startedAt: string;
+    runtime: string;
+    docker: boolean;
+    databaseType: string;
+    databaseVersion: string | null;
+  };
   nodeVersion: string;
   platform: string;
   uptimeSeconds: number;
@@ -137,6 +148,9 @@ interface HealthReport {
   upgradeCandidates: UpgradeCandidate[];
   diskWarnings: DiskWarning[];
   diskWarnPercentFree: number;
+  checkedAt?: string;
+  /** Every problem found, one per entry; the table rows and warnings above show some of them already. */
+  issues?: { source: string; severity: "error" | "warning"; message: string }[];
 }
 
 interface OrphanedFile {
@@ -272,8 +286,9 @@ export default function System() {
   const [libraryValidationLoading, setLibraryValidationLoading] = useState(false);
   const [libraryValidationError, setLibraryValidationError] = useState<string | null>(null);
 
-  function loadHealth() {
-    api.get<HealthReport>("/system/health").then(setHealth);
+  /** `refresh` runs the checks again; without it a report up to ten minutes old can come back. */
+  function loadHealth(refresh = false) {
+    api.get<HealthReport>(refresh ? "/system/health?refresh=1" : "/system/health").then(setHealth);
   }
 
   async function saveSetting(key: string, value: string) {
@@ -690,6 +705,22 @@ export default function System() {
             <td>{status.version}</td>
           </tr>
           <tr>
+            <th>Build</th>
+            <td>
+              {status.build?.imageTag ? `image "${status.build.imageTag}"` : "local build"}
+              {status.build?.buildTime ? `, built ${status.build.buildTime}` : ""}
+              {status.build?.commit ? `, commit ${status.build.commit.slice(0, 7)}` : ""}
+            </td>
+          </tr>
+          <tr>
+            <th>Started</th>
+            <td>{status.build?.startedAt ?? "unknown"}{status.build?.docker ? " (in Docker)" : ""}</td>
+          </tr>
+          <tr>
+            <th>Database</th>
+            <td>{status.build ? `${status.build.databaseType} ${status.build.databaseVersion ?? ""}` : "unknown"}</td>
+          </tr>
+          <tr>
             <th>Node.js</th>
             <td>{status.nodeVersion}</td>
           </tr>
@@ -825,6 +856,23 @@ export default function System() {
             </div>
           )}
 
+          {(health.issues ?? []).filter((i) => !/^(indexer|download-client|disk):/.test(i.source) && i.source !== "backup").length > 0 && (
+            <div className="form-panel" style={{ borderColor: "var(--danger)", marginBottom: 16 }}>
+              {(health.issues ?? [])
+                .filter((i) => !/^(indexer|download-client|disk):/.test(i.source) && i.source !== "backup")
+                .map((i) => (
+                  <p key={`${i.source}-${i.message}`} style={{ color: i.severity === "error" ? "var(--danger)" : "var(--warning, var(--danger))", margin: "4px 0" }}>
+                    ⚠ {i.message}
+                  </p>
+                ))}
+            </div>
+          )}
+          {health.checkedAt && (
+            <p style={{ color: "var(--muted)", fontSize: "0.8rem", margin: "0 0 8px" }}>
+              Checked {new Date(health.checkedAt).toLocaleString()} (the checks run every 30 minutes and are reused for ten minutes between page loads; Refresh runs them now).
+            </p>
+          )}
+
           <table>
             <thead>
               <tr>
@@ -899,7 +947,7 @@ export default function System() {
           <p style={{ marginTop: 12 }}>
             <strong>{health.stuckQueue.length}</strong> queue item(s) stuck longer than{" "}
             {health.stuckQueueThresholdHours}h · <strong>{health.pendingRequests}</strong> pending request(s)
-            <button type="button" className="icon-button" style={{ marginLeft: 10, width: 26, height: 26 }} onClick={loadHealth} title="Refresh" aria-label="Refresh">
+            <button type="button" className="icon-button" style={{ marginLeft: 10, width: 26, height: 26 }} onClick={() => loadHealth(true)} title="Refresh" aria-label="Refresh">
               <RotateCcwIcon />
             </button>
           </p>
@@ -1172,6 +1220,58 @@ export default function System() {
                   placeholder="aonarr-backups"
                   onBlur={(e) => saveSetting("s3Prefix", e.target.value)}
                 />
+              </div>
+            ),
+          },
+          {
+            key: "housekeeping",
+            label: "Housekeeping",
+            description: "Daily clean-up of old history and the database file",
+            render: () => (
+              <div>
+                <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
+                  A daily job (03:30) deletes old rows so the database stops growing for ever: Activity history,
+                  watch history and the audit log are kept for the number of days below (365 by default; 0 keeps
+                  everything; anything under 30 counts as 30). It also removes expired sign-in sessions, the
+                  database copy a restore leaves behind after a week, and gives unused space in the database file
+                  back about once a month when that would free a worthwhile amount.
+                </p>
+                <label htmlFor="system-housekeeping-history">Keep Activity history for (days)</label>
+                <input id="system-housekeeping-history"
+                  type="number"
+                  min={0}
+                  style={{ maxWidth: 120 }}
+                  key={settings.housekeepingHistoryDays ?? "hk-history-empty"}
+                  defaultValue={settings.housekeepingHistoryDays ?? "365"}
+                  onBlur={(e) => saveSetting("housekeepingHistoryDays", e.target.value)}
+                />
+                <label htmlFor="system-housekeeping-watch">Keep watch history for (days)</label>
+                <input id="system-housekeeping-watch"
+                  type="number"
+                  min={0}
+                  style={{ maxWidth: 120 }}
+                  key={settings.housekeepingWatchEventDays ?? "hk-watch-empty"}
+                  defaultValue={settings.housekeepingWatchEventDays ?? "365"}
+                  onBlur={(e) => saveSetting("housekeepingWatchEventDays", e.target.value)}
+                />
+                <label htmlFor="system-housekeeping-audit">Keep the audit log for (days)</label>
+                <input id="system-housekeeping-audit"
+                  type="number"
+                  min={0}
+                  style={{ maxWidth: 120 }}
+                  key={settings.housekeepingAuditDays ?? "hk-audit-empty"}
+                  defaultValue={settings.housekeepingAuditDays ?? "365"}
+                  onBlur={(e) => saveSetting("housekeepingAuditDays", e.target.value)}
+                />
+                <label htmlFor="system-housekeeping-vacuum">Shrink the database file</label>
+                <select id="system-housekeeping-vacuum"
+                  key={settings.housekeepingVacuum ?? "hk-vacuum-empty"}
+                  defaultValue={settings.housekeepingVacuum ?? "1"}
+                  onChange={(e) => saveSetting("housekeepingVacuum", e.target.value)}
+                >
+                  <option value="1">When it frees a worthwhile amount (about monthly)</option>
+                  <option value="0">Never (it pauses the app for the time it takes)</option>
+                </select>
               </div>
             ),
           },
@@ -1655,7 +1755,8 @@ export default function System() {
           onChange={(e) => saveSetting("logLevel", e.target.value)}
           style={{ width: "auto", marginBottom: 10 }}
         >
-          <option value="info">Info (default) — everything</option>
+          <option value="debug">Debug — everything, with extra detail</option>
+          <option value="info">Info (default) — everything else</option>
           <option value="warn">Warn — only warnings and errors</option>
           <option value="error">Error — only errors</option>
         </select>
@@ -1666,6 +1767,7 @@ export default function System() {
         <div className="toolbar">
           <select value={logLevelFilter} onChange={(e) => setLogLevelFilter(e.target.value)} style={{ width: "auto" }}>
             <option value="">All levels</option>
+            <option value="debug">Debug</option>
             <option value="info">Info</option>
             <option value="warn">Warn</option>
             <option value="error">Error</option>

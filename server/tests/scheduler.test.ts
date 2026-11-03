@@ -16,6 +16,7 @@ vi.mock("../src/services/indexerClient.js", () => ({
   isIndexerBackedOff: (...args: unknown[]) => isIndexerBackedOff(...(args as [number])),
   isIndexerAvailable: (indexer: { id: number }) => !isIndexerBackedOff(indexer.id),
   searchReachOf: (results: object) => searchReaches.get(results),
+  loadIndexerStatuses: async () => {},
 }));
 
 const getDownloadClientAdapter = vi.fn();
@@ -40,12 +41,14 @@ vi.mock("../src/services/importer.js", async (importOriginal) => {
 const notifyFailed = vi.fn();
 const notifyGrabbed = vi.fn();
 const notifyHealthIssue = vi.fn();
+const notifyHealthRestored = vi.fn();
 const notifyManualInteractionRequired = vi.fn();
 const notifyUpdateAvailable = vi.fn();
 vi.mock("../src/services/notifications.js", () => ({
   notifyFailed: (...args: unknown[]) => notifyFailed(...args),
   notifyGrabbed: (...args: unknown[]) => notifyGrabbed(...args),
   notifyHealthIssue: (...args: unknown[]) => notifyHealthIssue(...args),
+  notifyHealthRestored: (...args: unknown[]) => notifyHealthRestored(...args),
   notifyManualInteractionRequired: (...args: unknown[]) => notifyManualInteractionRequired(...args),
   notifyUpdateAvailable: (...args: unknown[]) => notifyUpdateAvailable(...args),
 }));
@@ -77,6 +80,9 @@ vi.mock("../src/services/jobRegistry.js", () => ({
     return registerJob(...args);
   },
   startAllJobs: (...args: unknown[]) => startAllJobs(...args),
+  hydrateJobHistory: async () => {},
+  getFailingJobs: async () => [],
+  catchUpMissedJobs: () => [],
   runJobNow: () => "started",
 }));
 
@@ -171,6 +177,7 @@ beforeEach(async () => {
   notifyFailed.mockReset();
   notifyGrabbed.mockReset();
   notifyHealthIssue.mockReset();
+  notifyHealthRestored.mockReset();
   notifyManualInteractionRequired.mockReset().mockResolvedValue(undefined);
   notifyUpdateAvailable.mockReset();
   checkForUpdate.mockReset();
@@ -187,6 +194,7 @@ beforeEach(async () => {
   setSetting("failedDownloadBehavior", "");
   setSetting("maxAutoRetries", "2");
   setSetting("lastHealthIssueSummary", "");
+  setSetting("lastHealthIssueSources", "");
   setSetting("stalledDownloadHours", "6");
 });
 
@@ -1802,6 +1810,91 @@ describe("checkHealthAndNotify", () => {
   it("does not notify at all when nothing is wrong", async () => {
     await checkHealthAndNotify();
     expect(notifyHealthIssue).not.toHaveBeenCalled();
+    expect(notifyHealthRestored).not.toHaveBeenCalled();
+  });
+
+  it("sends a 'restored' notice, once, when everything the last notice listed has cleared (RB8)", async () => {
+    checkIndexerHealth.mockResolvedValue({ ok: false });
+    await db.prepare("INSERT INTO indexers (name, protocol, url, enabled) VALUES ('Bad Indexer', 'torznab', 'http://x', 1)").run();
+    await checkHealthAndNotify();
+    expect(notifyHealthIssue).toHaveBeenCalledTimes(1);
+
+    checkIndexerHealth.mockResolvedValue({ ok: true });
+    await checkHealthAndNotify();
+    await checkHealthAndNotify();
+
+    expect(notifyHealthRestored).toHaveBeenCalledTimes(1);
+    expect(notifyHealthRestored).toHaveBeenCalledWith(expect.stringContaining('Indexer "Bad Indexer" is unreachable'));
+  });
+
+  it("does not announce the same problem again when only its detail changes, such as a backoff that steps up (review F8)", async () => {
+    const id = Number((await db.prepare("INSERT INTO indexers (name, protocol, url, enabled) VALUES ('Flaky', 'torznab', 'http://x', 1)").run()).lastInsertRowid);
+    const backoff = async (minutes: number, failures: number) => {
+      await db.prepare("DELETE FROM indexer_status").run();
+      await db
+        .prepare("INSERT INTO indexer_status (indexer_id, consecutive_failures, backoff_until, backoff_reason) VALUES (?, ?, ?, 'failures')")
+        .run(id, failures, new Date(Date.now() + minutes * 60_000).toISOString());
+    };
+    await backoff(5, 1);
+    await checkHealthAndNotify();
+    expect(notifyHealthIssue).toHaveBeenCalledTimes(1);
+
+    await backoff(15, 2); // the text now names a later time and another count
+    await checkHealthAndNotify();
+    await backoff(60, 3);
+    await checkHealthAndNotify();
+
+    expect(notifyHealthIssue).toHaveBeenCalledTimes(1);
+    await db.prepare("DELETE FROM indexer_status").run();
+  });
+
+  it("a restart during an outage that was already announced sends neither a false 'restored' nor the same issue again (review F3)", async () => {
+    const { __setHealthStartupGraceMsForTests } = await import("../src/services/healthReport.js");
+    checkIndexerHealth.mockResolvedValue({ ok: false });
+    const id = Number((await db.prepare("INSERT INTO indexers (name, protocol, url, enabled) VALUES ('Down', 'torznab', 'http://x', 1)").run()).lastInsertRowid);
+    await checkHealthAndNotify(); // announced before the restart
+    expect(notifyHealthIssue).toHaveBeenCalledTimes(1);
+
+    __setHealthStartupGraceMsForTests(15 * 60 * 1000);
+    try {
+      await checkHealthAndNotify(); // the first tick after the restart, inside the grace, the indexer still down
+      expect(notifyHealthRestored).not.toHaveBeenCalled();
+      expect(notifyHealthIssue).toHaveBeenCalledTimes(1);
+    } finally {
+      __setHealthStartupGraceMsForTests(0);
+    }
+    await checkHealthAndNotify(); // grace over, still the same problem
+    expect(notifyHealthIssue).toHaveBeenCalledTimes(1);
+    expect(id).toBeGreaterThan(0);
+  });
+
+  it("holds back problems that often clear by themselves during the start-up grace period, but not the others (RB8)", async () => {
+    const { __setHealthStartupGraceMsForTests } = await import("../src/services/healthReport.js");
+    __setHealthStartupGraceMsForTests(15 * 60 * 1000);
+    try {
+      checkIndexerHealth.mockResolvedValue({ ok: false });
+      await db.prepare("INSERT INTO indexers (name, protocol, url, enabled) VALUES ('Slow To Boot', 'torznab', 'http://x', 1)").run();
+
+      await checkHealthAndNotify();
+      expect(notifyHealthIssue).not.toHaveBeenCalled();
+
+      // A problem that does not clear by itself is told at once, and the held-back one stays out of the text.
+      const folder = (await db.prepare("INSERT INTO root_folders (path, media_type) VALUES ('/x', 'movie')").run()).lastInsertRowid as number;
+      await db.prepare("INSERT INTO disk_usage_samples (root_folder_id, free_bytes, total_bytes) VALUES (?, 1, 1000)").run(folder);
+      await checkHealthAndNotify();
+      expect(notifyHealthIssue).toHaveBeenCalledTimes(1);
+      const text = notifyHealthIssue.mock.calls[0][0] as string;
+      expect(text).toContain("low on disk space");
+      expect(text).not.toContain("Slow To Boot");
+      expect(text).not.toContain("is missing"); // the unmounted-looking /x root folder is transient too
+    } finally {
+      __setHealthStartupGraceMsForTests(0);
+    }
+
+    // Grace over: the held-back problems are told.
+    await checkHealthAndNotify();
+    expect(notifyHealthIssue).toHaveBeenCalledTimes(2);
+    expect(notifyHealthIssue.mock.calls[1][0]).toContain("Slow To Boot");
   });
 
   it("reports a failed scheduled backup, once per distinct text, and nothing while backups are switched off (RB2)", async () => {
@@ -1924,6 +2017,40 @@ describe("startScheduler", () => {
     expect(new Set(keys).size).toBe(keys.length); // every job key is unique
     expect(keys).toContain("autoSearch");
     expect(keys).toContain("queuePoll");
+  });
+
+  it("marks the library-walking jobs heavy, so only one of them runs at a time (RB7)", () => {
+    startScheduler(); // registers only once per module: the definitions are kept in registeredJobs
+    const defs = registeredJobs as unknown as Map<string, { heavy?: boolean; catchUp?: boolean; defaultSchedule: string }>;
+    for (const key of ["libraryScan", "libraryRefresh", "corruptMediaCheck", "deletedFileCheck", "duplicateCheck", "subtitleRescan", "autoArchival", "housekeeping", "recycleBinCleanup"]) {
+      expect(defs.get(key)?.heavy, key).toBe(true);
+    }
+    for (const key of ["autoSearch", "queuePoll", "rssSync", "healthCheckNotify"]) expect(defs.get(key)?.heavy, key).toBeFalsy();
+    for (const key of ["corruptMediaCheck", "libraryRefresh", "sceneNumberingSync"]) expect(defs.get(key)?.catchUp, key).toBe(true);
+  });
+
+  it("spreads the default schedules over different minutes instead of starting 19 jobs at midnight (RB7)", () => {
+    startScheduler();
+    const bySchedule = new Map<string, string[]>();
+    for (const def of registeredJobs.values() as unknown as Iterable<{ key: string; scheduleType: string; defaultSchedule: string }>) {
+      if (def.scheduleType !== "cron") continue;
+      bySchedule.set(def.defaultSchedule, [...(bySchedule.get(def.defaultSchedule) ?? []), def.key]);
+    }
+    // No more than a few jobs share one exact schedule (the old defaults had seven at "0 */6 * * *" and nineteen at midnight).
+    for (const [schedule, keys] of bySchedule) expect(keys.length, `${schedule}: ${keys.join(", ")}`).toBeLessThanOrEqual(3);
+    // And the heavy jobs never share a start time.
+    const heavy = new Map<string, string[]>();
+    for (const def of registeredJobs.values() as unknown as Iterable<{ key: string; heavy?: boolean; defaultSchedule: string }>) {
+      if (def.heavy) heavy.set(def.defaultSchedule, [...(heavy.get(def.defaultSchedule) ?? []), def.key]);
+    }
+    for (const [schedule, keys] of heavy) expect(keys.length, `${schedule}: ${keys.join(", ")}`).toBe(1);
+  });
+
+  it("registers the housekeeping job and the cheap new-episode pass", () => {
+    startScheduler();
+    const keys = [...registeredJobs.keys()];
+    expect(keys).toContain("housekeeping");
+    expect(keys).toContain("newChildrenRefresh");
   });
 });
 

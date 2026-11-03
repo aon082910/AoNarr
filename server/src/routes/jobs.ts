@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { cancelJob, listJobs, runJobNow, updateJobSchedule } from "../services/jobRegistry.js";
+import { cancelJob, listJobRuns, listJobs, runJobNow, updateJobSchedule } from "../services/jobRegistry.js";
 
 export const jobsRouter = Router();
 jobsRouter.use(requireAdmin);
@@ -10,6 +10,17 @@ jobsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
     res.json(listJobs());
+  })
+);
+
+jobsRouter.get(
+  "/:key/runs",
+  asyncHandler(async (req, res) => {
+    if (!listJobs().some((j) => j.key === req.params.key)) throw new HttpError(404, "Unknown job");
+    const rows = await listJobRuns(req.params.key, 30);
+    res.json(
+      rows.map((r) => ({ id: r.id, startedAt: r.started_at, finishedAt: r.finished_at, status: r.status, error: r.error, durationMs: r.duration_ms }))
+    );
   })
 );
 

@@ -53,6 +53,7 @@ interface HealthSummary {
   indexers: { id: number; name: string; ok: boolean; error?: string }[];
   downloadClients: { id: number; name: string; ok: boolean; error?: string }[];
   diskWarnings: { rootFolderId: number; path: string; percentFree: number; freeGb?: number; minFreeSpaceGb?: number | null }[];
+  issues?: { source: string; message: string }[];
 }
 
 // Local dates — `toISOString()` would roll "today" over to tomorrow for an evening west of UTC
@@ -152,6 +153,10 @@ export default function Dashboard() {
             ? `"${d.path}" is below its configured minimum free space (${d.freeGb}GB free, minimum ${d.minFreeSpaceGb}GB)`
             : `"${d.path}" is low on disk space (${d.percentFree}% free)`
         ),
+        // Root folders, jobs, import lists, the recycle bin and the download-client checks; the ones above are listed already.
+        ...(health.issues ?? [])
+          .filter((i) => !/^(indexer|download-client|disk):/.test(i.source) && i.source !== "backup")
+          .map((i) => i.message),
       ]
     : [];
 

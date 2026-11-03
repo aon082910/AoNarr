@@ -76,6 +76,9 @@ export default function Jobs() {
         seconds for interval-based jobs), trigger a run immediately, or cancel one that's in
         progress. Cancellation is best-effort: jobs that loop over items stop between items;
         jobs that are a handful of network calls may still finish the call already in flight.
+        Jobs marked heavy (library scans, media checks, archival) run one at a time: a second
+        one waits for the first. The last result of each job is kept across restarts, and a
+        weekly job a restart skipped runs a couple of minutes after the next start.
       </p>
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
       <JobsTable jobs={jobs} editing={editing} setEditing={setEditing} onSave={saveSchedule} onRunNow={runNow} onCancel={cancel} />
@@ -137,7 +140,12 @@ function JobsTable({
                 )}
               </td>
               <td>
-                <span className={`badge ${j.running ? "ok" : ""}`}>{j.running ? "Running" : "Idle"}</span>
+                <span className={`badge ${j.running ? "ok" : ""}`}>{j.running ? "Running" : j.queued ? "Waiting" : "Idle"}</span>
+                {j.heavy && (
+                  <span style={{ marginLeft: 6, color: "var(--muted)", fontSize: "0.75rem" }} title="Heavy job: only one runs at a time">
+                    heavy
+                  </span>
+                )}
               </td>
               <td>{j.lastRunAt ? new Date(j.lastRunAt).toLocaleString() : "Never"}</td>
               <td>{j.nextRunAt ? new Date(j.nextRunAt).toLocaleString() : "-"}</td>
@@ -153,10 +161,10 @@ function JobsTable({
                 )}
               </td>
               <td style={{ display: "flex", gap: 6 }}>
-                <button type="button" className="icon-button" onClick={() => onRunNow(j.key)} disabled={j.running} title="Run now" aria-label="Run now">
+                <button type="button" className="icon-button" onClick={() => onRunNow(j.key)} disabled={j.running || j.queued} title="Run now" aria-label="Run now">
                   <ZapIcon />
                 </button>
-                <button type="button" className="icon-button danger" onClick={() => onCancel(j.key)} disabled={!j.running} title="Cancel" aria-label="Cancel">
+                <button type="button" className="icon-button danger" onClick={() => onCancel(j.key)} disabled={!j.running && !j.queued} title="Cancel" aria-label="Cancel">
                   <XIcon />
                 </button>
               </td>

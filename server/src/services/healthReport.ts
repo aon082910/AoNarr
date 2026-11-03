@@ -1,0 +1,406 @@
+import { db } from "../db/index.js";
+import { nowOffsetHoursExpr } from "../db/asyncDb.js";
+import { downloadClientFromRow, indexerFromRow } from "../db/mappers.js";
+import { attachIndexerHealth } from "./indexerHealth.js";
+import { checkIndexerHealth } from "./indexerClient.js";
+import { getDownloadClientAdapter } from "./downloadClient.js";
+import { findRepeatedImports } from "./duplicates.js";
+import { findUpgradeCandidates } from "./upgradeCandidates.js";
+import { getBackupProblem } from "./scheduledBackup.js";
+import { getFailingJobs } from "./jobRegistry.js";
+import { findRootFolderProblems } from "./rootFolderCheck.js";
+import { recycleBinFolderProblem } from "./recycleBin.js";
+import { pathExistsAsync, StorageTimeoutError } from "./fsAsync.js";
+import { log } from "./logger.js";
+
+export const STUCK_QUEUE_HOURS = 6;
+export const DISK_WARN_PERCENT_FREE = 10;
+
+/**
+ * One thing that is wrong, in the words the health notification and the Health page both use. `transient`
+ * marks the kind that often clears itself after a reboot (a download client or share that starts after
+ * AoNarr, an indexer still waiting for the network): those are held back from notifications during the
+ * startup grace period, which Sonarr does not need to do only because it reads stored status instead of
+ * calling out.
+ */
+export interface HealthIssue {
+  source: string;
+  severity: "error" | "warning";
+  message: string;
+  transient: boolean;
+}
+
+/** How long after the process starts that transient issues are not notified. 0 turns the grace off. */
+let startupGraceMs = Number(process.env.AONARR_HEALTH_STARTUP_GRACE_MS ?? 15 * 60 * 1000);
+const PROCESS_STARTED_AT = Date.now();
+
+export function inHealthStartupGrace(): boolean {
+  return Date.now() - PROCESS_STARTED_AT < startupGraceMs;
+}
+
+/** Test-only: the grace period in milliseconds. */
+export function __setHealthStartupGraceMsForTests(ms: number): void {
+  startupGraceMs = ms;
+}
+
+export interface HealthReport {
+  checkedAt: string;
+  configWarnings: { key: string; message: string }[];
+  indexers: { id: number; name: string; ok: boolean; error?: string; recent: unknown }[];
+  downloadClients: { id: number; name: string; ok: boolean; error?: string }[];
+  stuckQueue: unknown[];
+  stuckQueueThresholdHours: number;
+  pendingRequests: number;
+  repeatedImports: unknown[];
+  upgradeCandidates: unknown[];
+  diskWarnings: {
+    rootFolderId: number;
+    path: string;
+    percentFree: number;
+    freeGb: number;
+    minFreeSpaceGb: number | null;
+  }[];
+  diskWarnPercentFree: number;
+  /** Everything wrong right now, one entry per problem (the notification and the Health page read these). */
+  issues: HealthIssue[];
+}
+
+/** Rejects if `promise` has not settled in `ms`. The work behind it may carry on, but the caller is released. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} did not finish within ${Math.round(ms / 1000)}s`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/** One check may take this long before the report goes on without it. */
+let checkTimeoutMs = 60_000;
+/** The whole report: past this a caller gets an error instead of waiting for a probe that never returns. */
+let buildTimeoutMs = 3 * 60 * 1000;
+
+/** Test-only: shorter limits, to prove a stuck check or build is given up on. */
+export function __setHealthTimeoutsForTests(limits: { check?: number; build?: number }): void {
+  if (limits.check !== undefined) checkTimeoutMs = limits.check;
+  if (limits.build !== undefined) buildTimeoutMs = limits.build;
+}
+
+/** Runs one check; a check that throws or hangs is logged and left out instead of taking the whole report down. */
+async function safely(source: string, check: () => Promise<HealthIssue[]>): Promise<HealthIssue[]> {
+  try {
+    return await withTimeout(check(), checkTimeoutMs, `the "${source}" check`);
+  } catch (err) {
+    log.warn(`[health] the "${source}" check failed:`, (err as Error).message);
+    return [];
+  }
+}
+
+/** Indexers that stopped being searched after repeated failures, from the persisted failure state. */
+async function indexerBackoffIssues(): Promise<HealthIssue[]> {
+  const rows = (await db
+    .prepare(
+      `SELECT i.id, i.name, s.consecutive_failures, s.backoff_until, s.backoff_reason
+       FROM indexer_status s JOIN indexers i ON i.id = s.indexer_id
+       WHERE i.enabled = 1 AND s.backoff_until IS NOT NULL`
+    )
+    .all()) as { id: number; name: string; consecutive_failures: number; backoff_until: string; backoff_reason: string | null }[];
+  const issues: HealthIssue[] = [];
+  for (const row of rows) {
+    const until = Date.parse(row.backoff_until);
+    if (!Number.isFinite(until) || until <= Date.now()) continue;
+    const when = new Date(until).toISOString().slice(0, 16).replace("T", " ");
+    issues.push({
+      source: `indexer-backoff:${row.id}`,
+      severity: "warning",
+      message:
+        row.backoff_reason === "rate-limit"
+          ? `Indexer "${row.name}" asked to be left alone (rate limit) until ${when} UTC`
+          : `Indexer "${row.name}" is not being searched until ${when} UTC after ${row.consecutive_failures} failed search(es) in a row`,
+      transient: true,
+    });
+  }
+  return issues;
+}
+
+/** Library types that are filled from feeds and channels, not from an indexer search. */
+const NOT_INDEXER_SEARCHED = new Set(["podcast", "video"]);
+
+/** A library type with a root folder but no enabled indexer that searches it never finds anything. */
+async function indexerCoverageIssues(): Promise<HealthIssue[]> {
+  const types = ((await db.prepare("SELECT DISTINCT media_type FROM root_folders").all()) as { media_type: string }[])
+    .map((r) => r.media_type)
+    .filter((type) => !NOT_INDEXER_SEARCHED.has(type));
+  if (types.length === 0) return [];
+  const indexers = (await db.prepare("SELECT media_types FROM indexers WHERE enabled = 1").all()) as { media_types: string | null }[];
+  if (indexers.length === 0) return []; // the "no indexer at all" warning already says it
+  // An IRC announce feed is not scoped to a media type, and a Soulseek daemon serves music.
+  const ircFeeds = Number(((await db.prepare("SELECT COUNT(*) AS c FROM irc_feeds WHERE enabled = 1").get()) as { c: number }).c);
+  if (ircFeeds > 0) return [];
+  const soulseek = Number(((await db.prepare("SELECT COUNT(*) AS c FROM download_clients WHERE enabled = 1 AND type = 'slskd'").get()) as { c: number }).c);
+  const covered = new Set(indexers.flatMap((i) => (i.media_types ?? "").split(",").map((s) => s.trim()).filter(Boolean)));
+  if (soulseek > 0) covered.add("artist");
+  return types
+    .filter((type) => !covered.has(type))
+    .map((type) => ({
+      source: `no-indexer-for:${type}`,
+      severity: "warning" as const,
+      message: `No enabled indexer searches the "${type}" library, so nothing for it will ever be found`,
+      transient: false,
+    }));
+}
+
+/** Import lists whose last sync failed. */
+async function importListIssues(): Promise<HealthIssue[]> {
+  const rows = (await db
+    // "Added N; M item(s) not added: no root folder..." is a warning the list keeps while it syncs fine: not a failure.
+    .prepare("SELECT id, name, last_error FROM import_lists WHERE enabled = 1 AND last_error IS NOT NULL AND last_error != '' AND last_error NOT LIKE 'Added %'")
+    .all()) as { id: number; name: string; last_error: string }[];
+  return rows.map((row) => ({
+    source: `import-list:${row.id}`,
+    severity: "warning" as const,
+    message: `Import list "${row.name}" failed its last sync: ${row.last_error}`,
+    transient: true,
+  }));
+}
+
+async function failingJobIssues(): Promise<HealthIssue[]> {
+  return (await getFailingJobs(3)).map((job) => ({
+    source: `job:${job.key}`,
+    severity: "warning" as const,
+    message: `Job "${job.name}" failed its last ${job.failures} runs${job.lastError ? `: ${job.lastError}` : ""}`,
+    transient: false,
+  }));
+}
+
+/**
+ * Sonarr's RemotePathMappingCheck, in the form AoNarr can answer: a finished download whose reported
+ * location AoNarr cannot see. The commonest Docker mistake is a client and AoNarr that see the same folder
+ * under different paths; without a mapping the importer widens to a search of the whole downloads folder or
+ * fails with "No matching file found". One issue per client, with the first path it could not see.
+ */
+async function downloadPathIssues(): Promise<HealthIssue[]> {
+  const rows = (await db
+    .prepare(
+      `SELECT q.download_path AS path, d.id AS client_id, d.name AS client_name
+       FROM queue q JOIN download_clients d ON d.id = q.download_client_id
+       WHERE q.status = 'completed' AND q.download_path IS NOT NULL AND q.download_path != ''
+       ORDER BY q.id DESC LIMIT 40`
+    )
+    .all()) as { path: string; client_id: number; client_name: string }[];
+  const issues = new Map<number, HealthIssue>();
+  for (const row of rows) {
+    if (issues.has(row.client_id)) continue;
+    let visible: boolean;
+    try {
+      visible = await pathExistsAsync(row.path, 10_000);
+    } catch (err) {
+      if (err instanceof StorageTimeoutError) continue; // an unresponsive mount is the root folder check's to report
+      throw err;
+    }
+    if (!visible) {
+      issues.set(row.client_id, {
+        source: `download-path:${row.client_id}`,
+        severity: "warning",
+        message: `Download client "${row.client_name}" reports a finished download at "${row.path}", which AoNarr cannot see. Check the Remote Path Mappings (the client's folder must be mapped to a folder inside AoNarr).`,
+        transient: false,
+      });
+    }
+  }
+  return [...issues.values()];
+}
+
+/** Client settings that delete or move a download before AoNarr can import it (an adapter's own `healthNotes`). */
+async function downloadClientConfigIssues(clients: ReturnType<typeof downloadClientFromRow>[]): Promise<HealthIssue[]> {
+  const issues: HealthIssue[] = [];
+  for (const client of clients) {
+    const adapter = getDownloadClientAdapter(client.type);
+    if (!adapter?.healthNotes) continue;
+    try {
+      for (const note of await adapter.healthNotes(client)) {
+        issues.push({ source: `download-client-config:${client.id}`, severity: "warning", message: `Download client "${client.name}": ${note}`, transient: false });
+      }
+    } catch {
+      // an unreachable client is already reported by the reachability check
+    }
+  }
+  return issues;
+}
+
+async function rootFolderIssues(): Promise<HealthIssue[]> {
+  return (await findRootFolderProblems()).map((problem) => ({
+    source: `root-folder:${problem.rootFolderId}`,
+    severity: problem.kind === "unwritable" || problem.kind === "not_a_directory" ? ("error" as const) : ("warning" as const),
+    message: problem.message,
+    // A share that is not up yet after a reboot looks like missing/empty/unreachable; read-only and not-a-folder do not clear by themselves.
+    transient: problem.kind === "missing" || problem.kind === "empty" || problem.kind === "unreachable",
+  }));
+}
+
+async function recycleBinIssues(): Promise<HealthIssue[]> {
+  const problem = await recycleBinFolderProblem();
+  return problem ? [{ source: "recycle-bin", severity: "error", message: `Recycle bin: ${problem}. Deleted and replaced files cannot be kept, so nothing is deleted until this is fixed.`, transient: false }] : [];
+}
+
+let cache: { at: number; report: HealthReport } | null = null;
+let inFlight: Promise<HealthReport> | null = null;
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+/** Test-only: forget the cached report. */
+export function clearHealthReportCache(): void {
+  cache = null;
+  inFlight = null;
+}
+
+async function buildHealthReport(): Promise<HealthReport> {
+  const indexers = ((await db.prepare("SELECT * FROM indexers WHERE enabled = 1").all()) as any[]).map(indexerFromRow);
+  // Historical recent-attempt data (from indexer_health, see services/indexerHealth.ts) alongside the live
+  // reachability check below — an indexer can pass a live "is it up right now" check while still having been
+  // unreliable over its last 50 real search attempts, and vice versa.
+  await attachIndexerHealth(indexers as any[]);
+  const indexerHealth = await Promise.all(
+    indexers.map(async (idx: any) => ({ id: idx.id, name: idx.name, ...(await checkIndexerHealth(idx)), recent: idx.health }))
+  );
+
+  const stuckQueueRows = (await db
+    .prepare(
+      `SELECT q.id, q.title, q.status, q.added_at AS "addedAt", m.title AS "mediaTitle" FROM queue q
+       JOIN media_items m ON m.id = q.media_item_id
+       WHERE q.status IN ('queued','downloading')
+       AND q.added_at <= ${nowOffsetHoursExpr(db, -STUCK_QUEUE_HOURS)}`
+    )
+    .all()) as any[];
+
+  const pendingRequests = Number(((await db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get()) as { c: number }).c);
+  const repeatedImports = await findRepeatedImports();
+  const upgradeCandidates = await findUpgradeCandidates();
+
+  const downloadClients = ((await db.prepare("SELECT * FROM download_clients WHERE enabled = 1").all()) as any[]).map(downloadClientFromRow);
+  const downloadClientHealth = await Promise.all(
+    downloadClients.map(async (client) => {
+      try {
+        await getDownloadClientAdapter(client.type).getStatus(client, []);
+        return { id: client.id, name: client.name, ok: true };
+      } catch (err) {
+        return { id: client.id, name: client.name, ok: false, error: (err as Error).message };
+      }
+    })
+  );
+
+  const rootFolders = (await db.prepare("SELECT id, path, min_free_space_gb FROM root_folders").all()) as {
+    id: number;
+    path: string;
+    min_free_space_gb: number | null;
+  }[];
+  const diskWarnings = (
+    await Promise.all(
+      rootFolders.map(async (folder) => {
+        const latest = (await db
+          .prepare("SELECT free_bytes, total_bytes FROM disk_usage_samples WHERE root_folder_id = ? ORDER BY sampled_at DESC LIMIT 1")
+          .get(folder.id)) as { free_bytes: number; total_bytes: number } | undefined;
+        if (!latest || !Number(latest.total_bytes)) return null;
+        const percentFree = (Number(latest.free_bytes) / Number(latest.total_bytes)) * 100;
+        // Radarr-style per-folder minimum free space (GB) — independent of the global percent threshold, since a
+        // huge drive at 8% free might still have hundreds of GB left (not actually urgent), while a small drive
+        // at 15% free might have almost none (is).
+        const freeGb = Number(latest.free_bytes) / 1e9;
+        const belowMinFreeSpace = folder.min_free_space_gb != null && freeGb < folder.min_free_space_gb;
+        if (percentFree >= DISK_WARN_PERCENT_FREE && !belowMinFreeSpace) return null;
+        return {
+          rootFolderId: folder.id,
+          path: folder.path,
+          percentFree: Math.round(percentFree * 10) / 10,
+          freeGb: Math.round(freeGb * 10) / 10,
+          minFreeSpaceGb: folder.min_free_space_gb,
+        };
+      })
+    )
+  ).filter((w): w is NonNullable<typeof w> => w !== null);
+
+  // Config-completeness warnings — distinct from the reachability/rate checks above, which all assume something is
+  // already configured and only report on how well it's working. A fresh or partially set-up instance has none of
+  // those to report, so without this an admin who dismissed the onboarding checklist once has no ongoing signal
+  // that a whole library type still has, say, no root folder and will never actually import anything.
+  const [rootFolderCount, indexerCount, downloadClientCount] = await Promise.all([
+    db.prepare("SELECT COUNT(*) AS c FROM root_folders").get() as Promise<{ c: number }>,
+    db.prepare("SELECT COUNT(*) AS c FROM indexers WHERE enabled = 1").get() as Promise<{ c: number }>,
+    db.prepare("SELECT COUNT(*) AS c FROM download_clients WHERE enabled = 1").get() as Promise<{ c: number }>,
+  ]);
+  const configWarnings: { key: string; message: string }[] = [];
+  if (Number(rootFolderCount.c) === 0) configWarnings.push({ key: "no_root_folder", message: "No root folder configured — nothing has anywhere to import to yet." });
+  if (Number(indexerCount.c) === 0) configWarnings.push({ key: "no_indexer", message: "No enabled indexer configured — searches will never find anything." });
+  if (Number(downloadClientCount.c) === 0) {
+    configWarnings.push({ key: "no_download_client", message: "No enabled download client configured — grabs have nowhere to download to." });
+  }
+
+  const issues: HealthIssue[] = [];
+  for (const idx of indexerHealth) {
+    if (!idx.ok) issues.push({ source: `indexer:${idx.id}`, severity: "warning", message: `Indexer "${idx.name}" is unreachable`, transient: true });
+  }
+  for (const client of downloadClientHealth) {
+    if (!client.ok) issues.push({ source: `download-client:${client.id}`, severity: "error", message: `Download client "${client.name}" is unreachable`, transient: true });
+  }
+  for (const warning of diskWarnings) {
+    issues.push({
+      source: `disk:${warning.rootFolderId}`,
+      severity: "warning",
+      message:
+        warning.percentFree < DISK_WARN_PERCENT_FREE
+          ? `"${warning.path}" is low on disk space (${Math.round(warning.percentFree)}% free)`
+          : `"${warning.path}" is below its configured minimum free space (${Math.round(warning.freeGb)}GB free, minimum ${warning.minFreeSpaceGb}GB)`,
+      transient: false,
+    });
+  }
+  const backupProblem = getBackupProblem();
+  if (backupProblem) {
+    configWarnings.push({ key: "backup_failed", message: backupProblem });
+    issues.push({ source: "backup", severity: "warning", message: backupProblem, transient: false });
+  }
+
+  const checks = await Promise.all([
+    safely("indexer-backoff", indexerBackoffIssues),
+    safely("indexer-coverage", indexerCoverageIssues),
+    safely("import-lists", importListIssues),
+    safely("jobs", failingJobIssues),
+    safely("download-paths", downloadPathIssues),
+    safely("download-client-config", () => downloadClientConfigIssues(downloadClients)),
+    safely("root-folders", rootFolderIssues),
+    safely("recycle-bin", recycleBinIssues),
+  ]);
+  issues.push(...checks.flat());
+
+  return {
+    checkedAt: new Date().toISOString(),
+    configWarnings,
+    indexers: indexerHealth,
+    downloadClients: downloadClientHealth,
+    stuckQueue: stuckQueueRows,
+    stuckQueueThresholdHours: STUCK_QUEUE_HOURS,
+    pendingRequests,
+    repeatedImports,
+    upgradeCandidates,
+    diskWarnings,
+    diskWarnPercentFree: DISK_WARN_PERCENT_FREE,
+    issues,
+  };
+}
+
+/**
+ * The health report, kept for ten minutes. Opening the Dashboard or the System page used to ping every enabled
+ * indexer and download client and re-scan history on every call; Sonarr runs its checks on events and every 6
+ * hours and serves stored results. `refresh` (the 30-minute notifier, or "?refresh=1" from the Refresh button)
+ * forces a new run, and concurrent callers share one. A run that does not finish in three minutes is given up on
+ * (its callers get an error) so one stuck probe cannot hold every later caller.
+ */
+export async function getHealthReport(options: { refresh?: boolean } = {}): Promise<HealthReport> {
+  if (!options.refresh && cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.report;
+  inFlight ??= withTimeout(buildHealthReport(), buildTimeoutMs, "the health report")
+    .then((report) => {
+      cache = { at: Date.now(), report };
+      return report;
+    })
+    .finally(() => {
+      inFlight = null;
+    });
+  return inFlight;
+}

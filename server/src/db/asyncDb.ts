@@ -212,6 +212,7 @@ const TABLES_WITHOUT_ID = new Set([
   "release_group_stats",
   "season_searches",
   "rss_sync_state",
+  "indexer_status",
 ]);
 
 function withReturningId(sql: string): string {

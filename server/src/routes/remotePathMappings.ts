@@ -1,7 +1,9 @@
+import path from "node:path";
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
+import { statAsync } from "../services/fsAsync.js";
 
 export const remotePathMappingsRouter = Router();
 remotePathMappingsRouter.use(requireAdmin);
@@ -37,6 +39,27 @@ remotePathMappingsRouter.post(
 
     const client = await db.prepare("SELECT id FROM download_clients WHERE id = ?").get(downloadClientId);
     if (!client) throw new HttpError(404, "Download client not found");
+
+    // Sonarr/Radarr reject a mapping whose local path does not exist, and a duplicate. A wrong mapping is the
+    // commonest Docker mistake and used to be silent: the importer then fell back to searching the whole
+    // downloads folder, or failed with "No matching file found".
+    if (!path.isAbsolute(localPath)) throw new HttpError(400, `The local path "${localPath}" must be an absolute path`);
+    let localIsFolder = false;
+    try {
+      localIsFolder = (await statAsync(localPath, 10_000)).isDirectory();
+    } catch {
+      // missing, or a mount that does not answer
+    }
+    if (!localIsFolder) {
+      throw new HttpError(400, `The local path "${localPath}" does not exist inside AoNarr (or is not a folder). Map the download folder into the container first.`);
+    }
+    const sameRemote = (await db.prepare("SELECT remote_path FROM remote_path_mappings WHERE download_client_id = ?").all(downloadClientId)) as {
+      remote_path: string;
+    }[];
+    const normalize = (p: string) => p.replace(/[\\/]+$/, "");
+    if (sameRemote.some((m) => normalize(m.remote_path) === normalize(remotePath))) {
+      throw new HttpError(409, `This download client already has a mapping for "${remotePath}"`);
+    }
 
     const result = await db
       .prepare("INSERT INTO remote_path_mappings (download_client_id, remote_path, local_path) VALUES (?, ?, ?)")

@@ -499,6 +499,9 @@ export interface JobStatus {
   scheduleType: "cron" | "interval";
   schedule: string;
   running: boolean;
+  /** Waiting for the heavy-job slot behind another heavy job. */
+  queued?: boolean;
+  heavy?: boolean;
   startedAt: string | null;
   lastRunAt: string | null;
   lastStatus: "success" | "error" | "cancelled" | null;

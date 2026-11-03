@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { log } from "./services/logger.js";
+import { closeLogStream, log } from "./services/logger.js";
 import { config } from "./config.js";
 import { startScheduler } from "./services/scheduler.js";
 import { stopAllJobs, cancelJob, isJobRunning, listJobs } from "./services/jobRegistry.js";
@@ -134,6 +134,7 @@ async function shutdown(signal: string): Promise<void> {
     await db.close().catch((err) => log.error("[shutdown] error closing database:", err));
   } finally {
     log.info("[shutdown] exiting");
+    await closeLogStream();
     process.exit(0);
   }
 }

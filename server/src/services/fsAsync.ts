@@ -64,6 +64,18 @@ function guardedCall<T>(operation: string, target: string, ms: number, start: ()
   return Promise.race([call, timeout]).finally(() => clearTimeout(timer));
 }
 
+/** Runs one file call without blocking the event loop, with the pending-call and timeout rules above.
+ * `operation` names the call kind in the cache key, so two different calls on one path stay separate. */
+export function guardedFsCall<T>(operation: string, target: string, timeoutMs: number, start: () => Promise<T>): Promise<T> {
+  return guardedCall(operation, target, timeoutMs, start);
+}
+
+/** `fs.promises.stat` (follows symlinks) with the timeout rules above. Rejects with the fs error for a
+ * missing path; throws StorageTimeoutError for a mount that does not answer. */
+export function statAsync(target: string, timeoutMs = FS_CALL_TIMEOUT_MS): Promise<fs.Stats> {
+  return guardedCall("stat", target, timeoutMs, () => fs.promises.stat(target));
+}
+
 /** `fs.existsSync` without blocking: any error other than a timeout reads as "not there", as before.
  * Throws StorageTimeoutError when the mount does not answer, which is not the same as "missing". */
 export async function pathExistsAsync(target: string, timeoutMs = FS_CALL_TIMEOUT_MS): Promise<boolean> {

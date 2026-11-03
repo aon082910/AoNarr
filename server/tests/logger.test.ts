@@ -1,14 +1,16 @@
-import { describe, it, expect, beforeAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 
 let log: (typeof import("../src/services/logger.js"))["log"];
 let getRecentLogs: (typeof import("../src/services/logger.js"))["getRecentLogs"];
 let listLogFiles: (typeof import("../src/services/logger.js"))["listLogFiles"];
 let resolveLogFilePath: (typeof import("../src/services/logger.js"))["resolveLogFilePath"];
+let closeLogStream: (typeof import("../src/services/logger.js"))["closeLogStream"];
+let MAX_LOG_FILE_BYTES: (typeof import("../src/services/logger.js"))["MAX_LOG_FILE_BYTES"];
 
 beforeAll(async () => {
   await setupTestDb();
-  ({ log, getRecentLogs, listLogFiles, resolveLogFilePath } = await import("../src/services/logger.js"));
+  ({ log, getRecentLogs, listLogFiles, resolveLogFilePath, closeLogStream, MAX_LOG_FILE_BYTES } = await import("../src/services/logger.js"));
 });
 
 afterEach(async () => {
@@ -134,4 +136,88 @@ describe("listLogFiles / resolveLogFilePath", () => {
     expect(resolveLogFilePath("aonarr-2024-01-01.log/../../../etc/passwd")).toBeNull();
     expect(resolveLogFilePath("not-a-log-file.txt")).toBeNull();
   });
+});
+
+describe("log robustness and levels (audit RB14)", () => {
+  it("does not throw, and still records the line, when an argument is a circular object", () => {
+    const tag = uniqueTag();
+    const circular: Record<string, unknown> = { name: tag };
+    circular.self = circular;
+
+    expect(() => log.warn(`circular ${tag}`, circular)).not.toThrow();
+
+    const entry = getRecentLogs().find((e) => e.message.includes(`circular ${tag}`));
+    expect(entry).toBeDefined();
+    expect(entry!.message).toContain(tag);
+  });
+
+  it("formats undefined and functions instead of printing 'undefined' by accident or throwing", () => {
+    const tag = uniqueTag();
+    expect(() => log.info(`odd ${tag}`, undefined, () => 1)).not.toThrow();
+    expect(getRecentLogs().find((e) => e.message.includes(`odd ${tag}`))).toBeDefined();
+  });
+
+  it("keeps debug entries out unless the log level is debug", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    const quietTag = uniqueTag();
+    const loudTag = uniqueTag();
+
+    log.debug(`debug while info ${quietTag}`);
+    setSetting("logLevel", "debug");
+    log.debug(`debug while debug ${loudTag}`);
+
+    expect(getRecentLogs().find((e) => e.message.includes(quietTag))).toBeUndefined();
+    const entry = getRecentLogs().find((e) => e.message.includes(loudTag));
+    expect(entry?.level).toBe("debug");
+  });
+
+  it("still persists info entries when the level is debug, and drops debug at warn", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    setSetting("logLevel", "debug");
+    const infoTag = uniqueTag();
+    log.info(`info at debug ${infoTag}`);
+    expect(getRecentLogs().find((e) => e.message.includes(infoTag))).toBeDefined();
+
+    setSetting("logLevel", "warn");
+    const debugTag = uniqueTag();
+    log.debug(`debug at warn ${debugTag}`);
+    expect(getRecentLogs().find((e) => e.message.includes(debugTag))).toBeUndefined();
+  });
+
+  it("writes the last lines to the file before closeLogStream resolves", async () => {
+    const fs = await import("node:fs");
+    const tag = uniqueTag();
+    log.info(`last words ${tag}`);
+
+    await closeLogStream();
+
+    const today = new Date().toISOString().slice(0, 10);
+    const file = resolveLogFilePath(`aonarr-${today}.log`)!;
+    expect(fs.readFileSync(file, "utf-8")).toContain(`last words ${tag}`);
+    // and logging after a close opens the file again
+    const after = uniqueTag();
+    log.info(`after close ${after}`);
+    await closeLogStream();
+    expect(fs.readFileSync(file, "utf-8")).toContain(`after close ${after}`);
+  });
+
+  it("starts a numbered file when a day's file reaches the size limit", async () => {
+    const tag = uniqueTag();
+    const quiet = vi.spyOn(console, "log").mockImplementation(() => {}); // the big line must not flood the test output
+    log.info(`before the big line ${tag}`);
+    // One line big enough to fill the current file by itself.
+    log.info("x".repeat(MAX_LOG_FILE_BYTES + 10));
+    log.info(`after the big line ${tag}`);
+    quiet.mockRestore();
+    await closeLogStream();
+
+    const today = new Date().toISOString().slice(0, 10);
+    const names = listLogFiles().map((f) => f.name);
+    expect(names).toContain(`aonarr-${today}.log`);
+    expect(names.some((n) => new RegExp(`^aonarr-${today}\\.\\d+\\.log$`).test(n))).toBe(true);
+    // newest first: a numbered file sorts before the day's base file
+    const numbered = names.findIndex((n) => /\.\d+\.log$/.test(n));
+    expect(numbered).toBeLessThan(names.indexOf(`aonarr-${today}.log`));
+    expect(resolveLogFilePath(`aonarr-${today}.1.log`)).not.toBeNull();
+  }, 60_000);
 });

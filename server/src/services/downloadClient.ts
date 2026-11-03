@@ -124,6 +124,10 @@ export interface DownloadClientAdapter {
    * meaningful for backends that actually seed (qBittorrent) — usenet clients have no equivalent
    * concept, so this is optional and callers check for its presence. */
   getHealthStats?(client: DownloadClient): Promise<ClientHealthStats>;
+  /** Client settings that delete or move a download before AoNarr can import it (Sonarr's
+   * DownloadClientRemovesCompletedDownloadsCheck and DownloadClientSortingCheck), one sentence each, for
+   * Health. Optional: only clients with such settings and an API to read them have anything to say. */
+  healthNotes?(client: DownloadClient): Promise<string[]>;
   /** Radarr/Sonarr-style seed-goal cleanup: removes a torrent *from the client* (never the
    * already-imported library file — AoNarr moved/hardlinked/copied it out before this ever runs)
    * once it's met a configured ratio and/or seed-time goal, freeing the client's slot instead of
@@ -522,6 +526,25 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     if (!res.ok) throw new Error(`qBittorrent ${endpoint} failed: HTTP ${res.status}`);
   }
 
+  /**
+   * qBittorrent can be told to remove a torrent (or the torrent and its files) when it reaches its share
+   * ratio or seeding time limit. For a download AoNarr has not imported yet that deletes it first.
+   * max_ratio_act: 0 pause, 1 remove the torrent, 2 enable super seeding, 3 remove the torrent and its files.
+   */
+  async healthNotes(client: DownloadClient): Promise<string[]> {
+    const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/app/preferences`);
+    if (!res.ok) return [];
+    const prefs: any = await res.json();
+    const removes = Number(prefs.max_ratio_act) === 1 || Number(prefs.max_ratio_act) === 3;
+    const limited = !!prefs.max_ratio_enabled || !!prefs.max_seeding_time_enabled || !!prefs.max_inactive_seeding_time_enabled;
+    if (limited && removes) {
+      return [
+        "is set to remove torrents when they reach their ratio or seeding time limit. A download can be deleted before AoNarr imports it. Set the limit action to Pause, and let AoNarr's Seed Goal Cleanup do the removing.",
+      ];
+    }
+    return [];
+  }
+
   async getHealthStats(client: DownloadClient): Promise<ClientHealthStats> {
     const [transferRes, prefsRes, torrentsRes] = await Promise.all([
       this.authedFetch(client, `${baseUrl(client)}/api/v2/transfer/info`),
@@ -640,6 +663,27 @@ export function validateNzb(bytes: Buffer): void {
 
 /** SABnzbd adapter. */
 class SabnzbdAdapter implements DownloadClientAdapter {
+  /**
+   * SABnzbd settings that take a finished download away from the folder AoNarr is told about: sorting
+   * (it renames and moves the result into its own tree) and deleting finished jobs from its history at once
+   * (AoNarr then never sees them complete). Keys are read from SABnzbd's `get_config`; a key it does not
+   * return is left unjudged.
+   */
+  async healthNotes(client: DownloadClient): Promise<string[]> {
+    const body: any = await sabnzbdApi(client, { mode: "get_config", section: "misc" });
+    const misc = body?.config?.misc ?? body?.misc ?? {};
+    const on = (value: unknown) => value === true || value === 1 || value === "1" || value === "true";
+    const notes: string[] = [];
+    const sorting = ["enable_tv_sorting", "enable_movie_sorting", "enable_date_sorting"].filter((key) => on(misc[key]));
+    if (sorting.length > 0) {
+      notes.push("has sorting turned on. SABnzbd renames and moves finished downloads into its own folders, so the folder AoNarr is given no longer holds them. Turn off TV, movie and date sorting.");
+    }
+    if (misc.history_retention_option === "all-delete") {
+      notes.push("deletes every finished job from its history at once, so AoNarr can lose sight of a completed download before it imports it. Keep the history (or a number of days).");
+    }
+    return notes;
+  }
+
   async addDownload(
     client: DownloadClient,
     downloadUrl: string,

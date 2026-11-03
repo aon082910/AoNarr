@@ -256,6 +256,22 @@ function assertInsideRoot(rootFolderPath: string, target: string): void {
   if (relative === "" || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
     throw new ImportSkippedError(`Refusing to place "${target}" outside its root folder "${rootFolderPath}"`);
   }
+  // The root folder itself must exist. Creating the whole destination path (makeLibraryDirectory) would
+  // otherwise turn a typo or a share that did not mount into a real directory tree on the container's own
+  // file system, where every import "succeeds" and nothing ever shows up in the media server. Sonarr and
+  // Radarr refuse the same way (RootFolderNotFoundException). The download stays for a manual import.
+  let isDirectory = false;
+  try {
+    isDirectory = fs.statSync(rootFolderPath).isDirectory();
+  } catch {
+    // missing or unreachable
+  }
+  if (!isDirectory) {
+    // Not an ImportSkippedError: that is a final decision about this file. A share that is not mounted yet (or
+    // dropped for a minute) comes back, and a plain error is parked as "Couldn't place the file" and retried
+    // after 15 minutes, an hour and six hours (scheduler.ts retryTransientParkedImports).
+    throw new Error(`Root folder "${rootFolderPath}" does not exist or is not a folder (is the share mounted?) — kept for a manual import from Activity`);
+  }
 }
 
 /** Per-type override (`naming<Type>Template` in settings) falling back to the shape's default. */
