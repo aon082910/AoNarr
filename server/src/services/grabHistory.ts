@@ -16,6 +16,8 @@ export interface GrabHistoryExtras {
   forced?: boolean;
   formatScore?: number | null;
   releaseGroup?: string | null;
+  /** The id the client knows the download by, so the history row can be linked back to it. */
+  downloadId?: string | null;
 }
 
 export function grabHistoryData(best: SearchResult, extras: GrabHistoryExtras): string {
@@ -25,6 +27,7 @@ export function grabHistoryData(best: SearchResult, extras: GrabHistoryExtras): 
     quality: extras.quality,
     clientId: extras.client?.id ?? null,
     clientName: extras.client?.name ?? null,
+    ...(extras.downloadId ? { downloadId: extras.downloadId } : {}),
     ...(extras.forced ? { forced: true } : {}),
     ...(extras.formatScore != null ? { formatScore: extras.formatScore } : {}),
     ...(extras.releaseGroup ? { releaseGroup: extras.releaseGroup } : {}),

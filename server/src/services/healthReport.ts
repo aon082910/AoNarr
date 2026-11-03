@@ -123,6 +123,31 @@ async function indexerBackoffIssues(): Promise<HealthIssue[]> {
   return issues;
 }
 
+/** Download clients that failed lately and are being left alone, from the persisted failure state (Sonarr's DownloadClientStatusCheck). */
+async function downloadClientBackoffIssues(): Promise<HealthIssue[]> {
+  const rows = (await db
+    .prepare(
+      `SELECT c.id, c.name, s.escalation_level, s.disabled_till, s.last_error
+       FROM download_client_status s JOIN download_clients c ON c.id = s.client_id
+       WHERE c.enabled = 1`
+    )
+    .all()) as { id: number; name: string; escalation_level: number; disabled_till: string | null; last_error: string | null }[];
+  const issues: HealthIssue[] = [];
+  for (const row of rows) {
+    const until = row.disabled_till ? Date.parse(row.disabled_till) : NaN;
+    // Only while it is being left alone: once the wait is over the next poll or grab decides, and a client with nothing to do is not asked.
+    if (!Number.isFinite(until) || until <= Date.now()) continue;
+    const when = new Date(until).toISOString().slice(0, 16).replace("T", " ");
+    issues.push({
+      source: `download-client-backoff:${row.id}`,
+      severity: "warning",
+      message: `Download client "${row.name}" is being left alone until ${when} UTC after failing${row.last_error ? ` (${row.last_error})` : ""}`,
+      transient: true,
+    });
+  }
+  return issues;
+}
+
 /** Library types that are filled from feeds and channels, not from an indexer search. */
 const NOT_INDEXER_SEARCHED = new Set(["podcast", "video"]);
 
@@ -359,6 +384,7 @@ async function buildHealthReport(): Promise<HealthReport> {
 
   const checks = await Promise.all([
     safely("indexer-backoff", indexerBackoffIssues),
+    safely("download-client-backoff", downloadClientBackoffIssues),
     safely("indexer-coverage", indexerCoverageIssues),
     safely("import-lists", importListIssues),
     safely("jobs", failingJobIssues),

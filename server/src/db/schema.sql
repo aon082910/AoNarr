@@ -207,6 +207,17 @@ CREATE TABLE IF NOT EXISTS download_clients (
   download_types TEXT
 );
 
+-- A download client that failed is left alone for a while, longer each time it fails again (Sonarr's escalating
+-- back-off: 1 minute up to 24 hours). Kept across a restart so a dead client is not tried again at full cost.
+CREATE TABLE IF NOT EXISTS download_client_status (
+  client_id INTEGER PRIMARY KEY REFERENCES download_clients(id) ON DELETE CASCADE,
+  escalation_level INTEGER NOT NULL DEFAULT 0,
+  initial_failure_at TEXT,
+  most_recent_failure_at TEXT,
+  disabled_till TEXT,
+  last_error TEXT
+);
+
 CREATE TABLE IF NOT EXISTS queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,

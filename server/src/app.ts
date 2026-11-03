@@ -88,6 +88,7 @@ import { corruptMediaReviewRouter } from "./routes/corruptMediaReview.js";
 import { themeRouter } from "./routes/theme.js";
 import { friendLibrariesRouter } from "./routes/friendLibraries.js";
 import { loadIndexerStatuses } from "./services/indexerClient.js";
+import { loadClientStatuses } from "./services/clientStatus.js";
 
 /**
  * download_clients.password/.api_key, irc_feeds.sasl_pass, ai_providers.api_key, indexers.api_key,
@@ -288,6 +289,7 @@ export async function createApp(): Promise<Express> {
   await initDb();
   await loadSettingsCache();
   await loadIndexerStatuses().catch((err) => log.warn("[startup] could not load the indexer failure state:", (err as Error).message));
+  await loadClientStatuses().catch((err) => log.warn("[startup] could not load the download client failure state:", (err as Error).message));
   await reencryptLegacyCredentials();
   await ensureBluray720pQuality();
   await loadQualityCaches();

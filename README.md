@@ -358,6 +358,15 @@ one book.
   on the Activity page with when they become ready, and can be grabbed at once or forgotten. The queue shows
   time left, remaining size, the client's state (paused, stalled, a warning of its own) and why a download
   failed. The History feed says whether a release was picked by hand, and over a rejection.
+- **Download client parity** — NZBGet, Transmission and Deluge join qBittorrent and SABnzbd. Clients have a priority
+  (1 to 50), a URL base for a reverse proxy sub-path, and a category per library type; a client that fails is
+  left alone for a while, longer each time (1 minute up to 24 hours, kept across a restart and shown in Health),
+  and a grab goes to the next client of the protocol at once. The "Auto" import strategy hardlinks a torrent so it
+  keeps seeding and moves everything else; the seed goal (an indexer's own, else the global one) is sent to
+  qBittorrent with the torrent. Finished downloads are cleaned up at slskd, a debrid account and a Blackhole
+  output as well. History rows carry the release, the download id, the client and the source path, and there
+  are rows for a file deleted, a file renamed and a download removed by hand. Remove & blocklist searches for a
+  replacement unless told not to, and a release picked by hand can be left alone when it fails.
 - **Monitoring, profiles, lists and tags** — an import list can add titles unmonitored or with a Monitor choice (future
   only, first or latest season or album, none), start a search at once, apply its own minimum availability and tags, and
   clean up a title that left the list (log, unmonitor, remove, remove with files; never a protected title, and never

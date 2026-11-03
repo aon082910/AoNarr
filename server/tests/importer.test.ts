@@ -5521,3 +5521,92 @@ describe("what a season pack brings (R25-08) and what a rename keeps (R25-16, R2
     setSetting("namingMovieTemplate", "");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round 27: the Auto import strategy (MM14, ST8, DL5) and what an import writes to history (DL17)
+// ---------------------------------------------------------------------------
+
+describe("Round 27 — Auto import strategy and the download's facts in history", () => {
+  async function importAuto(protocol: string | null, strategy = "auto", clientType: string | null = protocol === "torrent" ? "qbittorrent" : protocol === "usenet" ? "sabnzbd" : null) {
+    setSetting("importStrategy", strategy);
+    const clientId = clientType
+      ? Number((await db.prepare("INSERT INTO download_clients (name, type) VALUES (?, ?)").run(`${clientType} for auto`, clientType)).lastInsertRowid)
+      : null;
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const dir = path.join(downloadsDir, `The.Matrix.1999.1080p.${protocol ?? "none"}-GRP`);
+    fs.mkdirSync(dir, { recursive: true });
+    const source = path.join(dir, `The.Matrix.1999.1080p.${protocol ?? "none"}-GRP.mkv`);
+    fs.writeFileSync(source, "the film");
+    const result = await db
+      .prepare("INSERT INTO queue (media_item_id, title, download_id, download_path, status, protocol, size, download_client_id) VALUES (?, ?, ?, ?, 'downloaded', ?, 4321, ?)")
+      .run(movie.id, `The.Matrix.1999.1080p.${protocol ?? "none"}-GRP`, "f".repeat(40), dir, protocol, clientId);
+    await importQueueItem(Number(result.lastInsertRowid));
+    return { movie, source };
+  }
+
+  it("auto hardlinks a torrent, so it keeps seeding, and marks it for the seed-goal job", async () => {
+    const { source } = await importAuto("torrent");
+    expect(fs.existsSync(source)).toBe(true);
+    expect(markDownloadImported).toHaveBeenCalledTimes(1);
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
+  });
+
+  it.each(["realdebrid", "blackhole"])("auto moves a torrent that %s downloaded, since nothing there seeds from the folder", async (type) => {
+    const { source } = await importAuto("torrent", "auto", type);
+    expect(fs.existsSync(source)).toBe(false);
+    expect(markDownloadImported).not.toHaveBeenCalled();
+  });
+
+  it.each(["transmission", "deluge"])("auto hardlinks a %s torrent as well", async (type) => {
+    const { source } = await importAuto("torrent", "auto", type);
+    expect(fs.existsSync(source)).toBe(true);
+  });
+
+  it("auto moves a usenet download and removes it from the client", async () => {
+    setSetting("removeCompletedDownloads", "1");
+    const { source } = await importAuto("usenet");
+    expect(fs.existsSync(source)).toBe(false);
+    expect(markDownloadImported).not.toHaveBeenCalled();
+    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto moves a download of an unknown protocol, as the default does", async () => {
+    const { source } = await importAuto(null);
+    expect(fs.existsSync(source)).toBe(false);
+  });
+
+  it("a plain move setting still moves a torrent", async () => {
+    const { source } = await importAuto("torrent", "move");
+    expect(fs.existsSync(source)).toBe(false);
+    expect(markDownloadImported).not.toHaveBeenCalled();
+  });
+
+  it("a manual import that asked for a strategy keeps it under auto", async () => {
+    setSetting("importStrategy", "auto");
+    const folder = await insertRootFolder("movie");
+    const movie = await insertMovie({ root_folder_id: folder.id });
+    const dir = path.join(downloadsDir, "The.Matrix.1999.1080p.manual-GRP");
+    fs.mkdirSync(dir, { recursive: true });
+    const source = path.join(dir, "The.Matrix.1999.1080p.manual-GRP.mkv");
+    fs.writeFileSync(source, "the film");
+    const result = await db
+      .prepare("INSERT INTO queue (media_item_id, title, download_id, download_path, status, protocol) VALUES (?, 'The.Matrix.1999.1080p.manual-GRP', ?, ?, 'downloaded', 'torrent')")
+      .run(movie.id, "e".repeat(40), dir);
+    const { withImportStrategy } = await import("../src/services/importer.js");
+    await withImportStrategy("copy", () => importQueueItem(Number(result.lastInsertRowid)));
+    expect(fs.existsSync(source)).toBe(true);
+    expect(markDownloadImported).not.toHaveBeenCalled();
+  });
+
+  it("the imported history row names the release, the download, the client's id and where it came from", async () => {
+    const { movie, source } = await importAuto("usenet", "move");
+    const row = (await db.prepare("SELECT data FROM history WHERE media_item_id = ? AND event_type = 'imported'").get(movie.id)) as any;
+    expect(JSON.parse(row.data)).toMatchObject({
+      releaseTitle: "The.Matrix.1999.1080p.usenet-GRP",
+      downloadId: "f".repeat(40),
+      size: 4321,
+      sourcePath: path.dirname(source),
+    });
+  });
+});

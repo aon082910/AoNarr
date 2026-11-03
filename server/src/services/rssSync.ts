@@ -40,6 +40,7 @@ import {
   noteUnavailableClient,
   packContextFor,
   packsPossibleFor,
+  pickClientForProtocol,
   pickDelayProfile,
   rowsToDownloadClients,
   rowsToIndexers,
@@ -454,6 +455,10 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
   results = results.filter((r) => scopeAllows(env.indexers.find((i) => i.id === r.indexerId)?.tagIds, itemTags));
   if (results.length === 0) return "none";
   const usable = env.directBudget.usableClients().filter((c) => !env.unavailable.has(c.id));
+  // Every client that could take these releases is waiting out a back-off: nothing was judged, so the feed is not marked as
+  // read past them (they are looked at again once a client is back).
+  const takesAny = (ignoreBackoff: boolean) => results.some((r) => pickClientForProtocol(usable, r.protocol, { itemTags, ignoreBackoff }) !== null);
+  if (!takesAny(false) && takesAny(true)) return "unavailable";
   const choose = (remaining: SearchResult[], delay: DelayProfile | null) =>
     chooseBestResult(
       remaining,

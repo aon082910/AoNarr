@@ -271,3 +271,18 @@ describe("a shared folder is one result (N17)", () => {
     expect(parseSlskdFolderDownloadId("someuser song.mp3")).toBeNull();
   });
 });
+
+describe("searchSlskd — URL base", () => {
+  it("puts the client's URL base in front of the search endpoints", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        seen.push(String(url));
+        return { ok: false, status: 500, headers: new Headers(), json: async () => ({}), text: async () => "" };
+      })
+    );
+    await expect(searchSlskd(fakeClient({ urlBase: "slskd/" }), "artist album")).rejects.toThrow();
+    expect(seen[0]).toBe("http://slskd.local:5030/slskd/api/v0/searches");
+  });
+});

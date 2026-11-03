@@ -147,6 +147,21 @@ export function indexerFromRow(row: any) {
   };
 }
 
+/** The per-type categories of a download client: { mediaType: category }, or null when none are set. */
+export function parseCategoryByType(raw: unknown): Record<string, string> | null {
+  try {
+    const value = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const out: Record<string, string> = {};
+    for (const [type, category] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof category === "string" && category.trim()) out[type] = category.trim();
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 export function downloadClientFromRow(row: any) {
   return {
     id: row.id,
@@ -163,6 +178,9 @@ export function downloadClientFromRow(row: any) {
     audioOnly: row.audio_only,
     downloadTypes: row.download_types ? JSON.parse(row.download_types) : null,
     tagIds: parseTagIds(row.tag_ids),
+    priority: row.priority == null ? 1 : Number(row.priority),
+    urlBase: row.url_base ?? null,
+    categoryByType: parseCategoryByType(row.category_by_type),
   };
 }
 

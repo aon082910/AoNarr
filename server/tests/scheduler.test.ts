@@ -1685,6 +1685,33 @@ describe("retryFailedGrab", () => {
     expect(notifyFailed).toHaveBeenCalledTimes(1);
   });
 
+  it("leaves a release the admin picked by hand alone when redownloading failed interactive grabs is off (DL18)", async () => {
+    setSetting("redownloadFailedInteractive", "0");
+    const movie = await insertMovie();
+    await retryFailedGrab({ id: 1, mediaItemId: movie.id, title: "Hand.Picked", episodeId: null, subItemId: null, retryCount: 0, grabSource: "interactive" } as any, "corrupt file");
+
+    expect(searchAllIndexers).not.toHaveBeenCalled();
+    expect(notifyFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("still searches for another release after a failed automatic grab when that switch is off", async () => {
+    setSetting("redownloadFailedInteractive", "0");
+    const movie = await insertMovie();
+    searchAllIndexers.mockResolvedValue([]);
+    await retryFailedGrab({ id: 1, mediaItemId: movie.id, title: "Auto.Grabbed", episodeId: null, subItemId: null, retryCount: 0, grabSource: "auto" } as any, "corrupt file");
+
+    expect(searchAllIndexers).toHaveBeenCalled();
+  });
+
+  it("searches for another release after a failed interactive grab by default", async () => {
+    setSetting("redownloadFailedInteractive", "");
+    const movie = await insertMovie();
+    searchAllIndexers.mockResolvedValue([]);
+    await retryFailedGrab({ id: 1, mediaItemId: movie.id, title: "Hand.Picked.Too", episodeId: null, subItemId: null, retryCount: 0, grabSource: "interactive" } as any, "corrupt file");
+
+    expect(searchAllIndexers).toHaveBeenCalled();
+  });
+
   it("stops retrying once the configured retry cap is reached", async () => {
     setSetting("maxAutoRetries", "1");
     const movie = await insertMovie();

@@ -175,7 +175,7 @@ export interface IndexerHealth {
 export interface DownloadClient {
   id: number;
   name: string;
-  type: "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "torbox" | "blackhole" | "slskd";
+  type: "qbittorrent" | "sabnzbd" | "nzbget" | "transmission" | "deluge" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "torbox" | "blackhole" | "slskd";
   host: string | null;
   port: number | null;
   useSsl: 0 | 1;
@@ -191,6 +191,12 @@ export interface DownloadClient {
   downloadTypes: string[] | null;
   /** Used only for a title that carries one of these tags; empty = every title. */
   tagIds?: number[];
+  /** 1 to 50, lower is preferred; clients of equal priority are ranked as before. */
+  priority?: number;
+  /** A reverse proxy's sub-path, e.g. "/qbittorrent". */
+  urlBase?: string | null;
+  /** The category a title of each media type is grabbed under; `category` is the default. */
+  categoryByType?: Record<string, string> | null;
 }
 
 export interface MetadataProfile {

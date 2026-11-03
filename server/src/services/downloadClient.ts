@@ -12,6 +12,8 @@ import { pipeline } from "node:stream/promises";
 import { decodeSlskdDownloadUrl, decodeSlskdFolderUrl, parseSlskdFolderDownloadId, slskdFolderDownloadId } from "./soulseek.js";
 import { getSetting } from "./settingsStore.js";
 import { MEDIA_TYPES } from "./mediaTypes.js";
+import { categoryForType, clientCategories } from "./clientCategory.js";
+import { clientBaseUrl, normalizeUrlBase } from "./urlBase.js";
 
 /** Streams a fetch() body to disk with backpressure. The data goes to `partial` and is only renamed
  * to `dest` once complete: a file under its final name in downloadsDir is always a finished download,
@@ -117,7 +119,8 @@ export interface DownloadClientAdapter {
     downloadUrl: string,
     category: string | null,
     releaseTitle?: string,
-    protocol?: SearchResult["protocol"]
+    protocol?: SearchResult["protocol"],
+    options?: AddOptions
   ): Promise<GrabResult>;
   getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]>;
   /** Not every backend has a real queue to reorder (the in-process http/ytdlp adapters start each
@@ -183,7 +186,10 @@ async function resolveDownloadSource(downloadUrl: string): Promise<ResolvedDownl
 
   let url = downloadUrl;
   for (let redirects = 0; redirects < 5; redirects++) {
-    const res = await apiFetch(url, { redirect: "manual" });
+    // The indexer not answering is the indexer's failure, not the download client's: named so, it is not put on the client's back-off.
+    const res = await apiFetch(url, { redirect: "manual" }).catch((err) => {
+      throw new Error(`Failed to resolve download URL: the indexer did not answer (${err instanceof Error ? err.message : String(err)})`, { cause: err });
+    });
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location");
       if (!location) throw new Error(`Redirect from "${url}" had no Location header`);
@@ -197,10 +203,13 @@ async function resolveDownloadSource(downloadUrl: string): Promise<ResolvedDownl
   throw new Error(`Too many redirects resolving download URL "${downloadUrl}"`);
 }
 
+export { normalizeUrlBase };
+
 function baseUrl(client: DownloadClient): string {
-  const scheme = client.useSsl ? "https" : "http";
-  return `${scheme}://${client.host}:${client.port}`;
+  return clientBaseUrl(client);
 }
+
+export { categoryForType, clientCategories };
 
 /** One SABnzbd API call. SABnzbd reports a bad or missing API key as HTTP 200 with
  * `{status: false, error}`, which reads like any other JSON body unless it's checked for. */
@@ -281,6 +290,12 @@ export async function testDownloadClientConnection(client: DownloadClient): Prom
       if (!res.ok) throw new Error(res.status === 401 ? "API key rejected." : `HTTP ${res.status}`);
       return;
     }
+    case "nzbget":
+      return testNzbget(client);
+    case "transmission":
+      return testTransmission(client);
+    case "deluge":
+      return testDeluge(client);
     case "blackhole": {
       if (!client.host) throw new Error("No watch folder path configured.");
       try {
@@ -308,6 +323,12 @@ const QBIT_SEED_GOAL_PREFIX = "aonarr-seed:";
 export interface SeedGoal {
   ratio: number | null;
   minutes: number | null;
+}
+
+/** What a grab tells the client beyond the release itself. */
+export interface AddOptions {
+  /** The seed goal that applies to the torrent (its indexer's, else the global one): sent to a client that can hold it. */
+  seedGoal?: SeedGoal | null;
 }
 
 /** The tag that records an indexer's seed goal on a torrent, or null when the indexer sets none. */
@@ -468,11 +489,15 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     }
   }
 
-  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null): Promise<GrabResult> {
+  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null, _releaseTitle?: string, _protocol?: SearchResult["protocol"], options: AddOptions = {}): Promise<GrabResult> {
     const knownHash = magnetInfoHash(downloadUrl);
     const pendingTag = knownHash ? null : `${QBIT_PENDING_TAG_PREFIX}${crypto.randomBytes(6).toString("hex")}`;
     const form: Record<string, string> = { urls: downloadUrl, tags: pendingTag ? `${QBIT_TAG},${pendingTag}` : QBIT_TAG };
     if (category) form.category = category;
+    // The seed goal goes to qBittorrent with the torrent (API 2.8.1 and later; an older build ignores the fields), so
+    // it stops seeding at the goal by itself, whatever AoNarr's own cleanup does later.
+    if (options.seedGoal?.ratio) form.ratioLimit = String(options.seedGoal.ratio);
+    if (options.seedGoal?.minutes) form.seedingTimeLimit = String(Math.round(options.seedGoal.minutes));
 
     const res = await this.postForm(client, "torrents/add", form);
     if (!res.ok) throw new Error(`qBittorrent add failed: HTTP ${res.status}`);
@@ -625,7 +650,7 @@ class QBittorrentAdapter implements DownloadClientAdapter {
       String(t.tags ?? "")
         .split(",")
         .map((s: string) => s.trim())
-        .includes(QBIT_TAG) || (!!client.category && t.category === client.category);
+        .includes(QBIT_TAG) || (!!t.category && clientCategories(client).includes(t.category));
     const eligible = torrents.filter((t) => {
       if (!isOwn(t) || !seedingStates.has(t.state)) return false;
       // A torrent from an indexer with its own goal is held to it (each part falls back to the global goal when the indexer leaves it empty).
@@ -994,6 +1019,20 @@ function inProcessJobDir(fileCount: number, releaseTitle: string | undefined, do
 
 /** The job's completed state, pointing the importer at its own folder when it has one, and at the
  * one file it saved when it doesn't — the downloads root holds every other job's files too. */
+/**
+ * Removes a finished download from the debrid account once AoNarr has saved its files (DL21): the account's torrent
+ * list otherwise grows for ever. The provider keeps its cache, so the same release is not slower the next time.
+ * Best effort and never a reason to fail the job; setting `debridCleanup` = "0" turns it off.
+ */
+async function cleanupAtProvider(provider: string, work: () => Promise<unknown>): Promise<void> {
+  if (getSetting("debridCleanup") === "0") return;
+  try {
+    await work();
+  } catch (err) {
+    log.warn(`[${provider}] could not remove the finished download from the account:`, (err as Error).message);
+  }
+}
+
 function completedJob(dir: string, savedFiles: string[]): InProcessJob {
   const remotePath = dir === config.downloadsDir ? savedFiles[0] : dir;
   return remotePath ? { progress: 1, status: "completed", remotePath } : { progress: 1, status: "completed" };
@@ -1306,6 +1345,10 @@ class RealDebridAdapter implements DownloadClientAdapter {
 
         this.jobs.set(downloadId, completedJob(dir, saved));
         log.info(`[real-debrid] completed "${releaseTitle ?? downloadUrl}"`);
+        await cleanupAtProvider("real-debrid", async () => {
+          const res = await apiFetch(`${this.base}/torrents/delete/${torrentId}`, { method: "DELETE", headers: this.headers(client) });
+          if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
+        });
       } catch (err) {
         log.warn(`[real-debrid] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
@@ -1436,6 +1479,14 @@ class TorBoxAdapter implements DownloadClientAdapter {
 
         this.jobs.set(downloadId, completedJob(dir, saved));
         log.info(`[torbox] completed "${releaseTitle ?? downloadUrl}"`);
+        await cleanupAtProvider("torbox", async () => {
+          const res = await apiFetch(`${this.base}/${kind}/${isUsenet ? "controlusenetdownload" : "controltorrent"}`, {
+            method: "POST",
+            headers: { ...this.headers(client), "Content-Type": "application/json" },
+            body: JSON.stringify({ [idParam]: itemId, operation: "delete" }),
+          });
+          if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
+        });
       } catch (err) {
         log.warn(`[torbox] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
@@ -1656,6 +1707,7 @@ class AllDebridAdapter implements DownloadClientAdapter {
 
         this.jobs.set(downloadId, completedJob(dir, saved));
         log.info(`[alldebrid] completed "${releaseTitle ?? downloadUrl}"`);
+        await cleanupAtProvider("alldebrid", () => this.call(client, "/magnet/delete", { id: String(magnetId) }));
       } catch (err) {
         log.warn(`[alldebrid] failed for "${releaseTitle ?? downloadUrl}":`, (err as Error).message);
         this.jobs.set(downloadId, { progress: 0, status: "failed" });
@@ -1722,6 +1774,18 @@ class BlackholeAdapter implements DownloadClientAdapter {
    * the name was kept in it can't be looked up and stays downloading (it ages out instead, see
    * cleanupStalledDownloads).
    */
+  /** What the external client wrote for this release into the downloads folder goes (DL21), and nothing outside that folder ever does. */
+  async removeDownload(_client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void> {
+    if (!deleteFiles) return;
+    const at = downloadId.indexOf(BLACKHOLE_ID_SEPARATOR);
+    const found = at > 0 ? findBlackholeOutput(downloadId.slice(at + 1)) : null;
+    if (!found) return;
+    const root = path.resolve(config.downloadsDir);
+    const target = path.resolve(found.path);
+    if (target === root || !target.startsWith(root + path.sep)) return;
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+
   async getStatus(_client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
     return downloadIds.map((id) => {
       const at = id.indexOf(BLACKHOLE_ID_SEPARATOR);
@@ -1812,8 +1876,7 @@ const SLSKD_DOWNLOADS_DIRECTORY = new Map<string, { dir: string | null; at: numb
 
 class SlskdAdapter implements DownloadClientAdapter {
   private baseUrl(client: DownloadClient): string {
-    const scheme = client.useSsl ? "https" : "http";
-    return `${scheme}://${client.host}:${client.port}`;
+    return baseUrl(client);
   }
 
   private headers(client: DownloadClient): Record<string, string> {
@@ -1868,6 +1931,33 @@ class SlskdAdapter implements DownloadClientAdapter {
       return typeof dir === "string" && dir.trim() ? dir.trim().replace(/[\\/]+$/, "") : null;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Takes the finished transfers out of slskd's list (DL21), which otherwise holds every download for ever and makes each
+   * poll slower. A folder download is every transfer inside that folder; a file is the one transfer.
+   */
+  async removeDownload(client: DownloadClient, downloadId: string): Promise<void> {
+    const res = await apiFetch(`${this.baseUrl(client)}/api/v0/transfers/downloads`, { headers: this.headers(client) });
+    if (!res.ok) throw new Error(`slskd transfer list failed: HTTP ${res.status}`);
+    const users = (await res.json()) as { username: string; directories?: { files?: any[] }[] }[];
+    const folder = parseSlskdFolderDownloadId(downloadId);
+    for (const u of users) {
+      for (const dir of u.directories ?? []) {
+        for (const f of dir.files ?? []) {
+          const name = String(f.filename ?? "");
+          const matches = folder
+            ? u.username === folder.username && (name.startsWith(folder.directory + "\\") || name.startsWith(folder.directory + "/"))
+            : `${u.username} ${name}` === downloadId;
+          if (!matches || !f.id) continue;
+          const del = await apiFetch(`${this.baseUrl(client)}/api/v0/transfers/downloads/${encodeURIComponent(u.username)}/${encodeURIComponent(String(f.id))}?remove=true`, {
+            method: "DELETE",
+            headers: this.headers(client),
+          });
+          if (!del.ok && del.status !== 404) throw new Error(`slskd remove failed: HTTP ${del.status}`);
+        }
+      }
     }
   }
 
@@ -1935,6 +2025,420 @@ class SlskdAdapter implements DownloadClientAdapter {
   }
 }
 
+/**
+ * NZBGet (Round 27, DL14). JSON-RPC over HTTP at <base>/jsonrpc with basic auth. The NZB is fetched here and
+ * sent as base64 (the same reasoning as SABnzbd's upload: a client that guards against SSRF refuses a
+ * loopback indexer when it fetches the URL itself).
+ */
+async function nzbgetRpc(client: DownloadClient, method: string, params: unknown[] = []): Promise<any> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (client.username || client.password) {
+    headers.Authorization = `Basic ${Buffer.from(`${client.username ?? ""}:${client.password ?? ""}`).toString("base64")}`;
+  }
+  const res = await apiFetch(`${baseUrl(client)}/jsonrpc`, { method: "POST", headers, body: JSON.stringify({ method, params, id: 1 }) });
+  if (res.status === 401 || res.status === 403) throw new Error("NZBGet rejected the login — check the username and password.");
+  if (!res.ok) throw new Error(`NZBGet ${method} failed: HTTP ${res.status}`);
+  let body: any;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error("NZBGet answered with something that is not JSON — check host, port and URL base.");
+  }
+  if (body?.error) throw new Error(`NZBGet ${method} failed: ${body.error.message ?? JSON.stringify(body.error)}`);
+  return body?.result;
+}
+
+/** NZBGet queue states that mean the group is not running: held or waiting its turn. */
+const NZBGET_IDLE_STATES = new Set(["PAUSED", "QUEUED"]);
+/** Post-processing states: the group has left the download queue but is not finished yet. */
+const NZBGET_POSTPROCESSING = /^(PP_|LOADING_PARS|VERIFYING|REPAIRING|RENAMING|UNPACKING|MOVING|EXECUTING_SCRIPT)/;
+
+export class NzbgetAdapter implements DownloadClientAdapter {
+  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null, releaseTitle?: string): Promise<GrabResult> {
+    const source = await resolveDownloadSource(downloadUrl);
+    if (source.kind === "magnet") throw new Error("NZBGet cannot accept a magnet link");
+    validateNzb(source.bytes);
+    // append(NZBFilename, NZBContent, Category, Priority, AddToTop, AddPaused, DupeKey, DupeScore, DupeMode, PPParameters)
+    const id = await nzbgetRpc(client, "append", [
+      `${sanitizeFilename(releaseTitle || "release")}.nzb`,
+      source.bytes.toString("base64"),
+      category ?? "",
+      0,
+      false,
+      false,
+      "",
+      0,
+      // Sonarr turns NZBGet's duplicate handling off for a grab: a release found again (after its file was deleted) must download.
+      "all",
+      [],
+    ]);
+    // NZBGet answers an id of 0 or less when it refused the file.
+    if (typeof id !== "number" || id <= 0) throw new Error("NZBGet did not add the NZB (it answered with no id)");
+    return { downloadId: String(id) };
+  }
+
+  async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
+    const wanted = new Set(downloadIds);
+    const updates: QueueStatusUpdate[] = [];
+    const groups: any[] = (await nzbgetRpc(client, "listgroups", [0])) ?? [];
+    const seen = new Set<string>();
+    for (const g of groups) {
+      const id = String(g.NZBID);
+      if (!wanted.has(id)) continue;
+      seen.add(id);
+      const status = String(g.Status ?? "");
+      const total = Number(g.FileSizeMB) || 0;
+      const left = Number(g.RemainingSizeMB) || 0;
+      const progress = total > 0 ? Math.min(Math.max((total - left) / total, 0), 0.99) : 0;
+      updates.push({
+        downloadId: id,
+        progress: NZBGET_POSTPROCESSING.test(status) ? 0.99 : progress,
+        status: "downloading",
+        ...(NZBGET_IDLE_STATES.has(status) ? { paused: true } : {}),
+        ...(left > 0 ? { sizeLeft: Math.round(left * 1024 * 1024) } : {}),
+      });
+    }
+    const missing = downloadIds.filter((id) => !seen.has(id));
+    if (missing.length > 0) {
+      const history: any[] = (await nzbgetRpc(client, "history", [false])) ?? [];
+      for (const h of history) {
+        const id = String(h.NZBID);
+        if (!missing.includes(id)) continue;
+        const status = String(h.Status ?? "");
+        // NZBGet's history statuses: SUCCESS/ALL|UNPACK|PAR|HEALTH|GOOD|MARK, WARNING/SCRIPT|SPACE|PASSWORD|DAMAGED|REPAIRABLE|HEALTH,
+        // DELETED/MANUAL|DUPE|COPY|GOOD, FAILURE/PAR|UNPACK|MOVE|SCAN|BAD|HEALTH.
+        if (status === "WARNING/SPACE") {
+          // Not enough disk space is the client's problem, not the release's: kept with the message, nothing blocklisted.
+          updates.push({ downloadId: id, progress: 0.99, status: "downloading", warning: "NZBGet: not enough disk space" });
+        } else if (/^WARNING\/(?:PASSWORD|DAMAGED|HEALTH|REPAIRABLE)/.test(status)) {
+          // Unpacked data cannot be trusted: a failure of the release.
+          updates.push({ downloadId: id, progress: 1, status: "failed", failureReason: `NZBGet: ${status}` });
+        } else if (/^(SUCCESS|WARNING)/.test(status)) {
+          updates.push({ downloadId: id, progress: 1, status: "completed", remotePath: h.FinalDir || h.DestDir || undefined });
+        } else if (/^(FAILURE|DELETED)/.test(status)) {
+          updates.push({ downloadId: id, progress: 1, status: "failed", failureReason: `NZBGet: ${status}` });
+        } else {
+          updates.push({ downloadId: id, progress: 0.99, status: "downloading" });
+        }
+      }
+    }
+    return updates;
+  }
+
+  async setPriority(client: DownloadClient, downloadId: string, priority: "top" | "normal"): Promise<void> {
+    const command = priority === "top" ? "GroupMoveTop" : "GroupMoveBottom";
+    const ok = await nzbgetRpc(client, "editqueue", [command, "", [Number(downloadId)]]);
+    if (ok === false) throw new Error(`NZBGet ${command} did not apply`);
+  }
+
+  /** A group is in the queue (a client-level failure caught it) or in history: the delete is tried in both places. */
+  async removeDownload(client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void> {
+    const id = Number(downloadId);
+    if (!Number.isFinite(id)) return;
+    await nzbgetRpc(client, "editqueue", [deleteFiles ? "GroupFinalDelete" : "GroupDelete", "", [id]]);
+    await nzbgetRpc(client, "editqueue", [deleteFiles ? "HistoryFinalDelete" : "HistoryDelete", "", [id]]);
+  }
+}
+
+/**
+ * Transmission (Round 27, DL14). RPC at <base>/transmission/rpc (the URL base is "/transmission" unless set):
+ * a request without the session id is answered 409 with the id to send, and the request is repeated. A
+ * torrent is addressed by its hash. Categories become labels (Transmission 3.0 and later); a torrent that
+ * AoNarr imported by hardlink gets the label "aonarr-imported" and an indexer's seed goal a label too, like
+ * qBittorrent's tags.
+ */
+const TRANSMISSION_SESSION_IDS = new Map<number, string>();
+const TRANSMISSION_LABEL = "aonarr";
+
+function transmissionUrl(client: DownloadClient): string {
+  const url = new URL(baseUrl(client));
+  if (!client.urlBase || client.urlBase === "/") url.pathname = "/transmission";
+  return `${url.toString().replace(/\/+$/, "")}/rpc`;
+}
+
+async function transmissionRpc(client: DownloadClient, method: string, args: Record<string, unknown> = {}): Promise<any> {
+  const attempt = async (): Promise<Response> => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const session = TRANSMISSION_SESSION_IDS.get(client.id);
+    if (session) headers["X-Transmission-Session-Id"] = session;
+    if (client.username || client.password) {
+      headers.Authorization = `Basic ${Buffer.from(`${client.username ?? ""}:${client.password ?? ""}`).toString("base64")}`;
+    }
+    return apiFetch(transmissionUrl(client), { method: "POST", headers, body: JSON.stringify({ method, arguments: args }) });
+  };
+  let res = await attempt();
+  if (res.status === 409) {
+    const session = res.headers.get("x-transmission-session-id");
+    if (!session) throw new Error("Transmission answered 409 without a session id — check host, port and URL base.");
+    TRANSMISSION_SESSION_IDS.set(client.id, session);
+    res = await attempt();
+  }
+  if (res.status === 401 || res.status === 403) throw new Error("Transmission rejected the login — check the username and password.");
+  if (!res.ok) throw new Error(`Transmission ${method} failed: HTTP ${res.status}`);
+  let body: any;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error("Transmission answered with something that is not JSON — check host, port and URL base.");
+  }
+  if (body?.result !== "success") throw new Error(`Transmission ${method} failed: ${body?.result ?? "no result"}`);
+  return body.arguments ?? {};
+}
+
+/** Transmission's torrent status numbers. */
+const TRANSMISSION_STOPPED = 0;
+const TRANSMISSION_CHECKING = new Set([1, 2]);
+const TRANSMISSION_QUEUED = new Set([3, 5]);
+
+export class TransmissionAdapter implements DownloadClientAdapter {
+  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null): Promise<GrabResult> {
+    const source = await resolveDownloadSource(downloadUrl);
+    const args: Record<string, unknown> = { labels: category ? [TRANSMISSION_LABEL, category] : [TRANSMISSION_LABEL] };
+    if (source.kind === "magnet") args.filename = source.uri;
+    else args.metainfo = source.bytes.toString("base64");
+    const added = await transmissionRpc(client, "torrent-add", args);
+    // A duplicate is answered as "torrent-duplicate": tracked, as qBittorrent's duplicate add is.
+    const torrent = added["torrent-added"] ?? added["torrent-duplicate"];
+    if (!torrent?.hashString) throw new Error("Transmission did not add the torrent (it answered with no torrent)");
+    const hash = String(torrent.hashString).toLowerCase();
+    // Before Transmission 4.0 `torrent-add` ignores `labels` (3.0 added them to torrent-set only): set them again, best effort.
+    await transmissionRpc(client, "torrent-set", { ids: [hash], labels: args.labels }).catch(() => undefined);
+    return { downloadId: hash };
+  }
+
+  private async torrents(client: DownloadClient): Promise<any[]> {
+    const answer = await transmissionRpc(client, "torrent-get", {
+      fields: [
+        "id", "hashString", "name", "status", "percentDone", "totalSize", "leftUntilDone", "eta", "error", "errorString",
+        "downloadDir", "labels", "uploadRatio", "secondsSeeding", "isStalled", "peersConnected", "sizeWhenDone",
+      ],
+    });
+    return Array.isArray(answer.torrents) ? answer.torrents : [];
+  }
+
+  async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
+    const wanted = new Set(downloadIds.map((id) => id.toLowerCase()));
+    const updates: QueueStatusUpdate[] = [];
+    for (const t of await this.torrents(client)) {
+      const hash = String(t.hashString ?? "").toLowerCase();
+      if (!wanted.has(hash)) continue;
+      const done = Number(t.percentDone) >= 1 && Number(t.leftUntilDone) === 0;
+      const status = Number(t.status);
+      // error 1 and 2 are tracker warnings and errors (the torrent still downloads); 3 is a local error
+      // (a full disk, a permission): the client's, not the release's.
+      const localError = Number(t.error) === 3 ? String(t.errorString || "local error") : null;
+      const sizeLeft = Number(t.leftUntilDone);
+      updates.push({
+        downloadId: downloadIds.find((id) => id.toLowerCase() === hash) ?? hash,
+        progress: Math.min(Number(t.percentDone) || 0, 1),
+        status: done && !TRANSMISSION_CHECKING.has(status) ? "completed" : "downloading",
+        ...(!done && status === TRANSMISSION_STOPPED ? { paused: true } : {}),
+        ...(!done && TRANSMISSION_QUEUED.has(status) ? { paused: true } : {}),
+        ...(!done && t.isStalled && status === 4 ? { stalled: true } : {}),
+        ...(!done && localError ? { warning: `Transmission: ${localError}` } : {}),
+        ...(!done && Number(t.eta) > 0 ? { etaSeconds: Number(t.eta) } : {}),
+        ...(!done && Number.isFinite(sizeLeft) && sizeLeft > 0 ? { sizeLeft } : {}),
+        remotePath: t.downloadDir && t.name ? `${String(t.downloadDir).replace(/[\\/]+$/, "")}/${t.name}` : undefined,
+        clientTitle: typeof t.name === "string" ? t.name : undefined,
+      });
+    }
+    return updates;
+  }
+
+  async setPriority(client: DownloadClient, downloadId: string, priority: "top" | "normal"): Promise<void> {
+    await transmissionRpc(client, priority === "top" ? "queue-move-top" : "queue-move-bottom", { ids: [downloadId.toLowerCase()] });
+  }
+
+  async removeDownload(client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void> {
+    await transmissionRpc(client, "torrent-remove", { ids: [downloadId.toLowerCase()], "delete-local-data": deleteFiles });
+  }
+
+  /** The labels a torrent has now, so a label can be added without dropping the others. */
+  private async labelsOf(client: DownloadClient, hash: string): Promise<string[]> {
+    const answer = await transmissionRpc(client, "torrent-get", { ids: [hash], fields: ["labels"] });
+    const labels = answer.torrents?.[0]?.labels;
+    return Array.isArray(labels) ? labels.map(String) : [];
+  }
+
+  async markImported(client: DownloadClient, downloadId: string, seedGoal?: SeedGoal | null, dataSafe = true): Promise<void> {
+    const additions = [dataSafe ? QBIT_IMPORTED_TAG : null, seedGoalTag(seedGoal)].filter((label): label is string => !!label);
+    if (additions.length === 0) return;
+    const hash = downloadId.toLowerCase();
+    // AoNarr's own label comes with the mark, so a torrent added before labels worked in torrent-add is found by the cleanup.
+    const labels = await this.labelsOf(client, hash);
+    await transmissionRpc(client, "torrent-set", { ids: [hash], labels: [...new Set([...labels, TRANSMISSION_LABEL, ...additions])] });
+  }
+
+  async removeSeededTorrents(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null): Promise<number> {
+    const eligible = (await this.torrents(client)).filter((t) => {
+      const labels: string[] = Array.isArray(t.labels) ? t.labels.map(String) : [];
+      // Seeding (status 6), waiting to seed (5), or stopped by Transmission's own limit after finishing (status 0 at 100%), and only AoNarr's own.
+      const stoppedAtLimit = Number(t.status) === 0 && Number(t.percentDone) >= 1;
+      if (!labels.includes(TRANSMISSION_LABEL) || !([5, 6].includes(Number(t.status)) || stoppedAtLimit)) return false;
+      const own = parseSeedGoalTag(labels.join(","));
+      const ratio = own?.ratio ?? ratioGoal;
+      const minutes = own?.minutes ?? seedTimeGoalMinutes;
+      const ratioMet = ratio !== null && Number(t.uploadRatio) >= ratio;
+      const timeMet = minutes !== null && Number(t.secondsSeeding) / 60 >= minutes;
+      return ratioMet || timeMet;
+    });
+    for (const t of eligible) {
+      const labels: string[] = Array.isArray(t.labels) ? t.labels.map(String) : [];
+      // The data goes only with a torrent AoNarr imported by hardlink; any other keeps its data.
+      await transmissionRpc(client, "torrent-remove", { ids: [String(t.hashString).toLowerCase()], "delete-local-data": labels.includes(QBIT_IMPORTED_TAG) });
+    }
+    return eligible.length;
+  }
+}
+
+/**
+ * Deluge (Round 27, DL14). The web UI's JSON-RPC at <base>/json: a login with the web password gives a session
+ * cookie, and the web UI has to be connected to a daemon (the first listed host is connected when it is not).
+ * Deluge has no categories without its Label plugin; the label is set when that plugin is enabled.
+ */
+const DELUGE_COOKIES = new Map<number, string>();
+
+async function delugeRpc(client: DownloadClient, method: string, params: unknown[] = [], retried = false): Promise<any> {
+  const cookie = DELUGE_COOKIES.get(client.id);
+  const res = await apiFetch(`${baseUrl(client)}/json`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
+    body: JSON.stringify({ method, params, id: 1 }),
+  });
+  if (!res.ok) throw new Error(`Deluge ${method} failed: HTTP ${res.status}`);
+  const setCookie = res.headers.get("set-cookie");
+  if (setCookie) DELUGE_COOKIES.set(client.id, setCookie.split(";")[0]);
+  let body: any;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error("Deluge answered with something that is not JSON — check host, port and URL base.");
+  }
+  if (body?.error) {
+    // An expired session is answered with an error (code 1): log in again once.
+    if (!retried && method !== "auth.login" && Number(body.error.code) === 1) {
+      DELUGE_COOKIES.delete(client.id);
+      await delugeLogin(client);
+      return delugeRpc(client, method, params, true);
+    }
+    // The web UI lost its daemon (deluged restarted while deluge-web kept running): a core call fails with another code,
+    // and the session is still good. Connected again if it is not, and the call repeated once.
+    if (!retried && /^(?:core|label)\./.test(method) && (await delugeRpc(client, "web.connected", [], true).catch(() => true)) === false) {
+      await delugeLogin(client);
+      return delugeRpc(client, method, params, true);
+    }
+    throw new Error(`Deluge ${method} failed: ${body.error.message ?? JSON.stringify(body.error)}`);
+  }
+  return body?.result;
+}
+
+async function delugeLogin(client: DownloadClient): Promise<void> {
+  const ok = await delugeRpc(client, "auth.login", [client.password ?? ""]);
+  if (ok !== true) throw new Error("Deluge rejected the login — check the web UI password.");
+  // The web UI needs a daemon connection before it answers anything about torrents.
+  if ((await delugeRpc(client, "web.connected")) !== true) {
+    const hosts: any[] = (await delugeRpc(client, "web.get_hosts")) ?? [];
+    if (hosts.length === 0) throw new Error("Deluge's web UI knows no daemon to connect to.");
+    await delugeRpc(client, "web.connect", [hosts[0][0]]);
+  }
+}
+
+async function delugeCall(client: DownloadClient, method: string, params: unknown[] = []): Promise<any> {
+  if (!DELUGE_COOKIES.has(client.id)) await delugeLogin(client);
+  return delugeRpc(client, method, params);
+}
+
+const DELUGE_PAUSED_STATES = new Set(["Paused", "Queued"]);
+
+export class DelugeAdapter implements DownloadClientAdapter {
+  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null): Promise<GrabResult> {
+    const source = await resolveDownloadSource(downloadUrl);
+    const options = { add_paused: false };
+    let hash: unknown;
+    try {
+      if (source.kind === "magnet") hash = await delugeCall(client, "core.add_torrent_magnet", [source.uri, options]);
+      else hash = await delugeCall(client, "core.add_torrent_file", ["release.torrent", source.bytes.toString("base64"), options]);
+    } catch (err) {
+      // Deluge refuses a torrent it already holds: that one is tracked, as qBittorrent's and Transmission's duplicate adds are.
+      const known = source.kind === "magnet" ? magnetInfoHash(source.uri) : null;
+      if (known && /already (?:in|added)/i.test((err as Error).message)) return { downloadId: known.toLowerCase() };
+      throw err;
+    }
+    if (typeof hash !== "string" || !hash) throw new Error("Deluge did not add the torrent (it answered with no hash)");
+    const id = hash.toLowerCase();
+    if (category) {
+      // The Label plugin is optional: a torrent without a label is still tracked.
+      try {
+        const plugins: string[] = (await delugeCall(client, "core.get_enabled_plugins")) ?? [];
+        if (plugins.includes("Label")) {
+          // The Label plugin keeps ids in lower case, with letters, digits and "_.-" only.
+          const label = category.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-");
+          const labels: string[] = (await delugeCall(client, "label.get_labels")) ?? [];
+          if (!labels.includes(label)) await delugeCall(client, "label.add", [label]);
+          await delugeCall(client, "label.set_torrent", [id, label]);
+        }
+      } catch (err) {
+        log.warn(`[downloadClient] Deluge label "${category}" was not set:`, (err as Error).message);
+      }
+    }
+    return { downloadId: id };
+  }
+
+  async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
+    const wanted = new Set(downloadIds.map((id) => id.toLowerCase()));
+    const keys = ["name", "state", "progress", "total_size", "total_done", "eta", "save_path", "message", "is_finished", "download_payload_rate"];
+    const torrents: Record<string, any> = (await delugeCall(client, "core.get_torrents_status", [{}, keys])) ?? {};
+    const updates: QueueStatusUpdate[] = [];
+    for (const [hash, t] of Object.entries(torrents)) {
+      if (!wanted.has(hash.toLowerCase())) continue;
+      const state = String(t.state ?? "");
+      const progress = Math.min((Number(t.progress) || 0) / 100, 1);
+      const done = progress >= 1 && state !== "Checking" && state !== "Moving";
+      // Deluge's "Error" state carries the daemon's message (a full disk, a missing file): the client's, not the release's.
+      const warning = state === "Error" ? `Deluge: ${t.message || "error"}` : null;
+      const left = Math.max((Number(t.total_size) || 0) - (Number(t.total_done) || 0), 0);
+      updates.push({
+        downloadId: downloadIds.find((id) => id.toLowerCase() === hash.toLowerCase()) ?? hash,
+        progress,
+        status: done ? "completed" : "downloading",
+        ...(!done && DELUGE_PAUSED_STATES.has(state) ? { paused: true } : {}),
+        ...(!done && state === "Downloading" && Number(t.download_payload_rate) === 0 && Number(t.eta) === 0 ? { stalled: true } : {}),
+        ...(!done && warning ? { warning } : {}),
+        ...(!done && Number(t.eta) > 0 ? { etaSeconds: Number(t.eta) } : {}),
+        ...(!done && left > 0 ? { sizeLeft: left } : {}),
+        remotePath: t.save_path && t.name ? `${String(t.save_path).replace(/[\\/]+$/, "")}/${t.name}` : undefined,
+        clientTitle: typeof t.name === "string" ? t.name : undefined,
+      });
+    }
+    return updates;
+  }
+
+  async setPriority(client: DownloadClient, downloadId: string, priority: "top" | "normal"): Promise<void> {
+    await delugeCall(client, priority === "top" ? "core.queue_top" : "core.queue_bottom", [[downloadId.toLowerCase()]]);
+  }
+
+  async removeDownload(client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void> {
+    await delugeCall(client, "core.remove_torrent", [downloadId.toLowerCase(), deleteFiles]);
+  }
+}
+
+/** Connection tests for the clients above. */
+export async function testNzbget(client: DownloadClient): Promise<void> {
+  const version = await nzbgetRpc(client, "version");
+  if (!version) throw new Error("Unexpected response — check host, port and URL base.");
+  // `version` needs no login on some setups; `status` does.
+  await nzbgetRpc(client, "status");
+}
+
+export async function testTransmission(client: DownloadClient): Promise<void> {
+  await transmissionRpc(client, "session-get", { fields: ["version"] });
+}
+
+export async function testDeluge(client: DownloadClient): Promise<void> {
+  DELUGE_COOKIES.delete(client.id);
+  await delugeLogin(client);
+}
+
 const adapters: Record<DownloadClient["type"], DownloadClientAdapter> = {
   qbittorrent: new QBittorrentAdapter(),
   sabnzbd: new SabnzbdAdapter(),
@@ -1945,6 +2449,9 @@ const adapters: Record<DownloadClient["type"], DownloadClientAdapter> = {
   torbox: new TorBoxAdapter(),
   blackhole: new BlackholeAdapter(),
   slskd: new SlskdAdapter(),
+  nzbget: new NzbgetAdapter(),
+  transmission: new TransmissionAdapter(),
+  deluge: new DelugeAdapter(),
 };
 
 export function getDownloadClientAdapter(type: DownloadClient["type"]): DownloadClientAdapter {

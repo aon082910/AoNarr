@@ -1,6 +1,7 @@
 import type { DownloadClient } from "../types/index.js";
 import type { SearchResult } from "../types/index.js";
 import { log } from "./logger.js";
+import { clientBaseUrl } from "./urlBase.js";
 
 /**
  * Soulseek (via a slskd daemon — https://github.com/slskd/slskd) is architecturally unlike every
@@ -15,8 +16,7 @@ import { log } from "./logger.js";
  * needs to re-issue the request: the owning username and the exact remote filename slskd gave us.
  */
 function baseUrl(client: DownloadClient): string {
-  const scheme = client.useSsl ? "https" : "http";
-  return `${scheme}://${client.host}:${client.port}`;
+  return clientBaseUrl(client);
 }
 
 function headers(client: DownloadClient): Record<string, string> {

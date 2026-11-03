@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import { scopeAllows } from "./tagScope.js";
+import { queueHistoryFields } from "./queueHistory.js";
+import { clientBackoffUntil, isClientBackedOff, recordClientFailure, recordClientSuccess } from "./clientStatus.js";
 import { languageRejection } from "./profileLanguage.js";
 import path from "node:path";
 import { log } from "./logger.js";
@@ -15,7 +17,8 @@ import {
   DOWNLOAD_INTERRUPTED_REASON,
   withQueueImportLock,
 } from "./downloadClient.js";
-import type { QueueStatusUpdate } from "./downloadClient.js";
+import { categoryForType } from "./clientCategory.js";
+import type { QueueStatusUpdate, SeedGoal } from "./downloadClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityModeFor, releaseIdentifiesTarget, type IdentityMode, type IdentityVerdict } from "./releaseIdentity.js";
 import { releaseRejection } from "./releaseRejections.js";
@@ -1316,6 +1319,21 @@ function serializeForItem<T>(mediaItemId: number, fn: () => Promise<T>): Promise
   return run;
 }
 
+/** The seed goal for a torrent from this indexer: the indexer's own ratio and time where it set them, the global goal for the rest. */
+export async function seedGoalFor(indexerId: number | null | undefined): Promise<SeedGoal | null> {
+  let ratio = parseFloat(getSetting("torrentSeedRatioGoal") ?? "") || null;
+  const hours = parseFloat(getSetting("torrentSeedTimeGoalHours") ?? "") || null;
+  let minutes = hours !== null ? hours * 60 : null;
+  if (indexerId) {
+    const row = (await db.prepare("SELECT seed_ratio, seed_time_minutes FROM indexers WHERE id = ?").get(indexerId)) as
+      | { seed_ratio: number | null; seed_time_minutes: number | null }
+      | undefined;
+    if (row?.seed_ratio != null) ratio = Number(row.seed_ratio) || null;
+    if (row?.seed_time_minutes != null) minutes = Number(row.seed_time_minutes) || null;
+  }
+  return ratio === null && minutes === null ? null : { ratio, minutes };
+}
+
 /** Sends a release to the client and records it. Resolves false without sending anything when a
  * queued download already covers the target, and false without a second queue row when the client
  * answers with a download another active row already tracks (qBittorrent drops a duplicate add). */
@@ -1365,8 +1383,19 @@ export async function grab(
     }
     const adapter = getDownloadClientAdapter(client.type);
     let downloadId: string;
+    // Grabs for one title run one after another here, so a client that failed while this one waited is not asked again at
+    // full cost (a hand-picked release is always tried).
+    if (source !== "interactive" && isClientBackedOff(client.id)) {
+      throw new DownloadClientUnavailableError(client, new Error("it is being left alone after failing a moment ago"));
+    }
     try {
-      ({ downloadId } = await adapter.addDownload(client, best.downloadUrl, client.category, best.title, best.protocol));
+      // A torrent client is told the seed goal that applies (its indexer's, else the global one) when it is added.
+      const seedGoal = best.protocol === "torrent" ? await seedGoalFor(best.indexerId) : null;
+      const category = categoryForType(client, mediaItem.type);
+      ({ downloadId } = seedGoal
+        ? await adapter.addDownload(client, best.downloadUrl, category, best.title, best.protocol, { seedGoal })
+        : await adapter.addDownload(client, best.downloadUrl, category, best.title, best.protocol));
+      await recordClientSuccess(client.id);
     } catch (err) {
       if (isClientLevelError(client, best.downloadUrl, err)) throw new DownloadClientUnavailableError(client, err);
       throw new ReleaseRefusedError(err instanceof Error ? err.message : String(err));
@@ -1411,7 +1440,7 @@ export async function grab(
       mediaItem.id,
       { episodeId, subItemId, seasonNumber: packSeason },
       best,
-      { source, quality, client: { id: client.id, name: client.name }, forced: options.forced, releaseGroup: parsedBest.releaseGroup }
+      { source, quality, client: { id: client.id, name: client.name }, forced: options.forced, releaseGroup: parsedBest.releaseGroup, downloadId }
     );
 
     // A manual grab answers at once; waiting for a webhook that never answers held the response (and every other
@@ -1445,11 +1474,11 @@ export function pickClientForProtocol(
   clients: DownloadClient[],
   protocol: SearchResult["protocol"],
   /** `clientId`: the client the release's indexer is set to use. `itemTags`: the tags of the title it is for. */
-  prefer: { clientId?: number | null; itemTags?: number[] } = {}
+  prefer: { clientId?: number | null; itemTags?: number[]; ignoreBackoff?: boolean } = {}
 ): DownloadClient | null {
   const typesForProtocol: Record<string, string[]> = {
-    torrent: ["qbittorrent", "realdebrid", "alldebrid", "torbox", "blackhole"],
-    usenet: ["sabnzbd", "torbox", "blackhole"],
+    torrent: ["qbittorrent", "transmission", "deluge", "realdebrid", "alldebrid", "torbox", "blackhole"],
+    usenet: ["sabnzbd", "nzbget", "torbox", "blackhole"],
     http: ["http"],
     slskd: ["slskd"],
   };
@@ -1461,19 +1490,22 @@ export function pickClientForProtocol(
   });
   // Ranked by the preference order above, then by id — never by list order, which comes from an
   // unordered SELECT that Postgres reshuffles after any UPDATE, moving grabs to another client.
-  matching.sort((a, b) => preferred.indexOf(a.type) - preferred.indexOf(b.type) || a.id - b.id);
+  // The priority the admin set comes first (1 to 50, lower is preferred); clients of equal priority keep the order above.
+  matching.sort((a, b) => (a.priority ?? 1) - (b.priority ?? 1) || preferred.indexOf(a.type) - preferred.indexOf(b.type) || a.id - b.id);
+  // A client that failed lately is left alone until its wait is over (clientStatus.ts).
+  const live = prefer.ignoreBackoff ? matching : matching.filter((c) => !isClientBackedOff(c.id));
   // The client the indexer names is the one used, when it can take this protocol.
-  const named = prefer.clientId != null ? matching.find((c) => c.id === prefer.clientId) : undefined;
+  const named = prefer.clientId != null ? live.find((c) => c.id === prefer.clientId) : undefined;
   if (named) return named;
   // A client scoped to tags takes only titles carrying one of them, and wins over an unscoped client for those; an unscoped client takes the rest.
   if (prefer.itemTags) {
-    const scoped = matching.filter((c) => (c.tagIds?.length ?? 0) > 0);
+    const scoped = live.filter((c) => (c.tagIds?.length ?? 0) > 0);
     const forTitle = scoped.find((c) => scopeAllows(c.tagIds, prefer.itemTags!));
     if (forTitle) return forTitle;
-    const unscoped = matching.filter((c) => (c.tagIds?.length ?? 0) === 0);
+    const unscoped = live.filter((c) => (c.tagIds?.length ?? 0) === 0);
     return unscoped[0] ?? null;
   }
-  return matching[0] ?? null;
+  return live[0] ?? null;
 }
 
 /** Clients that download in-process — a yt-dlp child process or a plain HTTP fetch per grab,
@@ -1590,25 +1622,39 @@ export async function grabBestRelease(
   let remaining = results;
   let refusal: ReleaseRefusedError | null = null;
   const itemTags = scope ? await tagIdsForMediaItem(scope.itemId) : [];
-  for (let attempt = 0; attempt < MAX_RELEASES_TRIED; attempt++) {
+  attempts: for (let attempt = 0; attempt < MAX_RELEASES_TRIED; attempt++) {
     const chosen = await choose(remaining);
     const indexerClient = scope?.indexers?.find((i) => i.id === chosen?.result.indexerId)?.downloadClientId ?? null;
     if (!chosen) break;
-    const client = pickClientForProtocol(clients, chosen.result.protocol, { clientId: indexerClient, itemTags });
-    if (!client) {
-      // No client may take this protocol for this title (every one is scoped to other tags): the other protocols are still worth a try.
-      const left = remaining.filter((r) => r.protocol !== chosen.result.protocol);
-      if (left.length === remaining.length || left.length === 0) break;
-      remaining = left;
-      continue;
-    }
-    try {
-      return { chosen, client, grabbed: await send(client, chosen) };
-    } catch (err) {
-      if (!(err instanceof ReleaseRefusedError)) throw err;
-      refusal = err;
-      log.warn(`[scheduler] "${client.name}" refused "${chosen.result.title}":`, err.message);
-      remaining = remaining.filter((r) => r.downloadUrl !== chosen.result.downloadUrl);
+    // Clients that were unreachable for this release: the next client of the protocol is tried at once (Sonarr's
+    // failover), and only when none is left does the failure go to the caller.
+    const unreachable = new Set<number>();
+    let lastUnavailable: DownloadClientUnavailableError | null = null;
+    for (;;) {
+      const client = pickClientForProtocol(clients.filter((c) => !unreachable.has(c.id)), chosen.result.protocol, { clientId: indexerClient, itemTags });
+      if (!client) {
+        if (lastUnavailable) throw lastUnavailable;
+        // No client may take this protocol for this title (every one is scoped to other tags): the other protocols are still worth a try.
+        const left = remaining.filter((r) => r.protocol !== chosen.result.protocol);
+        if (left.length === remaining.length || left.length === 0) break attempts;
+        remaining = left;
+        continue attempts;
+      }
+      try {
+        return { chosen, client, grabbed: await send(client, chosen) };
+      } catch (err) {
+        if (err instanceof DownloadClientUnavailableError) {
+          unreachable.add(client.id);
+          lastUnavailable = err;
+          await recordClientFailure(client.id, err.message).catch(() => undefined);
+          continue;
+        }
+        if (!(err instanceof ReleaseRefusedError)) throw err;
+        refusal = err;
+        log.warn(`[scheduler] "${client.name}" refused "${chosen.result.title}":`, err.message);
+        remaining = remaining.filter((r) => r.downloadUrl !== chosen.result.downloadUrl);
+        continue attempts;
+      }
     }
   }
   if (refusal) throw refusal;
@@ -1616,16 +1662,22 @@ export async function grabBestRelease(
 }
 
 /** Why a search grabbed nothing, for bulk-search results and retry notifications. */
-function whyNothingGrabbed(
+export function whyNothingGrabbed(
   results: SearchResult[],
   clients: DownloadClient[],
   usableClients: DownloadClient[],
   upgradeFrom: string | null | undefined,
   unavailable: Map<number, string> = new Map()
 ): string {
-  if (results.length > 0 && results.every((r) => !pickClientForProtocol(clients, r.protocol))) {
+  if (results.length > 0 && results.every((r) => !pickClientForProtocol(clients, r.protocol, { ignoreBackoff: true }))) {
     const protocols = Array.from(new Set(results.map((r) => `"${r.protocol}"`)));
     return `No ${protocols.join("/")} download client configured`;
+  }
+  // A client that failed lately and is being left alone (clientStatus.ts) is why nothing could be sent.
+  const waiting = clients.filter((c) => clientBackoffUntil(c.id) !== null);
+  if (waiting.length > 0 && results.length > 0 && results.every((r) => !pickClientForProtocol(clients, r.protocol))) {
+    const until = Math.min(...waiting.map((c) => clientBackoffUntil(c.id)!));
+    return `Download client "${waiting[0].name}" failed and is being left alone until ${new Date(until).toISOString().slice(11, 16)} UTC`;
   }
   const reachable = clients.filter((c) => !unavailable.has(c.id));
   if (results.length > 0 && results.every((r) => !pickClientForProtocol(reachable, r.protocol))) {
@@ -3002,13 +3054,15 @@ export async function retryFailedGrab(
   }
   await db.prepare("INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'failed', ?)").run(
     match.mediaItemId,
-    JSON.stringify({ title: match.title, reason })
+    JSON.stringify({ title: match.title, reason, ...queueHistoryFields(match) })
   );
   if (recordFailure) await recordGroupFailure(parseReleaseTitle(match.title).releaseGroup);
 
   if (
     !mediaRow ||
     getSetting("failedDownloadBehavior") === "blocklistOnly" ||
+    // Sonarr's "Redownload failed from interactive search": a release the admin picked by hand is not replaced by another when it is off.
+    (match.grabSource === "interactive" && getSetting("redownloadFailedInteractive") === "0") ||
     (releaseAtFault && match.retryCount >= maxAutoRetries())
   ) {
     await notifyFailed(mediaTitle, reason);
@@ -3500,7 +3554,8 @@ export async function pollQueue() {
 
   const polled = clients
     .map((client) => ({ client, relevant: active.filter((q) => q.downloadClientId === client.id) }))
-    .filter(({ relevant }) => relevant.length > 0);
+    // A client that failed lately is left alone until its wait is over: its rows keep what they have.
+    .filter(({ client, relevant }) => relevant.length > 0 && !isClientBackedOff(client.id));
   const answers = await Promise.allSettled(
     polled.map(
       async ({ client, relevant }): Promise<PolledStatus[]> =>
@@ -3513,8 +3568,10 @@ export async function pollQueue() {
     if (answer.status === "rejected") {
       const reason = answer.reason instanceof Error ? answer.reason.message : String(answer.reason);
       log.warn(`[scheduler] queue poll failed for client "${client.name}":`, reason);
+      await recordClientFailure(client.id, reason).catch(() => undefined);
       continue;
     }
+    await recordClientSuccess(client.id).catch(() => undefined);
     try {
       await applyClientStatuses(client, relevant, answer.value);
     } catch (err) {
@@ -3823,7 +3880,7 @@ async function expireBlackholeReleases(rows: QueueItem[]): Promise<void> {
     if (moved.changes === 0) continue;
     notifyQueueChanged();
     const reason = `Nothing named like this release appeared in the downloads folder within ${blackholeTimeoutHours()}h of the watch-folder drop`;
-    await db.prepare("INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'failed', ?)").run(q.mediaItemId, JSON.stringify({ title: q.title, reason }));
+    await db.prepare("INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'failed', ?)").run(q.mediaItemId, JSON.stringify({ title: q.title, reason, ...queueHistoryFields(q) }));
     await notifyFailed(q.title, reason);
     log.info(`[scheduler] expired blackhole release "${q.title}": ${reason}`);
   }

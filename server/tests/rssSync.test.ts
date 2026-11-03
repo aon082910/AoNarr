@@ -25,11 +25,14 @@ vi.mock("../src/services/notifications.js", async (importOriginal) => ({
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
 let runRssSync: (typeof import("../src/services/rssSync.js"))["runRssSync"];
+let resetClientStatuses: (typeof import("../src/services/clientStatus.js"))["resetClientStatuses"];
+let recordClientFailure: (typeof import("../src/services/clientStatus.js"))["recordClientFailure"];
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
   ({ setSetting } = await import("../src/services/settingsStore.js"));
   ({ runRssSync } = await import("../src/services/rssSync.js"));
+  ({ resetClientStatuses, recordClientFailure } = await import("../src/services/clientStatus.js"));
 });
 
 beforeEach(async () => {
@@ -471,9 +474,26 @@ describe("runRssSync — after the Round 10 review", () => {
     expect(await markerRows()).toEqual([]);
 
     getDownloadClientAdapter.mockReturnValue(urlKeyedAdapter());
+    // A minute of the client's wait has passed.
+    resetClientStatuses();
     expect(await runRssSync()).toMatchObject({ releases: 1, grabbed: 1 });
     expect(fetchRecentReleases.mock.calls[1][2]).toBeNull();
     expect(await markerRows()).toHaveLength(1);
+  });
+
+  it("keeps the feed markers when the only client is already waiting out a back-off at the start of the run", async () => {
+    const clientId = await insertClient();
+    const indexerId = await insertIndexer();
+    await insertMovie();
+    feeds({ "2000": [release("The.Matrix.1999.1080p.WEB-DL-GRP", indexerId)] });
+    const adapter = urlKeyedAdapter();
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    await recordClientFailure(clientId, "ECONNREFUSED");
+
+    expect(await runRssSync()).toMatchObject({ releases: 1, grabbed: 0 });
+    expect(adapter.addDownload).not.toHaveBeenCalled();
+    // Nothing was judged, so the feed is not marked as read: the same releases are looked at again once the client is back.
+    expect(await markerRows()).toEqual([]);
   });
 
   it("keeps the marker of a feed that was empty when first read to nothing", async () => {

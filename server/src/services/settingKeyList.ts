@@ -9,6 +9,8 @@ export const SETTING_KEY_LIST: readonly string[] = [
   "archivePermanentDelete",
   "authRequired",
   "metricsToken",
+  "debridCleanup",
+  "redownloadFailedInteractive",
   "ntfyServerUrl",
   "ntfyTopic",
   "ntfyToken",

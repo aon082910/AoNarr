@@ -698,12 +698,19 @@ export default function MediaDetail() {
     } catch {
       parsed = null;
     }
-    const detail = parsed?.title ?? parsed?.fileName ?? parsed?.reason ?? null;
+    // A rename says from where to where; a delete or a manual removal says why.
+    const detail =
+      event.eventType === "renamed" && parsed?.from && parsed?.to
+        ? `${String(parsed.from).split(/[\/]/).pop()} → ${String(parsed.to).split(/[\/]/).pop()}`
+        : parsed?.title ?? parsed?.releaseTitle ?? parsed?.fileName ?? parsed?.reason ?? null;
     const labels: Record<string, string> = {
       grabbed: "Grabbed",
       imported: "Imported",
       failed: "Failed",
       subtitleDownloaded: "Subtitle downloaded",
+      deleted: "File deleted",
+      renamed: "Renamed",
+      removed: "Removed from the queue",
     };
     return { label: labels[event.eventType] ?? event.eventType, detail };
   }

@@ -311,10 +311,19 @@ export default function Activity() {
         : `Remove ${subject} from the queue?`,
       confirmLabel: blocklist ? "Remove & blocklist" : "Remove",
       danger: true,
-      options: [{ key: "removeFromClient", label: "Remove from download client (deletes its downloaded data)", defaultChecked: true }],
+      options: [
+        { key: "removeFromClient", label: "Remove from download client (deletes its downloaded data)", defaultChecked: true },
+        ...(blocklist ? [{ key: "searchReplacement", label: "Search for a replacement release now", defaultChecked: true }] : []),
+      ],
     });
     if (!confirmed) return null;
-    const params = [blocklist && "blocklist=1", !confirmed.values.removeFromClient && "removeFromClient=0"].filter(Boolean).join("&");
+    const params = [
+      blocklist && "blocklist=1",
+      !confirmed.values.removeFromClient && "removeFromClient=0",
+      blocklist && !confirmed.values.searchReplacement && "skipRedownload=1",
+    ]
+      .filter(Boolean)
+      .join("&");
     return params ? `?${params}` : "";
   }
 

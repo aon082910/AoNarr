@@ -146,6 +146,12 @@ export interface DownloadClient {
   downloadTypes: string[] | null;
   /** Used only for an item that carries one of these tags; empty = every item. */
   tagIds?: number[];
+  /** 1 to 50, lower is preferred; clients of equal priority are ranked as before. */
+  priority?: number;
+  /** A reverse proxy's sub-path, e.g. "/qbittorrent". */
+  urlBase?: string | null;
+  /** The category a title of each media type is grabbed under; `category` is the default. */
+  categoryByType?: Record<string, string> | null;
 }
 
 export interface QualityProfile {

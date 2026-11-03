@@ -286,6 +286,14 @@ export async function deleteLibraryFile(params: {
     await resetSearchBackoff(item.id);
   }
   if (getSetting("deleteEmptyFolders") === "1") await removeEmptyParents(filePath, roots);
+  await db
+    .prepare("INSERT INTO history (media_item_id, event_type, data, episode_id, sub_item_id) VALUES (?, 'deleted', ?, ?, ?)")
+    .run(
+      item.id,
+      JSON.stringify({ path: filePath, fileName: path.basename(filePath), reason: "Deleted by an admin", unmonitored: unmonitor }),
+      table === "episodes" ? id : null,
+      table === "sub_items" ? id : null
+    );
   notifyFileDeleted(String(item.title), path.basename(filePath)).catch(() => undefined);
   return { path: filePath, unmonitored: unmonitor };
 }

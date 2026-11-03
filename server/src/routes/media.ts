@@ -1318,12 +1318,15 @@ mediaRouter.get(
   })
 );
 
+/** Facts of a download or a file that only the admin needs: where it was on the server, which client and indexer, and the library paths of a rename. */
+const HOUSEHOLD_HIDDEN_HISTORY_KEYS = new Set(["sourcePath", "downloadId", "clientId", "indexerId", "from", "to", "path"]);
+
 /** A 'grabbed' event's data is the whole release object, whose downloadUrl carries the indexer's
  * API key (Newznab/Prowlarr ?apikey=, Jackett's jackett_apikey=) or a private tracker's passkey —
  * fine for the admin-only Activity page, but this per-item route is also open to household
  * accounts, so every URL-ish field is dropped for them. Unparseable data is dropped outright
  * rather than passed through unchecked. */
-function redactHistoryData(data: string | null): string | null {
+export function redactHistoryData(data: string | null): string | null {
   if (!data) return data;
   const isUrl = (v: unknown) => typeof v === "string" && /^(https?|magnet|ftp):/i.test(v);
   const strip = (value: unknown): unknown => {
@@ -1331,7 +1334,8 @@ function redactHistoryData(data: string | null): string | null {
     if (!value || typeof value !== "object") return value;
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value)) {
-      if (/url|link|magnet|guid/i.test(key) || isUrl(v)) continue;
+      // URLs and keys of the release, and where it came from or went on the server's disks, are for the admin.
+      if (/url|link|magnet|guid/i.test(key) || isUrl(v) || HOUSEHOLD_HIDDEN_HISTORY_KEYS.has(key)) continue;
       out[key] = strip(v);
     }
     return out;

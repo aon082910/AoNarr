@@ -1295,6 +1295,33 @@ describe("RealDebridAdapter", () => {
     expect(status.remotePath).toBe(moviePath);
   });
 
+  it("removes the finished torrent from the account once its files are saved (DL21), unless that is switched off", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    for (const [cleanup, expectedDeletes] of [["", 1], ["0", 0]] as const) {
+      setSetting("debridCleanup", cleanup);
+      const fetchMock = routedFetch([
+        { test: (u) => u.includes("/torrents/addMagnet"), response: ok({ id: "rd-clean" }) },
+        { test: (u) => u.includes("/torrents/selectFiles"), response: ok({}) },
+        { test: (u) => u.includes("/torrents/info/rd-clean"), response: ok({ status: "downloaded", links: ["https://rd/linkc"] }) },
+        { test: (u) => u.includes("/unrestrict/link"), response: ok({ download: "https://rd/directc", filename: `Clean-${cleanup || "on"}.mkv` }) },
+        { test: (u) => u === "https://rd/directc", response: fileResponse("bytes") },
+        { test: (u, init) => u.includes("/torrents/delete/rd-clean") && init?.method === "DELETE", response: ok({}) },
+      ]);
+      vi.stubGlobal("fetch", fetchMock);
+      const client = await insertClient({ type: "realdebrid", api_key: "key" });
+      const { downloadId } = await adapter().addDownload(client, "magnet:?xt=urn:btih:clean", null, "Clean Release");
+      await vi.waitFor(async () => {
+        const [status] = await adapter().getStatus(client, [downloadId]);
+        expect(status.status).toBe("completed");
+      });
+      await vi.waitFor(() => {
+        expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes("/torrents/delete/") && c[1]?.method === "DELETE")).toHaveLength(expectedDeletes);
+      });
+      fs.rmSync(path.join(config.downloadsDir, `Clean-${cleanup || "on"}.mkv`), { force: true });
+    }
+    setSetting("debridCleanup", "");
+  });
+
   it("gives a second concurrent multi-file job with the same release title a folder of its own", async () => {
     vi.stubGlobal(
       "fetch",

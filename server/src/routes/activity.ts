@@ -17,6 +17,8 @@ import { parseReleaseTitle } from "../services/releaseParser.js";
 import { ageMinutesOf } from "../services/releaseDecision.js";
 import { manualGrab } from "./search.js";
 import { getSetting } from "../services/settingsStore.js";
+import { wakeLeaf, wakeSeason } from "../services/searchBackoff.js";
+import { queueHistoryFields } from "../services/queueHistory.js";
 
 export const activityRouter = Router();
 activityRouter.use(requireAdmin);
@@ -233,7 +235,28 @@ activityRouter.delete(
           publishDate: queueRow.publish_date,
           infoHash: queueRow.info_hash,
         });
+        // Sonarr's Remove & Blocklist searches for a replacement (its "skip redownload" turns that off): the target's
+        // search wait is dropped, so the next scheduled search looks at once.
+        if (req.query.skipRedownload !== "1") {
+          // Only this target: the rest of the show keeps its own wait.
+          if (queueRow.episode_id) await wakeLeaf("episodes", Number(queueRow.episode_id));
+          else if (queueRow.sub_item_id) await wakeLeaf("sub_items", Number(queueRow.sub_item_id));
+          else if (queueRow.season_number != null) await wakeSeason(Number(queueRow.media_item_id), Number(queueRow.season_number));
+          else await wakeLeaf("media_items", Number(queueRow.media_item_id));
+        }
       }
+      await db.prepare("INSERT INTO history (media_item_id, event_type, data, episode_id, sub_item_id, season_number) VALUES (?, 'removed', ?, ?, ?, ?)").run(
+        queueRow.media_item_id,
+        JSON.stringify({
+          ...queueHistoryFields(queueItemFromRow(queueRow)),
+          reason: req.query.blocklist === "1" ? "Removed from the queue and blocklisted by an admin" : "Removed from the queue by an admin",
+          blocklisted: req.query.blocklist === "1",
+          removedFromClient: req.query.removeFromClient !== "0",
+        }),
+        queueRow.episode_id ?? null,
+        queueRow.sub_item_id ?? null,
+        queueRow.season_number ?? null
+      );
 
       if (req.query.removeFromClient !== "0" && queueRow.download_client_id && queueRow.download_id) {
         // Another row can point at the same download (one season pack grabbed for two targets); it

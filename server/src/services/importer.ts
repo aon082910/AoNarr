@@ -28,6 +28,9 @@ import {
 } from "./subtitleClient.js";
 import { archiveDestinationFor, isArchiveFile, unpackDownloadedArchives } from "./archiveExtract.js";
 import { markDownloadImported, removeQueueItemDownload } from "./downloadClient.js";
+import { categoryForType } from "./clientCategory.js";
+import { parseCategoryByType } from "../db/mappers.js";
+import { queueHistoryFields } from "./queueHistory.js";
 import { syncSubtitleToVideo } from "./subtitleSync.js";
 import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, episodeLabel, multiEpisodeStyleOf, ownFolderDepth, providerIdVars, releaseVars, renderTemplate, titleVars } from "./naming.js";
 import { rememberItemFolder, withItemFolder } from "./libraryFolder.js";
@@ -1017,13 +1020,37 @@ async function moveFile(src: string, dest: string, forceMove = false): Promise<v
   applyConfiguredPermissions(dest, false);
 }
 
+/** What the history rows of one queue row's import say about its download (see queueHistory.ts). */
+const importHistoryContext = new AsyncLocalStorage<Record<string, unknown>>();
+
+/** The JSON of an `imported` history row: the import's own facts, with the download's. */
+function importedHistoryData(facts: Record<string, unknown>): string {
+  return JSON.stringify({ ...(importHistoryContext.getStore() ?? {}), ...facts });
+}
+
 const IMPORT_STRATEGIES = ["move", "copy", "hardlink", "symlink"] as const;
 const strategyOverride = new AsyncLocalStorage<string>();
 
 /** The import strategy for the work running now: the one a manual import asked for, else the setting. */
 function currentImportStrategy(): string {
-  return strategyOverride.getStore() ?? getSetting("importStrategy") ?? "move";
+  const strategy = strategyOverride.getStore() ?? getSetting("importStrategy") ?? "move";
+  // "auto" is decided per download (see autoStrategyFor); work that is not one download's import moves, as the default does.
+  return strategy === "auto" ? "move" : strategy;
 }
+
+/**
+ * The "auto" import strategy (Sonarr's Auto mode, Round 27): a torrent is hardlinked (a copy where a hardlink is
+ * not possible) so it keeps seeding, and everything else is moved. Undefined when the setting is not "auto".
+ */
+export function autoStrategyFor(protocol: string | null | undefined, clientType?: string | null): "hardlink" | "move" | undefined {
+  if (getSetting("importStrategy") !== "auto") return undefined;
+  // Only a client that seeds from the downloads folder has anything to gain: a debrid account or a watch folder's output
+  // would sit in the folder for ever once hardlinked, so those are moved like usenet.
+  return protocol === "torrent" && !!clientType && SEEDING_CLIENT_TYPES.has(clientType) ? "hardlink" : "move";
+}
+
+/** Clients that download torrents into the folder AoNarr imports from and go on seeding them there. */
+const SEEDING_CLIENT_TYPES: ReadonlySet<string> = new Set(["qbittorrent", "transmission", "deluge"]);
 
 /**
  * Runs `work` with a strategy of its own (Sonarr's manual import asks for Move or Copy per import). An unknown or
@@ -1964,7 +1991,7 @@ export async function placeFile(params: {
   for (const historyEpisodeId of historyEpisodeIds) {
     await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
       item.id,
-      JSON.stringify({ fileLabel, destPath, episodeId: historyEpisodeId, subItemId: subItemId ?? null, quality: quality ?? null })
+      importedHistoryData({ fileLabel, destPath, episodeId: historyEpisodeId, subItemId: subItemId ?? null, quality: quality ?? null })
     );
   }
 
@@ -2553,7 +2580,7 @@ export async function placeAlbumFiles(params: {
   if (recordsImport) {
     await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
       item.id,
-      JSON.stringify({ destFolder, fileCount: movedCount, subItemId, quality: quality ?? null })
+      importedHistoryData({ destFolder, fileCount: movedCount, subItemId, quality: quality ?? null })
     );
     await notifyImported(item.title, `${movedCount} file(s) into ${path.basename(destFolder)}`, destFolder);
   }
@@ -2991,7 +3018,7 @@ export async function placeSeasonPackFiles(params: {
       // it actually covers, same reasoning.
       await db.prepare(`INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'imported', ?)`).run(
         item.id,
-        JSON.stringify({
+        importedHistoryData({
           fileLabel,
           destPath: dest,
           episodeId: targetEpisode.id,
@@ -3045,6 +3072,21 @@ export async function placeSeasonPackFiles(params: {
  * confidence threshold applies the way it does for the automatic match.
  */
 export async function importQueueItem(queueItemId: number, manualSourceFile?: string, overrideQuality?: string): Promise<void> {
+  const row = (await db.prepare("SELECT * FROM queue WHERE id = ?").get(queueItemId)) as any;
+  const historyFacts = row ? queueHistoryFields(queueItemFromRow(row)) : {};
+  return importHistoryContext.run(historyFacts, async () => {
+    // A manual import that asked for a strategy keeps it; otherwise "auto" is decided by this download's protocol.
+    if (strategyOverride.getStore() === undefined && getSetting("importStrategy") === "auto") {
+      const client = row?.download_client_id
+        ? ((await db.prepare("SELECT type FROM download_clients WHERE id = ?").get(row.download_client_id)) as { type: string } | undefined)
+        : undefined;
+      return withImportStrategy(autoStrategyFor(row?.protocol, client?.type), () => importQueueItemWithStrategy(queueItemId, manualSourceFile, overrideQuality));
+    }
+    return importQueueItemWithStrategy(queueItemId, manualSourceFile, overrideQuality);
+  });
+}
+
+async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile?: string, overrideQuality?: string): Promise<void> {
   const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(queueItemId);
   if (!queueRow) throw new Error(`Queue item ${queueItemId} not found`);
   const queueItem = queueItemFromRow(queueRow);
@@ -3072,9 +3114,16 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
   }
 
   const clientRow = queueItem.downloadClientId
-    ? ((await db.prepare("SELECT category FROM download_clients WHERE id = ?").get(queueItem.downloadClientId)) as { category: string | null } | undefined)
+    ? ((await db.prepare("SELECT category, category_by_type FROM download_clients WHERE id = ?").get(queueItem.downloadClientId)) as
+        | { category: string | null; category_by_type: string | null }
+        | undefined)
     : undefined;
-  const ctx: DownloadContext = { releaseTitle: queueItem.title, downloadPath: queueItem.downloadPath, category: clientRow?.category ?? null };
+  // The category the download was grabbed under: the client's per-type one for this title's type, else its default.
+  const ctx: DownloadContext = {
+    releaseTitle: queueItem.title,
+    downloadPath: queueItem.downloadPath,
+    category: clientRow ? categoryForType({ category: clientRow.category, categoryByType: parseCategoryByType(clientRow.category_by_type) }, item.type) : null,
+  };
 
   // Sonarr/Radarr's "matched by indexer id only" rule: an automatic grab confirmed by the indexer's
   // id while its title named something else is held for the admin, who sees both titles. A manual
@@ -3573,7 +3622,9 @@ export async function renameLibraryFiles(mediaType?: MediaType, dryRun = false, 
   let errorMessage: string | undefined;
   try {
     for (const mediaRow of itemRows) {
+      const renamedBefore = result.renamed.length;
       await renameOneItemRow(mediaRow, result, undefined, dryRun);
+      if (!dryRun) await recordRenames((mediaRow as any).id, result.renamed.slice(renamedBefore));
       if (jobId) incrementBackgroundJobDone("organize", jobType);
     }
   } catch (err) {
@@ -3600,10 +3651,20 @@ export function isOrganizeRunning(mediaType?: MediaType): boolean {
  * page — same logic, scoped to just this item's own file(s) instead of a whole library.
  * `onlySeasonNumber`, when given, is the season toolbar's "Organize & Rename" button — only that
  * season's episodes are considered (meaningless for non-episodic shapes, so ignored there). */
+/** One `renamed` history row per file Organize & Rename moved, so "why is this file here" has an answer (DL17). */
+async function recordRenames(mediaItemId: number, renames: { title: string; from: string; to: string }[]): Promise<void> {
+  for (const r of renames) {
+    await db.prepare("INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'renamed', ?)").run(mediaItemId, JSON.stringify({ label: r.title, from: r.from, to: r.to }));
+  }
+}
+
 export async function renameOneMediaItem(mediaItemId: number, onlySeasonNumber?: number, dryRun = false): Promise<RenameResult> {
   const result: RenameResult = { renamed: [], errors: [], skippedMusic: 0 };
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(mediaItemId);
-  if (mediaRow) await renameOneItemRow(mediaRow, result, onlySeasonNumber, dryRun);
+  if (mediaRow) {
+    await renameOneItemRow(mediaRow, result, onlySeasonNumber, dryRun);
+    if (!dryRun) await recordRenames(mediaItemId, result.renamed);
+  }
   // Sonarr's "On Rename": told once per title, not per file.
   if (mediaRow && !dryRun && result.renamed.length > 0) notifyRenamed(String((mediaRow as any).title), result.renamed.length).catch(() => undefined);
   return result;

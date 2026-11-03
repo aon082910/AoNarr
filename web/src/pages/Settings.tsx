@@ -3032,6 +3032,10 @@ export default function Settings() {
             render: () => (
               <div>
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  <strong>Auto</strong> decides per download, as Sonarr's Auto mode does: a torrent is
+                  hardlinked (a copy where a hardlink is not possible) so it keeps seeding until its seed
+                  goal, and a usenet or direct download is moved. Set the seed goals under Seed Goal
+                  Cleanup and on each indexer.{" "}
                   <strong>Move</strong> (default) renames the downloaded file into place — the
                   usual behavior, and the source file is gone from the downloads folder afterward.{" "}
                   <strong>Hardlink</strong> is Sonarr/Radarr's real "Use Hard links instead of
@@ -3050,6 +3054,7 @@ export default function Settings() {
                   onChange={(e) => saveSetting("importStrategy", e.target.value)}
                 >
                   <option value="move">Move</option>
+                  <option value="auto">Auto — hardlink torrents, move the rest</option>
                   <option value="hardlink">Hardlink</option>
                   <option value="symlink">Symlink</option>
                 </select>
@@ -3065,8 +3070,8 @@ export default function Settings() {
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
                   Once a download is done with — imported successfully, or failed at the download
                   client itself with nothing worth keeping — AoNarr removes it from the download
-                  client (qBittorrent, SABnzbd; other client types are left alone, no API to do
-                  this) and deletes its now-unneeded release folder from the downloads directory.
+                  client (qBittorrent, SABnzbd, NZBGet, Transmission, Deluge, slskd, a
+                  debrid account and a watch folder's output; yt-dlp and direct downloads have nothing to remove) and deletes its now-unneeded release folder from the downloads directory.
                   Both skipped automatically when Import Strategy above is Hardlink or Symlink,
                   since those need the original download to keep existing. A download that failed{" "}
                   <em>after</em> completing (an import error, not a client-side failure) is never
@@ -3081,6 +3086,29 @@ export default function Settings() {
                   <option value="1">Enabled</option>
                   <option value="0">Disabled</option>
                 </select>
+                <label htmlFor="settings-debrid-cleanup">Remove finished downloads from a debrid account</label>
+                <select id="settings-debrid-cleanup"
+                  key={settings.debridCleanup ?? "debrid-cleanup-empty"}
+                  defaultValue={settings.debridCleanup ?? "1"}
+                  onChange={(e) => saveSetting("debridCleanup", e.target.value)}
+                >
+                  <option value="1">Enabled</option>
+                  <option value="0">Disabled</option>
+                </select>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Removes the entry AoNarr's grab created. If your account already held the same torrent, a
+                  provider may answer with that entry, and it is removed too — turn this off if you keep
+                  things in the account that AoNarr may also grab.
+                </p>
+                <label htmlFor="settings-redownload-interactive">Redownload a failed release that was picked by hand</label>
+                <select id="settings-redownload-interactive"
+                  key={settings.redownloadFailedInteractive ?? "redownload-interactive-empty"}
+                  defaultValue={settings.redownloadFailedInteractive ?? "1"}
+                  onChange={(e) => saveSetting("redownloadFailedInteractive", e.target.value)}
+                >
+                  <option value="1">Yes — search for another release</option>
+                  <option value="0">No — only tell me it failed</option>
+                </select>
                 <label htmlFor="settings-remove-failed-downloads-56">Remove failed downloads</label>
                 <select id="settings-remove-failed-downloads-56"
                   key={settings.removeFailedDownloads ?? "remove-failed-empty"}
@@ -3090,6 +3118,10 @@ export default function Settings() {
                   <option value="1">Enabled</option>
                   <option value="0">Disabled</option>
                 </select>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+                  Removes the failed download from the client's queue. NZBGet deletes the half-downloaded
+                  files only if its own DeleteCleanupDisk setting says so.
+                </p>
               </div>
             ),
           },
@@ -3100,8 +3132,8 @@ export default function Settings() {
             render: () => (
               <div>
                 <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-                  Runs hourly against every qBittorrent client (the only backend this applies to).
-                  Only removes the torrent from the client's own queue — never touches the file
+                  Runs hourly against every qBittorrent and Transmission client (Deluge has no seed goal
+                  cleanup). Only removes the torrent from the client's own queue — never touches the file
                   AoNarr already imported into the library. Leave either field blank to not gate
                   on it; leave both blank to disable this entirely (the default).
                 </p>

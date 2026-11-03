@@ -468,7 +468,8 @@ searchRouter.get(
       facts.hashName = parsed.rejected;
       facts.blocklisted = isBlocklisted;
       // With no client at all every release would say so; that is `downloadAllowed`, not a reason per release.
-      const clientForProtocol = pickClientForProtocol(clients, r.protocol, { itemTags: titleTags });
+      // A client waiting out a back-off is still a client: the admin can try it by hand.
+      const clientForProtocol = pickClientForProtocol(clients, r.protocol, { itemTags: titleTags, ignoreBackoff: true });
       facts.noClientFor = clients.length > 0 && clientForProtocol === null ? r.protocol : null;
       facts.refusal = refusal;
       facts.availability = availabilityRejectionDetail(r, minimumSeedersById, now);
@@ -680,7 +681,7 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
       if (enabled.length === 0) throw new HttpError(400, "Add and enable a download client first");
       // The client the release's indexer names, else one by the title's tags (Sonarr: tagged clients first).
       const viaIndexer = b.indexerId ? ((await db.prepare("SELECT download_client_id FROM indexers WHERE id = ?").get(Number(b.indexerId))) as { download_client_id: number | null } | undefined) : undefined;
-      const picked = pickClientForProtocol(enabled as any, protocol, { clientId: viaIndexer?.download_client_id ?? null, itemTags: await tagIdsOfItem(item.id) });
+      const picked = pickClientForProtocol(enabled as any, protocol, { clientId: viaIndexer?.download_client_id ?? null, itemTags: await tagIdsOfItem(item.id), ignoreBackoff: true });
       if (!picked) throw new HttpError(400, `No enabled download client can handle a "${protocol}" release`);
       clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(picked.id);
     }

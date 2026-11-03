@@ -29,6 +29,9 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   failed: "Failed",
   subtitleDownloaded: "Subtitle downloaded",
   auto_archived: "Auto archived",
+  deleted: "File deleted",
+  renamed: "Renamed",
+  removed: "Removed from the queue",
 };
 
 function eventDetail(row: HistoryRow): string {
@@ -36,7 +39,9 @@ function eventDetail(row: HistoryRow): string {
     const parsed = row.data ? JSON.parse(row.data) : null;
     return (
       parsed?.title ??
+      parsed?.releaseTitle ??
       parsed?.fileName ??
+      parsed?.label ??
       parsed?.fileLabel ??
       parsed?.destPath ??
       parsed?.destFolder ??

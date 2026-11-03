@@ -4,12 +4,13 @@ import Modal from "../components/Modal.js";
 import type { DownloadClient, Tag } from "../types.js";
 import { formatBytes } from "../utils/format.js";
 import { notify } from "../utils/notify.js";
+import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { PlusCircleIcon, ZapIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 
-type ClientType = "qbittorrent" | "sabnzbd" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "torbox" | "blackhole" | "slskd";
+type ClientType = "qbittorrent" | "sabnzbd" | "nzbget" | "transmission" | "deluge" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "torbox" | "blackhole" | "slskd";
 
 interface ClientHealthStats {
   uploadedTotalBytes: number;
@@ -31,6 +32,9 @@ interface RemotePathMapping {
 const TYPE_LABELS: Record<ClientType, string> = {
   qbittorrent: "qBittorrent",
   sabnzbd: "SABnzbd",
+  nzbget: "NZBGet",
+  transmission: "Transmission",
+  deluge: "Deluge",
   http: "Direct HTTP download",
   ytdlp: "yt-dlp",
   realdebrid: "Real-Debrid",
@@ -58,6 +62,10 @@ export default function DownloadClients() {
   const [category, setCategory] = useState("aonarr");
   const [audioOnly, setAudioOnly] = useState(false);
   const [downloadTypes, setDownloadTypes] = useState<string[]>(["torrent"]);
+  const [priority, setPriority] = useState("1");
+  const [urlBase, setUrlBase] = useState("");
+  const [categoryByType, setCategoryByType] = useState<Record<string, string>>({});
+  const mediaTypeInfos = useMediaTypes();
   const [tagIds, setTagIds] = useState<number[]>([]);
   const [allTags, setAllTags] = useState<Tag[]>([]);
 
@@ -71,11 +79,11 @@ export default function DownloadClients() {
     setDownloadTypes((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
   }
 
-  const needsHost = type === "qbittorrent" || type === "sabnzbd" || type === "slskd";
+  const needsHost = ["qbittorrent", "sabnzbd", "slskd", "nzbget", "transmission", "deluge"].includes(type);
   const needsWatchFolder = type === "blackhole";
   // Soulseek has no categorization concept at all — SlskdAdapter.addDownload() doesn't even take a
   // category parameter, so a value entered here would silently do nothing.
-  const supportsCategory = type === "qbittorrent" || type === "sabnzbd";
+  const supportsCategory = ["qbittorrent", "sabnzbd", "nzbget", "transmission", "deluge"].includes(type);
 
   function load() {
     api.get<DownloadClient[]>("/download-clients").then(setClients);
@@ -114,6 +122,9 @@ export default function DownloadClients() {
     setAudioOnly(false);
     setDownloadTypes(["torrent"]);
     setTagIds([]);
+    setPriority("1");
+    setUrlBase("");
+    setCategoryByType({});
   }
 
   function openAdd() {
@@ -134,6 +145,9 @@ export default function DownloadClients() {
     setAudioOnly(!!c.audioOnly);
     setDownloadTypes(c.downloadTypes && c.downloadTypes.length > 0 ? c.downloadTypes : ["torrent"]);
     setTagIds(c.tagIds ?? []);
+    setPriority(String(c.priority ?? 1));
+    setUrlBase(c.urlBase ?? "");
+    setCategoryByType(c.categoryByType ?? {});
     setTestResult(null);
     setMode(c.id);
   }
@@ -157,6 +171,9 @@ export default function DownloadClients() {
       // torrent-only default so nothing stale sticks around from before the type was switched.
       downloadTypes: type === "torbox" ? downloadTypes : ["torrent"],
       tagIds,
+      priority: Number(priority) || 1,
+      urlBase: needsHost ? urlBase.trim() || null : null,
+      categoryByType: supportsCategory ? categoryByType : null,
     };
     try {
       if (mode === "add") {
@@ -251,6 +268,7 @@ export default function DownloadClients() {
             <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>
               {TYPE_LABELS[c.type as ClientType] ?? c.type}
               {c.host ? ` · ${c.host}:${c.port}` : ""}
+              {(c.priority ?? 1) !== 1 ? ` · priority ${c.priority}` : ""}
               {c.type === "torbox" ? ` · ${(c.downloadTypes && c.downloadTypes.length > 0 ? c.downloadTypes : ["torrent"]).join(" + ")}` : ""}
             </div>
             <span className={`badge ${c.enabled ? "ok" : ""}`} style={{ marginTop: 8, display: "inline-block", marginRight: 6 }}>
@@ -369,6 +387,9 @@ export default function DownloadClients() {
             <select id="downloadclients-type-2" value={type} onChange={(e) => setType(e.target.value as ClientType)}>
               <option value="qbittorrent">qBittorrent</option>
               <option value="sabnzbd">SABnzbd</option>
+              <option value="nzbget">NZBGet</option>
+              <option value="transmission">Transmission</option>
+              <option value="deluge">Deluge</option>
               <option value="http">Direct HTTP download (for DDL/RSS indexer results)</option>
               <option value="ytdlp">yt-dlp (for Online Videos)</option>
               <option value="realdebrid">Real-Debrid</option>
@@ -384,6 +405,32 @@ export default function DownloadClients() {
                 <input id="downloadclients-host-3" value={host} onChange={(e) => setHost(e.target.value)} required placeholder="192.168.1.10" />
                 <label htmlFor="downloadclients-port-4">Port</label>
                 <input id="downloadclients-port-4" value={port} onChange={(e) => setPort(e.target.value)} type="number" required />
+                <label htmlFor="downloadclients-url-base">URL base (optional)</label>
+                <input
+                  id="downloadclients-url-base"
+                  value={urlBase}
+                  onChange={(e) => setUrlBase(e.target.value)}
+                  placeholder={type === "transmission" ? "/transmission (the default)" : "/qbittorrent — only behind a reverse proxy sub-path"}
+                />
+              </>
+            )}
+
+            {(type === "nzbget" || type === "transmission") && (
+              <>
+                <label htmlFor="downloadclients-username-nz">Username</label>
+                <input id="downloadclients-username-nz" value={username} onChange={(e) => setUsername(e.target.value)} />
+                <label htmlFor="downloadclients-password-nz">Password{mode !== "add" && " (leave blank to keep current)"}</label>
+                <input id="downloadclients-password-nz" value={password} onChange={(e) => setPassword(e.target.value)} type="password" />
+              </>
+            )}
+
+            {type === "deluge" && (
+              <>
+                <label htmlFor="downloadclients-password-deluge">Web UI password{mode !== "add" && " (leave blank to keep current)"}</label>
+                <input id="downloadclients-password-deluge" value={password} onChange={(e) => setPassword(e.target.value)} type="password" />
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+                  The password of Deluge's web UI (default <code>deluge</code>). Categories become labels when Deluge's Label plugin is enabled.
+                </p>
               </>
             )}
 
@@ -497,6 +544,32 @@ export default function DownloadClients() {
                 <input id="downloadclients-category-13" value={category} onChange={(e) => setCategory(e.target.value)} />
               </>
             )}
+
+            {supportsCategory && (
+              <details style={{ margin: "8px 0" }}>
+                <summary>Category per library type (optional)</summary>
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+                  A title of a type listed here is grabbed under that category instead of the one above, so Music, Movies and
+                  Books can keep their own save paths and post-processing in the client.
+                </p>
+                {mediaTypeInfos.map((info) => (
+                  <div key={info.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <label htmlFor={`downloadclients-category-${info.key}`} style={{ minWidth: 140 }}>
+                      {info.label}
+                    </label>
+                    <input
+                      id={`downloadclients-category-${info.key}`}
+                      value={categoryByType[info.key] ?? ""}
+                      placeholder={category || "default"}
+                      onChange={(e) => setCategoryByType((prev) => ({ ...prev, [info.key]: e.target.value }))}
+                    />
+                  </div>
+                ))}
+              </details>
+            )}
+
+            <label htmlFor="downloadclients-priority">Priority (1 to 50, lower is used first)</label>
+            <input id="downloadclients-priority" type="number" min={1} max={50} value={priority} onChange={(e) => setPriority(e.target.value)} style={{ maxWidth: 120 }} />
 
             {allTags.length > 0 && (
               <fieldset style={{ border: "none", padding: 0, margin: "8px 0" }}>

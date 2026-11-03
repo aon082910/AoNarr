@@ -214,6 +214,7 @@ const TABLES_WITHOUT_ID = new Set([
   "rss_sync_state",
   "indexer_status",
   "import_list_entries",
+  "download_client_status",
 ]);
 
 function withReturningId(sql: string): string {
