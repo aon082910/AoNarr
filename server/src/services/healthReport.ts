@@ -8,6 +8,15 @@ import { findRepeatedImports } from "./duplicates.js";
 import { findUpgradeCandidates } from "./upgradeCandidates.js";
 import { getBackupProblem } from "./scheduledBackup.js";
 import { getFailingJobs } from "./jobRegistry.js";
+import { UNCAUGHT_WARN_PER_HOUR, uncaughtErrorStats } from "./uncaughtErrors.js";
+import { onHealthChange } from "./healthEvents.js";
+import { readRolledBackNotice } from "../restoreGuard.js";
+import { config } from "../config.js";
+import { ENCRYPTION_KEY_PATH } from "./encryption.js";
+import net from "node:net";
+import { getSetting } from "./settingsStore.js";
+import { proxyUrlProblem, redactProxyUrl } from "./networkAddress.js";
+import { failingNotificationProviders } from "./notifications.js";
 import { findRootFolderProblems } from "./rootFolderCheck.js";
 import { recycleBinFolderProblem } from "./recycleBin.js";
 import { pathExistsAsync, StorageTimeoutError } from "./fsAsync.js";
@@ -189,6 +198,81 @@ async function importListIssues(): Promise<HealthIssue[]> {
   }));
 }
 
+/** Sonarr's NotificationStatusCheck: a provider whose last sends all failed. */
+async function notificationIssues(): Promise<HealthIssue[]> {
+  return failingNotificationProviders().map((f) => ({
+    source: `notification:${f.provider}`,
+    severity: "warning" as const,
+    message: `Notifications to ${f.provider} have failed ${f.failures} times in a row since ${f.since.slice(0, 16).replace("T", " ")} UTC (last error: ${f.lastError || "unknown"}).`,
+    transient: true,
+  }));
+}
+
+/** Whether a TCP connection to `host:port` opens within `timeoutMs`. */
+function canConnect(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host, port });
+    const finish = (ok: boolean) => {
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs, () => finish(false));
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
+}
+
+/** Sonarr's ProxyCheck: the proxy the settings send everything through must be usable and accept connections. */
+async function proxyIssues(): Promise<HealthIssue[]> {
+  const raw = getSetting("socks5ProxyUrl");
+  if (!raw || !raw.trim()) return [];
+  const problem = proxyUrlProblem(raw);
+  if (problem) {
+    return [{ source: "proxy", severity: "error", message: `The outbound proxy "${redactProxyUrl(raw)}" ${problem}, so requests go out without a proxy.`, transient: false }];
+  }
+  const url = new URL(raw.trim());
+  const port = Number(url.port) || (url.protocol.startsWith("socks") ? 1080 : url.protocol === "https:" ? 443 : 80);
+  // An IPv6 literal comes with its brackets ("[::1]"), which net.connect does not take.
+  if (await canConnect(url.hostname.replace(/^\[|\]$/g, ""), port, 5_000)) return [];
+  return [
+    {
+      source: "proxy",
+      severity: "warning",
+      message: `The outbound proxy ${url.protocol}//${url.hostname}:${port} does not accept connections. Everything that is sent through it fails until it is back.`,
+      transient: true,
+    },
+  ];
+}
+
+/** The process carries on after an uncaught exception (index.ts); a run of them means something is wrong in a timer or a background job. */
+/** A restore that failed to start twice was rolled back at start-up (restoreGuard.ts): the admin must hear of it. */
+async function restoreRolledBackIssues(): Promise<HealthIssue[]> {
+  if (config.databaseDriver !== "sqlite") return [];
+  const notice = readRolledBackNotice({ dbPath: config.dbPath, keyPath: ENCRYPTION_KEY_PATH });
+  if (!notice) return [];
+  return [
+    {
+      source: "restore-rolled-back",
+      severity: "error",
+      message: `The database you restored did not start (${notice.startsTried} tries), so the previous database was put back. The restored file is kept as ${notice.failedDatabase}; the backup it came from may be damaged or from an incompatible version.`,
+      transient: false,
+    },
+  ];
+}
+
+async function uncaughtErrorIssues(): Promise<HealthIssue[]> {
+  const stats = uncaughtErrorStats();
+  if (stats.lastHour <= UNCAUGHT_WARN_PER_HOUR) return [];
+  return [
+    {
+      source: "uncaught-errors",
+      severity: "warning",
+      message: `${stats.lastHour} unexpected errors in the last hour that no code handled${stats.lastMessage ? ` (the last: ${stats.lastMessage})` : ""}. AoNarr kept running; the Logs page shows each one.`,
+      transient: true,
+    },
+  ];
+}
+
 async function failingJobIssues(): Promise<HealthIssue[]> {
   return (await getFailingJobs(3)).map((job) => ({
     source: `job:${job.key}`,
@@ -270,11 +354,26 @@ async function recycleBinIssues(): Promise<HealthIssue[]> {
 let cache: { at: number; report: HealthReport } | null = null;
 let inFlight: Promise<HealthReport> | null = null;
 const CACHE_TTL_MS = 10 * 60 * 1000;
+/** Bumped by markHealthStale: a run that started before it must not be kept as the answer afterwards. */
+let generation = 0;
+let inFlightGeneration = 0;
+
+/**
+ * Something the checks look at has just changed (a root folder, indexer, download client, import list or setting was
+ * saved, a backup ended): the next view runs the checks again instead of showing the kept report for up to ten
+ * minutes. Sonarr runs its health checks on such events as well as every six hours.
+ */
+export function markHealthStale(): void {
+  generation++;
+  cache = null;
+}
+onHealthChange(markHealthStale);
 
 /** Test-only: forget the cached report. */
 export function clearHealthReportCache(): void {
   cache = null;
   inFlight = null;
+  generation++;
 }
 
 async function buildHealthReport(): Promise<HealthReport> {
@@ -388,6 +487,10 @@ async function buildHealthReport(): Promise<HealthReport> {
     safely("indexer-coverage", indexerCoverageIssues),
     safely("import-lists", importListIssues),
     safely("jobs", failingJobIssues),
+    safely("uncaught-errors", uncaughtErrorIssues),
+    safely("restore-rolled-back", restoreRolledBackIssues),
+    safely("notifications", notificationIssues),
+    safely("proxy", proxyIssues),
     safely("download-paths", downloadPathIssues),
     safely("download-client-config", () => downloadClientConfigIssues(downloadClients)),
     safely("root-folders", rootFolderIssues),
@@ -420,13 +523,21 @@ async function buildHealthReport(): Promise<HealthReport> {
  */
 export async function getHealthReport(options: { refresh?: boolean } = {}): Promise<HealthReport> {
   if (!options.refresh && cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.report;
-  inFlight ??= withTimeout(buildHealthReport(), buildTimeoutMs, "the health report")
-    .then((report) => {
-      cache = { at: Date.now(), report };
-      return report;
-    })
-    .finally(() => {
-      inFlight = null;
-    });
+  // A saved change that arrived while a run was under way makes that run's answer a stale one: the caller waiting on it
+  // gets it, a later caller does not.
+  if (inFlight && inFlightGeneration !== generation) inFlight = null;
+  if (!inFlight) {
+    const startedAt = generation;
+    inFlightGeneration = startedAt;
+    const run: Promise<HealthReport> = withTimeout(buildHealthReport(), buildTimeoutMs, "the health report")
+      .then((report) => {
+        if (startedAt === generation) cache = { at: Date.now(), report };
+        return report;
+      })
+      .finally(() => {
+        if (inFlight === run) inFlight = null;
+      });
+    inFlight = run;
+  }
   return inFlight;
 }

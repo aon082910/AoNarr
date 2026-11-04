@@ -14,7 +14,7 @@ export interface JobDef {
   /** Receives an AbortSignal — loop-based jobs check it between iterations for best-effort cancel.
    * Jobs that are a handful of monolithic awaits can't meaningfully abort mid-flight; for those,
    * the signal is simply unused and "cancel" only stops it from being waited on further. */
-  run: (signal: AbortSignal) => Promise<void>;
+  run: (signal: AbortSignal, info?: { manual: boolean }) => Promise<void>;
   /** A job that walks the library or the disks (a scan, a media check, archival, housekeeping). At most
    * one heavy job runs at a time and the rest wait their turn, as Sonarr's command queue will not start a
    * disk-access command while another runs; 19 jobs used to start together at midnight. */
@@ -22,10 +22,14 @@ export interface JobDef {
   /** A weekly job a restart can skip: when its last recorded run is older than its previous scheduled time,
    * it runs once shortly after startup (Sonarr runs overdue tasks right after a restart). */
   catchUp?: boolean;
+  /** The job the app cannot work without (the queue poll imports every finished download): it has no off switch. */
+  essential?: boolean;
 }
 
 interface JobState {
   schedule: string;
+  /** Switched on (the default). A job switched off has no timer and no catch-up run; "Run now" still works. */
+  enabled: boolean;
   task: cron.ScheduledTask | ReturnType<typeof setInterval> | null;
   running: boolean;
   /** Waiting for the heavy-job slot. */
@@ -54,11 +58,16 @@ function settingKey(key: string): string {
   return `jobSchedule_${key}`;
 }
 
+function enabledKey(key: string): string {
+  return `jobEnabled_${key}`;
+}
+
 export function registerJob(def: JobDef): void {
   defs.set(def.key, def);
   const schedule = getSetting(settingKey(def.key)) || def.defaultSchedule;
   state.set(def.key, {
     schedule,
+    enabled: def.essential ? true : getSetting(enabledKey(def.key)) !== "0",
     task: null,
     running: false,
     queued: false,
@@ -157,7 +166,7 @@ async function execute<T = void>(
   key: string,
   runner?: (signal: AbortSignal) => Promise<T>,
   throwOnError = false,
-  options: { immediate?: boolean } = {}
+  options: { immediate?: boolean; manual?: boolean } = {}
 ): Promise<ExecuteOutcome<T>> {
   const def = defs.get(key);
   const s = state.get(key);
@@ -196,7 +205,7 @@ async function execute<T = void>(
   let value: T | undefined;
 
   try {
-    value = runner ? await runner(controller.signal) : ((await def.run(controller.signal)) as unknown as T);
+    value = runner ? await runner(controller.signal) : ((await def.run(controller.signal, { manual: options.manual === true })) as unknown as T);
     s.lastStatus = controller.signal.aborted ? "cancelled" : "success";
     s.lastError = null;
   } catch (err) {
@@ -238,7 +247,7 @@ export function runJobWithResult<T>(
 function startTask(key: string): void {
   const def = defs.get(key);
   const s = state.get(key);
-  if (!def || !s) return;
+  if (!def || !s || !s.enabled) return;
 
   if (def.scheduleType === "cron") {
     s.task = cron.schedule(s.schedule, () => {
@@ -295,7 +304,7 @@ export function runJobNow(key: string): RunJobResult {
   if (!defs.has(key)) return "unknown";
   if (stopped) return "stopped";
   if (isJobBusy(key)) return "already-running";
-  execute(key).catch(() => {});
+  execute(key, undefined, false, { manual: true }).catch(() => {});
   return "started";
 }
 
@@ -345,11 +354,33 @@ export function updateJobSchedule(key: string, schedule: string): { ok: boolean;
   return { ok: true };
 }
 
+/**
+ * Switches a job on or off: a job that is off has no timer, is not caught up after a restart and is left out of
+ * Health's "failing jobs"; "Run now" still runs it. The queue poll cannot be switched off. Sonarr switches a task
+ * off by an interval of 0; here the schedule is kept, so switching it on again needs no retyping.
+ */
+export function setJobEnabled(key: string, enabled: boolean): { ok: boolean; error?: string } {
+  const def = defs.get(key);
+  const s = state.get(key);
+  if (!def || !s) return { ok: false, error: "Unknown job" };
+  if (def.essential && !enabled) return { ok: false, error: `"${def.name}" cannot be switched off: downloads would never be imported` };
+  if (s.enabled === enabled) return { ok: true };
+  stopTask(key);
+  s.enabled = enabled;
+  setSetting(enabledKey(key), enabled ? "1" : "0");
+  if (enabled && !stopped) startTask(key);
+  return { ok: true };
+}
+
 export interface JobStatus {
   key: string;
   name: string;
   scheduleType: "cron" | "interval";
   schedule: string;
+  /** Switched on (see setJobEnabled). */
+  enabled: boolean;
+  /** Has no off switch. */
+  essential: boolean;
   running: boolean;
   /** Waiting for the heavy-job slot behind another heavy job. */
   queued: boolean;
@@ -371,6 +402,7 @@ export interface JobStatus {
  * a job that hasn't run yet since startup has no anchor to estimate from, so this returns null
  * rather than guess. */
 function computeNextRunAt(def: JobDef, s: JobState): string | null {
+  if (!s.enabled) return null;
   try {
     if (def.scheduleType === "cron") {
       return CronExpressionParser.parse(s.schedule).next().toDate().toISOString();
@@ -391,6 +423,8 @@ export function listJobs(): JobStatus[] {
       name: def.name,
       scheduleType: def.scheduleType,
       schedule: s.schedule,
+      enabled: s.enabled,
+      essential: !!def.essential,
       running: s.running,
       queued: s.queued,
       waitingFor: s.queued && heavyHolder !== null ? defs.get(heavyHolder)?.name ?? heavyHolder : null,
@@ -473,7 +507,7 @@ export function catchUpMissedJobs(now = new Date()): string[] {
   const scheduled: string[] = [];
   for (const [key, def] of defs) {
     const s = state.get(key);
-    if (!def.catchUp || def.scheduleType !== "cron" || !s || !s.hasHistory) continue;
+    if (!def.catchUp || def.scheduleType !== "cron" || !s || !s.hasHistory || !s.enabled) continue;
     let previous: Date;
     let period: number;
     try {
@@ -505,7 +539,8 @@ const FAILING_MIN_SPAN_MS = 30 * 60 * 1000;
 export async function getFailingJobs(threshold = 3): Promise<{ key: string; name: string; failures: number; lastError: string | null }[]> {
   const out: { key: string; name: string; failures: number; lastError: string | null }[] = [];
   for (const [key, def] of defs) {
-    if (def.scheduleType !== "cron") continue;
+    // A job switched off is not failing: it is not running.
+    if (def.scheduleType !== "cron" || state.get(key)?.enabled === false) continue;
     const rows = (await db
       .prepare("SELECT status, error, started_at FROM job_runs WHERE job_key = ? AND status != 'running' ORDER BY started_at DESC, id DESC LIMIT ?")
       .all(key, threshold)) as { status: string; error: string | null; started_at: string }[];
@@ -522,4 +557,9 @@ export async function listJobRuns(key: string, limit = 30): Promise<JobRunRow[]>
   return (await db
     .prepare("SELECT * FROM job_runs WHERE job_key = ? ORDER BY started_at DESC, id DESC LIMIT ?")
     .all(key, limit)) as JobRunRow[];
+}
+
+/** Whether the job's timer runs (a job switched off in the Jobs page still runs on "Run now"). Unknown keys read as off. */
+export function isJobEnabled(key: string): boolean {
+  return state.get(key)?.enabled ?? false;
 }

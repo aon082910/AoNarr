@@ -90,7 +90,8 @@ describe("the registry matches the keys the code uses (ST18)", () => {
     expect(missing).toEqual([]);
   });
 
-  it.skipIf(!fs.existsSync(webSrc))("lists every key the Settings page and the System page write or read", () => {
+  it.skipIf(!fs.existsSync(webSrc) && process.env.AONARR_REQUIRE_REPO_FILES !== "1")("lists every key the Settings page and the System page write or read", () => {
+    expect(fs.existsSync(webSrc), "AONARR_REQUIRE_REPO_FILES=1 needs the whole repository mounted").toBe(true);
     const files = sourceFiles(webSrc, [".ts", ".tsx"]);
     const written = keysUsedBy(files, /\b(?:saveSetting|saveSettingOrThrow)\(\s*"([A-Za-z0-9_.]+)"/g);
     const read = keysUsedBy(files, /\bsettings\.([A-Za-z][A-Za-z0-9_]*)\b/g);
@@ -109,5 +110,46 @@ describe("settingsRegistry helpers", () => {
     expect(settingValueProblem("sizeLimitMode", "x")).toContain("absolute, perMinute");
     expect(settingValueProblem("recycleBinRetentionDays", "1.5")).toContain("whole number");
     expect(settingValueProblem("someOtherKey", "anything")).toBeNull();
+  });
+});
+
+describe("GET /api/settings keeps the server's own working state out of the answer", () => {
+  const PENDING = "deletedFilePendingUnmonitor";
+  const EMPTY_ALBUMS = "albumBackfillEmpty";
+  const get = () => request(app).get("/api/settings").set("X-Api-Key", apiKey);
+
+  it("leaves out the deleted-file job's pending ids and the album backfill memory, and still returns every other setting", async () => {
+    const { setSetting, getSetting } = await import("../src/services/settingsStore.js");
+    const pending = JSON.stringify({ mediaItems: [1, 2, 3], episodes: [4, 5], subItems: [6] });
+    const albums = JSON.stringify({ "17": 1760000000000 });
+    setSetting(PENDING, pending);
+    setSetting(EMPTY_ALBUMS, albums);
+    setSetting("recycleBinRetentionDays", "21");
+    setSetting("namingMovieTemplate", "{title} ({year})");
+
+    const res = await get();
+
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty(PENDING);
+    expect(res.body).not.toHaveProperty(EMPTY_ALBUMS);
+    expect(res.body.recycleBinRetentionDays).toBe("21");
+    expect(res.body.namingMovieTemplate).toBe("{title} ({year})");
+    expect(res.body.apiKey).toBe(apiKey);
+    // Only the answer is trimmed: the stored state is still there for the jobs that use it.
+    expect(getSetting(PENDING)).toBe(pending);
+    expect(getSetting(EMPTY_ALBUMS)).toBe(albums);
+    expect(Object.keys((await get()).body)).not.toContain(PENDING);
+  });
+
+  it("leaves them out when they have been cleared to an empty value too", async () => {
+    const { setSetting } = await import("../src/services/settingsStore.js");
+    setSetting(PENDING, "");
+    setSetting(EMPTY_ALBUMS, "");
+
+    const res = await get();
+
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty(PENDING);
+    expect(res.body).not.toHaveProperty(EMPTY_ALBUMS);
   });
 });

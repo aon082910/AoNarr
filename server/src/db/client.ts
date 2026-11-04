@@ -233,6 +233,7 @@ ensureColumn("root_folders", "default_metadata_profile_id", "default_metadata_pr
 ensureColumn("root_folders", "default_monitor", "default_monitor TEXT");
 ensureColumn("root_folders", "default_monitor_new_items", "default_monitor_new_items TEXT");
 ensureColumn("root_folders", "default_tag_ids", "default_tag_ids TEXT");
+ensureColumn("root_folders", "read_only", "read_only INTEGER NOT NULL DEFAULT 0");
 // Round 27: download client parity.
 // Lower number = preferred (Sonarr: 1 to 50). Clients of equal priority keep the order they always had.
 ensureColumn("download_clients", "priority", "priority INTEGER NOT NULL DEFAULT 1");

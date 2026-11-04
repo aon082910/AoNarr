@@ -9,6 +9,7 @@ import { nowOffsetHoursExpr } from "../db/asyncDb.js";
 // — replacing a live SQLite file only works from outside the async wrapper. Everything else in
 // this file, including backups on both dialects, uses the async `db`/services/scheduledBackup.ts.
 import { db as sqliteDb } from "../db/client.js";
+import { isPreMigrationBackupName, preMigrationDir } from "../db/preMigrationBackup.js";
 import {
   BACKUP_BUNDLE_EXTENSION,
   MANUAL_BACKUP_PREFIX,
@@ -24,6 +25,8 @@ import {
   restoredDbNeedsBundleKey,
 } from "../services/scheduledBackup.js";
 import { ENCRYPTION_KEY_PATH, reloadEncryptionKey } from "../services/encryption.js";
+import { markRestorePending } from "../restoreGuard.js";
+import { importLaneBusy } from "../services/scheduler.js";
 import { config } from "../config.js";
 import { downloadClientFromRow, indexerFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { getDownloadClientAdapter, waitForQueueImports } from "../services/downloadClient.js";
@@ -46,10 +49,11 @@ import { findLibraryMismatches } from "../services/libraryValidation.js";
 import { getMediaServerConfig } from "../services/mediaServer.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
-import { createYielder, statfsAsync } from "../services/fsAsync.js";
+import { createYielder, FS_CALL_TIMEOUT_MS, guardedFsCall, statAsync, statfsAsync } from "../services/fsAsync.js";
 import { getBuildInfo } from "../services/buildInfo.js";
 import { runJobWithResult } from "../services/jobRegistry.js";
 import { getHealthReport } from "../services/healthReport.js";
+import { uncaughtErrorStats } from "../services/uncaughtErrors.js";
 
 export const systemRouter = Router();
 systemRouter.use(requireAdmin);
@@ -299,6 +303,7 @@ systemRouter.get(
       nodeVersion: process.version,
       platform: os.platform(),
       uptimeSeconds: Math.round(process.uptime()),
+      uncaughtErrors: uncaughtErrorStats(),
       libraryCounts,
       queueCount,
       indexerCount,
@@ -440,7 +445,7 @@ systemRouter.get(
         const allKnown = insideKnownDir || knownDirs.has(path.resolve(dir));
         let entries: fs.Dirent[];
         try {
-          entries = await fs.promises.readdir(dir, { withFileTypes: true });
+          entries = await guardedFsCall("readdir", dir, FS_CALL_TIMEOUT_MS, () => fs.promises.readdir(dir, { withFileTypes: true }));
         } catch {
           return;
         }
@@ -453,7 +458,7 @@ systemRouter.get(
         let scanOwnFiles = true;
         if (since !== null) {
           try {
-            scanOwnFiles = (await fs.promises.stat(dir)).mtimeMs > since;
+            scanOwnFiles = (await statAsync(dir)).mtimeMs > since;
           } catch {
             scanOwnFiles = false;
           }
@@ -586,7 +591,11 @@ function resolveBackupFilePath(fileName: string): string {
   if (!BACKUP_FILE_EXTENSIONS.some((ext) => fileName.endsWith(ext))) {
     throw new HttpError(400, "Invalid backup file name");
   }
-  return path.join(dir, fileName);
+  // The copy taken before an upgrade lives in its own folder (db/preMigrationBackup.ts) and is named for it.
+  // A file of that name placed in the backup folder itself is that folder's own file, and wins.
+  const inBackupDir = path.join(dir, fileName);
+  if (isPreMigrationBackupName(fileName) && !fs.existsSync(inBackupDir)) return path.join(preMigrationDir(), fileName);
+  return inBackupDir;
 }
 
 /** Every backup file currently on disk in the configured backup directory, newest first — the
@@ -597,18 +606,20 @@ systemRouter.get(
   "/backups",
   asyncHandler(async (req, res) => {
     const dir = getBackupDir();
-    if (!fs.existsSync(dir)) {
-      res.json({ backups: [] });
-      return;
-    }
-    const backups = fs
-      .readdirSync(dir)
-      .filter((f) => BACKUP_FILE_EXTENSIONS.some((ext) => f.endsWith(ext)))
-      .map((fileName) => {
-        const stat = fs.statSync(path.join(dir, fileName));
-        return { fileName, sizeBytes: stat.size, createdAt: stat.mtime.toISOString() };
-      })
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const listFolder = (folder: string, kind: "backup" | "pre-migration") =>
+      fs.existsSync(folder)
+        ? fs
+            .readdirSync(folder)
+            .filter((f) => BACKUP_FILE_EXTENSIONS.some((ext) => f.endsWith(ext)) && (kind === "backup" || isPreMigrationBackupName(f)))
+            .map((fileName) => {
+              const stat = fs.statSync(path.join(folder, fileName));
+              return { fileName, sizeBytes: stat.size, createdAt: stat.mtime.toISOString(), kind };
+            })
+        : [];
+    // The copies taken before an upgrade sit beside the others (SQLite only: Postgres is not copied, its schema step is idempotent).
+    const backups = [...listFolder(dir, "backup"), ...(db.dialect === "sqlite" ? listFolder(preMigrationDir(), "pre-migration") : [])].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt)
+    );
     res.json({ backups });
   })
 );
@@ -653,7 +664,7 @@ async function settleBeforeRestore(): Promise<void> {
   for (const job of listJobs()) {
     if (job.running) cancelJob(job.key);
   }
-  if (!(await waitForQueueImports(RESTORE_IMPORT_WAIT_MS, () => isJobRunning("queuePoll")))) {
+  if (!(await waitForQueueImports(RESTORE_IMPORT_WAIT_MS, () => isJobRunning("queuePoll") || importLaneBusy()))) {
     log.warn(`[system] an import or queue poll was still running after ${RESTORE_IMPORT_WAIT_MS / 1000}s — restoring anyway`);
   }
 }
@@ -773,9 +784,20 @@ systemRouter.post(
         // current database stays in place with its own key.
         sqliteDb.pragma("wal_checkpoint(TRUNCATE)");
         fs.copyFileSync(config.dbPath, preRestorePath);
+        // The restored database is written under a temporary name first: a write that fails halfway (a full disk)
+        // then leaves the current database and its key untouched, instead of a truncated file under the real name.
+        const staged = `${config.dbPath}.restore-tmp`;
+        try {
+          fs.writeFileSync(staged, dbBuffer);
+        } catch (err) {
+          fs.rmSync(staged, { force: true });
+          throw err;
+        }
         if (keyBuffer) writeRestoredKey(keyBuffer);
+        // On probation from here: if the restored file fails to start twice, the next start puts the .pre-restore copy
+        // back (restoreGuard.ts). Written before the swap, so even a swap that dies midway is caught.
+        markRestorePending({ dbPath: config.dbPath, keyPath: ENCRYPTION_KEY_PATH });
         sqliteDb.close();
-        fs.writeFileSync(config.dbPath, dbBuffer);
         for (const suffix of ["-wal", "-shm"]) {
           try {
             fs.unlinkSync(config.dbPath + suffix);
@@ -783,6 +805,7 @@ systemRouter.post(
             // no journal file to clean up, that's fine
           }
         }
+        fs.renameSync(staged, config.dbPath);
       } catch (err) {
         log.error("[system] database restore failed:", (err as Error).message);
       }

@@ -759,17 +759,14 @@ describe("runAutoSearch", () => {
   });
 
   it("skips a movie whose root folder is over its configured quota", async () => {
-    // isRootFolderOverQuota stats the real filesystem path directly (fs.statfsSync) — it has
+    // isRootFolderOverQuota stats the real filesystem path directly (fs.promises.statfs) — it has
     // nothing to do with the disk_usage_samples table (that only feeds checkHealthAndNotify's own,
     // separate low-disk-space warning) — and it also requires pause_grabs_at_quota to be truthy.
     const folderPath = "/quota-test-path";
     const folder = (
       await db.prepare("INSERT INTO root_folders (path, media_type, quota_percent, pause_grabs_at_quota) VALUES (?, 'movie', 50, 1)").run(folderPath)
     ).lastInsertRowid as number;
-    const originalStatfsSync = fs.statfsSync;
-    vi.spyOn(fs, "statfsSync").mockImplementation((p: any, ...rest: any[]) =>
-      p === folderPath ? ({ blocks: 1000, bsize: 1, bfree: 1, bavail: 1 } as any) : (originalStatfsSync as any)(p, ...rest)
-    );
+    stubOverQuotaFolder(folderPath);
     await insertMovie({ root_folder_id: Number(folder) });
     await insertClient();
 
@@ -777,6 +774,27 @@ describe("runAutoSearch", () => {
 
     expect(searchAllIndexers).not.toHaveBeenCalled();
     vi.restoreAllMocks();
+  });
+
+  it("skips a movie in a read-only library and says so, while a movie in a writable one is searched", async () => {
+    const { log } = await import("../src/services/logger.js");
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const readOnlyFolder = Number(
+      (await db.prepare("INSERT INTO root_folders (path, media_type, read_only) VALUES ('/read-only-search-path', 'movie', 1)").run()).lastInsertRowid
+    );
+    const writableFolder = Number((await db.prepare("INSERT INTO root_folders (path, media_type) VALUES ('/writable-search-path', 'movie')").run()).lastInsertRowid);
+    await insertMovie({ title: "Locked Movie", sort_title: "locked movie", root_folder_id: readOnlyFolder });
+    await insertMovie({ title: "Open Movie", sort_title: "open movie", root_folder_id: writableFolder });
+    await insertClient();
+
+    await runAutoSearch();
+
+    const searched = JSON.stringify(searchAllIndexers.mock.calls);
+    expect(searched).toContain("Open Movie");
+    expect(searched).not.toContain("Locked Movie");
+    expect(info.mock.calls.some((call) => /skipping "Locked Movie": its root folder is read-only/.test(String(call[0])))).toBe(true);
+    expect(info.mock.calls.some((call) => /skipping "Open Movie"/.test(String(call[0])))).toBe(false);
+    info.mockRestore();
   });
 
   it("skips a movie that already has a file or is already queued", async () => {
@@ -2254,9 +2272,9 @@ function urlKeyedAdapter(overrides: Partial<Record<string, any>> = {}) {
 }
 
 function stubOverQuotaFolder(folderPath: string): void {
-  const originalStatfsSync = fs.statfsSync;
-  vi.spyOn(fs, "statfsSync").mockImplementation((p: any, ...rest: any[]) =>
-    p === folderPath ? ({ blocks: 1000, bsize: 1, bfree: 1, bavail: 1 } as any) : (originalStatfsSync as any)(p, ...rest)
+  const originalStatfs = fs.promises.statfs;
+  vi.spyOn(fs.promises, "statfs").mockImplementation(async (p: any, ...rest: any[]) =>
+    p === folderPath ? ({ blocks: 1000, bsize: 1, bfree: 1, bavail: 1 } as any) : (originalStatfs as any)(p, ...rest)
   );
 }
 

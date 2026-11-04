@@ -10,7 +10,7 @@ import { auditActor, logAuditEvent } from "../services/audit.js";
 import { renameOneMediaItem, removeEmptyParents } from "../services/importer.js";
 import { log } from "../services/logger.js";
 import { statfsAsync } from "../services/fsAsync.js";
-import { validateNewRootFolder } from "../services/rootFolderCheck.js";
+import { assertWritableRootFolder, validateNewRootFolder } from "../services/rootFolderCheck.js";
 import { isMonitorMode, isNewItemMode } from "../services/monitorModes.js";
 import { checkedTagIdsColumn } from "../services/tagScope.js";
 
@@ -49,8 +49,10 @@ rootFoldersRouter.post(
     const b = req.body ?? {};
     if (!b.path || !b.mediaType) throw new HttpError(400, "path and mediaType are required");
     if (!isValidMediaType(b.mediaType)) throw new HttpError(400, `Unknown media type "${b.mediaType}"`);
-    const folderPath = await validateNewRootFolder(b.path);
-    const result = await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, ?)").run(folderPath, b.mediaType);
+    if (b.readOnly !== undefined && typeof b.readOnly !== "boolean") throw new HttpError(400, "readOnly must be true or false");
+    const readOnly = b.readOnly === true;
+    const folderPath = await validateNewRootFolder(b.path, { readOnly });
+    const result = await db.prepare("INSERT INTO root_folders (path, media_type, read_only) VALUES (?, ?, ?)").run(folderPath, b.mediaType, readOnly ? 1 : 0);
     const row = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(rootFolderFromRow(row));
   })
@@ -87,6 +89,16 @@ rootFoldersRouter.patch(
     if (b.pauseGrabsAtQuota !== undefined) {
       sets.push("pause_grabs_at_quota = ?");
       values.push(b.pauseGrabsAtQuota ? 1 : 0);
+    }
+    if (b.readOnly !== undefined) {
+      if (typeof b.readOnly !== "boolean") throw new HttpError(400, "readOnly must be true or false");
+      // Making a library writable again is the moment to find out that its folder is not.
+      if (!b.readOnly) {
+        const current = (await db.prepare("SELECT path FROM root_folders WHERE id = ?").get(req.params.id)) as { path: string } | undefined;
+        if (current) await assertWritableRootFolder(path.resolve(current.path), current.path);
+      }
+      sets.push("read_only = ?");
+      values.push(b.readOnly ? 1 : 0);
     }
     if (b.minFreeSpaceGb !== undefined) {
       sets.push("min_free_space_gb = ?");
@@ -164,6 +176,9 @@ rootFoldersRouter.post(
       throw new HttpError(400, `Can't move ${source.media_type} items into a ${destination.media_type} folder`);
     }
     if (source.id === destination.id) throw new HttpError(400, "Source and destination are the same folder");
+    // A read-only library is one AoNarr never writes to: nothing is moved into it, and nothing is taken out of it.
+    if (Number(destination.read_only)) throw new HttpError(400, "The destination is a read-only library: nothing is moved into it");
+    if (Number(source.read_only)) throw new HttpError(400, "The source is a read-only library: its files are not moved out of it");
     if (isValidMediaType(source.media_type) && getMediaTypeConfig(source.media_type).multiFilePerChild) {
       throw new HttpError(400, `Moving a ${getMediaTypeConfig(source.media_type).label} root folder isn't supported — its album/book folders can't be relocated automatically`);
     }

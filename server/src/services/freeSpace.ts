@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
+import { statfsAsync } from "./fsAsync.js";
 
 /**
  * Sonarr's FreeSpaceSpecification: a release bigger than the free space left on the item's root
@@ -33,15 +33,19 @@ export function importReserveBytes(rootMinFreeSpaceGb: number | null | undefined
 
 const cache = new Map<string, { at: number; freeBytes: number | null }>();
 
-/** Free bytes at a path, read at most every 30 seconds (a search can judge hundreds of releases). */
-export function freeBytesAt(folderPath: string, now = Date.now()): number | null {
+/** How long a search waits for a mount to say how much room it has: a dead share must not stall it. */
+const STATFS_TIMEOUT_MS = 5_000;
+
+/** Free bytes at a path, read at most every 30 seconds (a search can judge hundreds of releases). Asked
+ * of the file system without blocking the event loop; a mount that does not answer reads as unknown. */
+export async function freeBytesAt(folderPath: string, now = Date.now()): Promise<number | null> {
   const hit = cache.get(folderPath);
   if (hit && now - hit.at < CACHE_MS) return hit.freeBytes;
   let freeBytes: number | null = null;
   try {
-    const stat = fs.statfsSync(folderPath);
+    const stat = await statfsAsync(folderPath, STATFS_TIMEOUT_MS);
     // A filesystem that reports no blocks at all says nothing about its free space.
-    if (stat.blocks * stat.bsize > 0) freeBytes = stat.bavail * stat.bsize;
+    if (stat && stat.blocks * stat.bsize > 0) freeBytes = stat.bavail * stat.bsize;
   } catch {
     freeBytes = null;
   }
@@ -55,7 +59,7 @@ export async function freeBytesForItem(mediaItemId: number | null): Promise<numb
   const row = (await db
     .prepare("SELECT r.path AS path FROM media_items m JOIN root_folders r ON r.id = m.root_folder_id WHERE m.id = ?")
     .get(mediaItemId)) as { path: string } | undefined;
-  return row?.path ? freeBytesAt(row.path) : null;
+  return row?.path ? await freeBytesAt(row.path) : null;
 }
 
 /** Whether a release of this size would leave less than the reserve free. */

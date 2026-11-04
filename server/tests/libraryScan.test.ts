@@ -2335,6 +2335,139 @@ describe("scanAndImportAllLibraries / refreshAllLibraries", () => {
   });
 });
 
+describe("scanAndImportAllLibraries stamps lastFullScanAt; recentFullScan reads it", () => {
+  let settings: typeof import("../src/services/settingsStore.js");
+  let recentFullScan: (typeof import("../src/services/libraryScan.js"))["recentFullScan"];
+  let RECENT_FULL_SCAN_MS: (typeof import("../src/services/libraryScan.js"))["RECENT_FULL_SCAN_MS"];
+
+  beforeAll(async () => {
+    settings = await import("../src/services/settingsStore.js");
+    ({ recentFullScan, RECENT_FULL_SCAN_MS } = await import("../src/services/libraryScan.js"));
+  });
+
+  beforeEach(() => {
+    settings.setSetting("lastFullScanAt", "");
+  });
+
+  const stamp = () => settings.getSetting("lastFullScanAt");
+
+  it("stamps the time when a scan of every library completes, and the scheduled scan can then see it", async () => {
+    await insertRootFolder("movie");
+    const before = Date.now();
+
+    await scanAndImportAllLibraries();
+
+    expect(Date.parse(stamp() ?? "")).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(stamp() ?? "")).toBeLessThanOrEqual(Date.now());
+    expect(recentFullScan()).toBe(true);
+  });
+
+  it("stamps a completed scan even when the libraries have nothing in them", async () => {
+    await scanAndImportAllLibraries();
+
+    expect(Number.isFinite(Date.parse(stamp() ?? ""))).toBe(true);
+  });
+
+  it("moves an older stamp forward when the next full scan completes", async () => {
+    const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    settings.setSetting("lastFullScanAt", old);
+    expect(recentFullScan()).toBe(false);
+
+    await scanAndImportAllLibraries();
+
+    expect(Date.parse(stamp()!)).toBeGreaterThan(Date.parse(old));
+    expect(recentFullScan()).toBe(true);
+  });
+
+  it("does not stamp a scan that was cancelled before it began, and leaves an earlier stamp as it was", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await scanAndImportAllLibraries(controller.signal);
+    expect(stamp()).toBe("");
+    expect(recentFullScan()).toBe(false);
+
+    const earlier = new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString();
+    settings.setSetting("lastFullScanAt", earlier);
+    await scanAndImportAllLibraries(controller.signal);
+
+    expect(stamp()).toBe(earlier);
+  });
+
+  it("does not stamp a scan that was cancelled while it was part-way through the libraries", async () => {
+    const folder = await insertRootFolder("movie");
+    writeFile(folder.path, "Cancelled Midway (2020).mkv");
+    const controller = new AbortController();
+    probeMediaInfo.mockImplementation(async () => {
+      controller.abort();
+      return null;
+    });
+
+    await scanAndImportAllLibraries(controller.signal);
+
+    expect(probeMediaInfo).toHaveBeenCalled(); // the scan really was under way when it was cancelled
+    expect(stamp()).toBe("");
+    expect(recentFullScan()).toBe(false);
+  });
+
+  it("does not stamp a scan that was cancelled while it was in the last library, which the loop leaves without another check", async () => {
+    const { MEDIA_TYPE_KEYS, getMediaTypeConfig } = await import("../src/services/mediaTypes.js");
+    const lastType = MEDIA_TYPE_KEYS[MEDIA_TYPE_KEYS.length - 1];
+    const extension = getMediaTypeConfig(lastType).extensions[0];
+    const folder = await insertRootFolder(lastType);
+    writeFile(folder.path, `Cancelled In The Last Library A (2020)${extension}`);
+    writeFile(folder.path, `Cancelled In The Last Library B (2021)${extension}`);
+    const controller = new AbortController();
+    probeMediaInfo.mockImplementation(async () => {
+      controller.abort();
+      return null;
+    });
+
+    await scanAndImportAllLibraries(controller.signal);
+
+    expect(probeMediaInfo).toHaveBeenCalledTimes(1); // cancelled during the first file; the second was never looked at
+    const imported = (await db.prepare("SELECT id FROM media_items WHERE type = ?").all(lastType)) as unknown[];
+    expect(imported).toHaveLength(1);
+    expect(stamp()).toBe("");
+    expect(recentFullScan()).toBe(false);
+  });
+
+  describe("recentFullScan", () => {
+    const NOW = Date.parse("2026-11-04T12:00:00.000Z");
+    const at = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+
+    it("is false when no full scan has been recorded, or the record is not a date", () => {
+      expect(recentFullScan(NOW)).toBe(false);
+      settings.setSetting("lastFullScanAt", "yesterday-ish");
+      expect(recentFullScan(NOW)).toBe(false);
+    });
+
+    it("is true for a scan just now and for one almost four hours ago", () => {
+      settings.setSetting("lastFullScanAt", at(0));
+      expect(recentFullScan(NOW)).toBe(true);
+      settings.setSetting("lastFullScanAt", at(RECENT_FULL_SCAN_MS - 1));
+      expect(recentFullScan(NOW)).toBe(true);
+    });
+
+    it("is false once the scan is four hours old, or older", () => {
+      expect(RECENT_FULL_SCAN_MS).toBe(4 * 60 * 60 * 1000);
+      settings.setSetting("lastFullScanAt", at(RECENT_FULL_SCAN_MS));
+      expect(recentFullScan(NOW)).toBe(false);
+      settings.setSetting("lastFullScanAt", at(24 * 60 * 60 * 1000));
+      expect(recentFullScan(NOW)).toBe(false);
+    });
+
+    it("is false for a stamp in the future, as after the clock was set back", () => {
+      settings.setSetting("lastFullScanAt", new Date(NOW + 60_000).toISOString());
+      expect(recentFullScan(NOW)).toBe(false);
+    });
+
+    it("reads the clock when no time is passed", () => {
+      settings.setSetting("lastFullScanAt", new Date().toISOString());
+      expect(recentFullScan()).toBe(true);
+    });
+  });
+});
+
 describe("mergeEpisodesIntoItem", () => {
   it("inserts a missing episode and backfills a placeholder title, without touching a real one", async () => {
     const showId = Number(

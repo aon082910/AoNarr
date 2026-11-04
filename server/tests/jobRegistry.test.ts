@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import cron from "node-cron";
 import { setupTestDb } from "./helpers/testDb.js";
 
 let registerJob: (typeof import("../src/services/jobRegistry.js"))["registerJob"];
+let setJobEnabled: (typeof import("../src/services/jobRegistry.js"))["setJobEnabled"];
 let runJobNow: (typeof import("../src/services/jobRegistry.js"))["runJobNow"];
 let cancelJob: (typeof import("../src/services/jobRegistry.js"))["cancelJob"];
 let updateJobSchedule: (typeof import("../src/services/jobRegistry.js"))["updateJobSchedule"];
@@ -16,12 +18,14 @@ let getFailingJobs: (typeof import("../src/services/jobRegistry.js"))["getFailin
 let listJobRuns: (typeof import("../src/services/jobRegistry.js"))["listJobRuns"];
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let setSetting: (key: string, value: string) => void;
+let getSetting: (key: string) => string | null;
 let uniqueCounter = 0;
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
   ({
     registerJob,
+    setJobEnabled,
     runJobNow,
     cancelJob,
     updateJobSchedule,
@@ -35,7 +39,7 @@ beforeAll(async () => {
     getFailingJobs,
     listJobRuns,
   } = await import("../src/services/jobRegistry.js"));
-  ({ setSetting } = await import("../src/services/settingsStore.js"));
+  ({ setSetting, getSetting } = await import("../src/services/settingsStore.js"));
 });
 
 // stopAllJobs also refuses every later run until startAllJobs, so each test starts from there.
@@ -778,5 +782,380 @@ describe("review fixes: the heavy slot (RB7)", () => {
     registerJob({ key: third, name: "Third", scheduleType: "cron", defaultSchedule: "0 3 * * *", heavy: true, run: async () => void order.push("third") });
     runJobNow(third);
     await waitUntil(() => order.includes("third"));
+  });
+});
+
+describe("the per-job on/off switch (setJobEnabled)", () => {
+  const statusOf = (key: string) => listJobs().find((j) => j.key === key)!;
+
+  it("lists a new job as switched on and not essential", () => {
+    const key = uniqueKey("switch-default");
+    registerJob({ key, name: "Default On", scheduleType: "cron", defaultSchedule: "0 3 * * *", run: async () => {} });
+
+    expect(statusOf(key)).toMatchObject({ enabled: true, essential: false });
+  });
+
+  it("gives a switched-off job no next run, keeps its schedule, and brings the next run back when it is switched on again", () => {
+    const key = uniqueKey("switch-next");
+    registerJob({ key, name: "Switchable", scheduleType: "cron", defaultSchedule: "0 3 * * *", run: async () => {} });
+    expect(statusOf(key).nextRunAt).not.toBeNull();
+
+    expect(setJobEnabled(key, false)).toEqual({ ok: true });
+    expect(statusOf(key)).toMatchObject({ enabled: false, nextRunAt: null, schedule: "0 3 * * *" });
+
+    expect(setJobEnabled(key, true)).toEqual({ ok: true });
+    expect(statusOf(key).enabled).toBe(true);
+    expect(statusOf(key).nextRunAt).not.toBeNull();
+  });
+
+  it("reports no next run for a switched-off interval job even after it has run", async () => {
+    const key = uniqueKey("switch-interval-next");
+    registerJob({ key, name: "Interval Switchable", scheduleType: "interval", defaultSchedule: "60", run: async () => {} });
+    runJobNow(key);
+    await waitUntil(() => statusOf(key).lastStatus === "success");
+    expect(statusOf(key).nextRunAt).not.toBeNull();
+
+    setJobEnabled(key, false);
+
+    expect(statusOf(key).nextRunAt).toBeNull();
+    expect(statusOf(key).lastStatus).toBe("success"); // what it did before stays on the page
+  });
+
+  it("answers 'Unknown job' for a key that was never registered", () => {
+    expect(setJobEnabled("no-such-job-to-switch", false)).toEqual({ ok: false, error: "Unknown job" });
+  });
+
+  it("starts no cron timer for a switched-off job, starts one when it is switched on, and stops it when it is switched off", () => {
+    const schedule = "13 4 * * 2";
+    const key = uniqueKey("switch-cron-timer");
+    const spy = vi.spyOn(cron, "schedule");
+    try {
+      registerJob({ key, name: "Cron Timer", scheduleType: "cron", defaultSchedule: schedule, run: async () => {} });
+      setJobEnabled(key, false);
+
+      stopAllJobs();
+      startAllJobs();
+      const scheduledFor = () => spy.mock.calls.filter((call) => call[0] === schedule).length;
+      expect(scheduledFor()).toBe(0);
+
+      setJobEnabled(key, true);
+      expect(scheduledFor()).toBe(1);
+      const task = spy.mock.results.find((r, i) => spy.mock.calls[i][0] === schedule)!.value as cron.ScheduledTask;
+      const stop = vi.spyOn(task, "stop");
+
+      setJobEnabled(key, false);
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(scheduledFor()).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not start a second timer when a job that is already on is switched on again", () => {
+    const schedule = "14 4 * * 2";
+    const key = uniqueKey("switch-no-double");
+    const spy = vi.spyOn(cron, "schedule");
+    try {
+      registerJob({ key, name: "No Double Timer", scheduleType: "cron", defaultSchedule: schedule, run: async () => {} });
+      stopAllJobs();
+      startAllJobs();
+      const scheduledFor = () => spy.mock.calls.filter((call) => call[0] === schedule).length;
+      expect(scheduledFor()).toBe(1);
+
+      expect(setJobEnabled(key, true)).toEqual({ ok: true });
+
+      expect(scheduledFor()).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("never fires a switched-off interval job on its timer, fires it once it is switched on, and stops again when it is switched off", async () => {
+    const key = uniqueKey("switch-interval-timer");
+    let runs = 0;
+    registerJob({ key, name: "Interval Timer", scheduleType: "interval", defaultSchedule: "5", run: async () => void runs++ });
+    setJobEnabled(key, false);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      stopAllJobs();
+      startAllJobs();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(runs).toBe(0);
+
+      setJobEnabled(key, true);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(runs).toBe(1);
+
+      setJobEnabled(key, false);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(runs).toBe(1);
+    } finally {
+      stopAllJobs();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not start a timer for a job switched on while jobs are stopped, but does at the next start", () => {
+    const key = uniqueKey("switch-while-stopped");
+    registerJob({ key, name: "Switched On While Stopped", scheduleType: "interval", defaultSchedule: "60", run: async () => {} });
+    stopAllJobs();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      setJobEnabled(key, false);
+      setJobEnabled(key, true);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(statusOf(key).enabled).toBe(true);
+
+      startAllJobs();
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+    } finally {
+      stopAllJobs();
+      vi.useRealTimers();
+    }
+  });
+
+  it("still runs a switched-off job on Run now, and leaves it switched off", async () => {
+    const key = uniqueKey("switch-run-now");
+    let runs = 0;
+    registerJob({ key, name: "Run Now Anyway", scheduleType: "cron", defaultSchedule: "0 3 * * *", run: async () => void runs++ });
+    setJobEnabled(key, false);
+
+    expect(runJobNow(key)).toBe("started");
+    await waitUntil(() => statusOf(key).lastStatus === "success");
+
+    expect(runs).toBe(1);
+    expect(statusOf(key)).toMatchObject({ enabled: false, nextRunAt: null, running: false });
+  });
+
+  it("still runs a switched-off job through runJobWithResult (the System page's buttons)", async () => {
+    const key = uniqueKey("switch-run-result");
+    registerJob({ key, name: "Button Anyway", scheduleType: "cron", defaultSchedule: "0 3 * * *", run: async () => {} });
+    setJobEnabled(key, false);
+
+    expect(await runJobWithResult(key, async () => 42)).toEqual({ status: "ran", value: 42 });
+  });
+
+  it("stores the choice as the setting jobEnabled_<key> and leaves the saved schedule alone", () => {
+    const key = uniqueKey("switch-setting");
+    registerJob({ key, name: "Stored Choice", scheduleType: "cron", defaultSchedule: "0 3 * * *", run: async () => {} });
+    updateJobSchedule(key, "0 5 * * *");
+
+    setJobEnabled(key, false);
+    expect(getSetting(`jobEnabled_${key}`)).toBe("0");
+
+    setJobEnabled(key, true);
+    expect(getSetting(`jobEnabled_${key}`)).toBe("1");
+    expect(getSetting(`jobSchedule_${key}`)).toBe("0 5 * * *");
+    expect(statusOf(key).schedule).toBe("0 5 * * *");
+  });
+
+  it("keeps the choice when the job is registered again, as after a restart", () => {
+    const key = uniqueKey("switch-restart");
+    const def = { key, name: "Survives Restart", scheduleType: "cron" as const, defaultSchedule: "0 3 * * *", run: async () => {} };
+    registerJob(def);
+    setJobEnabled(key, false);
+
+    registerJob(def);
+    expect(statusOf(key).enabled).toBe(false);
+    expect(statusOf(key).nextRunAt).toBeNull();
+
+    setJobEnabled(key, true);
+    registerJob(def);
+    expect(statusOf(key).enabled).toBe(true);
+  });
+
+  it("reads a choice that was saved before the job was first registered; no saved choice means on", () => {
+    const off = uniqueKey("switch-saved-off");
+    const on = uniqueKey("switch-saved-on");
+    const none = uniqueKey("switch-saved-none");
+    setSetting(`jobEnabled_${off}`, "0");
+    setSetting(`jobEnabled_${on}`, "1");
+    for (const key of [off, on, none]) registerJob({ key, name: key, scheduleType: "cron", defaultSchedule: "0 3 * * *", run: async () => {} });
+
+    expect(statusOf(off).enabled).toBe(false);
+    expect(statusOf(on).enabled).toBe(true);
+    expect(statusOf(none).enabled).toBe(true);
+  });
+
+  it("leaves a switched-off job out of the catch-up after a restart, and catches it up again once it is switched on", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const key = uniqueKey("switch-catchup");
+      await db.prepare("INSERT INTO job_runs (job_key, started_at, finished_at, status) VALUES (?, ?, ?, 'success')").run(key, "2026-11-01T04:00:05.000Z", "2026-11-01T04:00:05.000Z");
+      registerJob({ key, name: "Weekly Switchable", scheduleType: "cron", defaultSchedule: "0 4 * * 0", catchUp: true, run: async () => {} });
+      await hydrateJobHistory();
+      const sunday = new Date("2026-11-08T12:00:00.000Z");
+
+      setJobEnabled(key, false);
+      expect(catchUpMissedJobs(sunday)).not.toContain(key);
+
+      setJobEnabled(key, true);
+      expect(catchUpMissedJobs(sunday)).toContain(key);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not run a switched-off job when its catch-up timer would fire", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const key = uniqueKey("switch-catchup-timer");
+      let runs = 0;
+      await db.prepare("INSERT INTO job_runs (job_key, started_at, finished_at, status) VALUES (?, ?, ?, 'success')").run(key, "2026-11-01T04:00:05.000Z", "2026-11-01T04:00:05.000Z");
+      registerJob({ key, name: "Weekly Off", scheduleType: "cron", defaultSchedule: "0 4 * * 0", catchUp: true, run: async () => void runs++ });
+      await hydrateJobHistory();
+      setJobEnabled(key, false);
+
+      catchUpMissedJobs(new Date("2026-11-08T12:00:00.000Z"));
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+
+      expect(runs).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves a switched-off job out of the failing jobs, since it is not running, and lists it again when it is switched on", async () => {
+    const key = uniqueKey("switch-failing");
+    registerJob({ key, name: "Failing But Off", scheduleType: "cron", defaultSchedule: "0 3 * * *", run: async () => {} });
+    for (const hour of [1, 2, 3]) {
+      await db
+        .prepare("INSERT INTO job_runs (job_key, started_at, finished_at, status, error) VALUES (?, ?, ?, 'error', 'HTTP 503')")
+        .run(key, `2026-03-01T0${hour}:00:00.000Z`, `2026-03-01T0${hour}:00:01.000Z`);
+    }
+    expect((await getFailingJobs(3)).map((j) => j.key)).toContain(key);
+
+    setJobEnabled(key, false);
+    expect((await getFailingJobs(3)).map((j) => j.key)).not.toContain(key);
+
+    setJobEnabled(key, true);
+    expect((await getFailingJobs(3)).map((j) => j.key)).toContain(key);
+  });
+
+  describe("an essential job", () => {
+    it("is listed as essential and cannot be switched off, with the reason in the error", () => {
+      const key = uniqueKey("essential");
+      registerJob({ key, name: "Queue Poll Stand-in", scheduleType: "cron", defaultSchedule: "0 3 * * *", essential: true, run: async () => {} });
+
+      const result = setJobEnabled(key, false);
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('"Queue Poll Stand-in" cannot be switched off');
+      expect(statusOf(key)).toMatchObject({ essential: true, enabled: true });
+      expect(statusOf(key).nextRunAt).not.toBeNull();
+      expect(getSetting(`jobEnabled_${key}`)).toBeNull();
+    });
+
+    it("keeps its timer when someone tries to switch it off", () => {
+      const schedule = "15 4 * * 2";
+      const key = uniqueKey("essential-timer");
+      const spy = vi.spyOn(cron, "schedule");
+      try {
+        registerJob({ key, name: "Essential Timer", scheduleType: "cron", defaultSchedule: schedule, essential: true, run: async () => {} });
+        stopAllJobs();
+        startAllJobs();
+        const index = spy.mock.calls.findIndex((call) => call[0] === schedule);
+        expect(index).toBeGreaterThanOrEqual(0);
+        const stop = vi.spyOn(spy.mock.results[index].value as cron.ScheduledTask, "stop");
+
+        setJobEnabled(key, false);
+
+        expect(stop).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("ignores an 'off' choice saved for it earlier", () => {
+      const key = uniqueKey("essential-stale-setting");
+      setSetting(`jobEnabled_${key}`, "0");
+
+      registerJob({ key, name: "Stale Off", scheduleType: "cron", defaultSchedule: "0 3 * * *", essential: true, run: async () => {} });
+
+      expect(statusOf(key).enabled).toBe(true);
+    });
+
+    it("accepts being 'switched on', which changes nothing", () => {
+      const key = uniqueKey("essential-on");
+      registerJob({ key, name: "Already On", scheduleType: "cron", defaultSchedule: "0 3 * * *", essential: true, run: async () => {} });
+
+      expect(setJobEnabled(key, true)).toEqual({ ok: true });
+      expect(statusOf(key).enabled).toBe(true);
+    });
+  });
+});
+
+describe("JobDef.run(signal, info): who started the run", () => {
+  it("tells the job it was started by hand when the run comes from Run now", async () => {
+    const key = uniqueKey("info-manual");
+    let seen: { manual: boolean } | undefined;
+    let called = false;
+    registerJob({
+      key,
+      name: "Manual Info",
+      scheduleType: "cron",
+      defaultSchedule: "0 3 * * *",
+      run: async (_signal, info) => {
+        called = true;
+        seen = info;
+      },
+    });
+
+    runJobNow(key);
+    await waitUntil(() => called);
+
+    expect(seen?.manual).toBe(true);
+  });
+
+  it("tells the job it was not started by hand when its own timer fires", async () => {
+    const key = uniqueKey("info-timer");
+    const seen: ({ manual: boolean } | undefined)[] = [];
+    registerJob({ key, name: "Timer Info", scheduleType: "interval", defaultSchedule: "5", run: async (_signal, info) => void seen.push(info) });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      stopAllJobs();
+      startAllJobs();
+      await vi.advanceTimersByTimeAsync(5_000);
+    } finally {
+      stopAllJobs();
+      vi.useRealTimers();
+    }
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.manual).toBeFalsy();
+  });
+
+  it("tells the job it was not started by hand when the run is a catch-up after a restart", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const key = uniqueKey("info-catchup");
+      const seen: ({ manual: boolean } | undefined)[] = [];
+      await db.prepare("INSERT INTO job_runs (job_key, started_at, finished_at, status) VALUES (?, ?, ?, 'success')").run(key, "2026-11-01T04:00:05.000Z", "2026-11-01T04:00:05.000Z");
+      registerJob({ key, name: "Catch-up Info", scheduleType: "cron", defaultSchedule: "0 4 * * 0", catchUp: true, run: async (_signal, info) => void seen.push(info) });
+      await hydrateJobHistory();
+
+      expect(catchUpMissedJobs(new Date("2026-11-08T12:00:00.000Z"))).toContain(key);
+      // Earlier tests left other overdue jobs registered, which are staggered ahead of this one.
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.manual).toBeFalsy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives a job started by hand the manual flag again on every Run now, not only the first", async () => {
+    const key = uniqueKey("info-manual-twice");
+    const seen: boolean[] = [];
+    registerJob({ key, name: "Twice", scheduleType: "cron", defaultSchedule: "0 3 * * *", run: async (_signal, info) => void seen.push(info?.manual === true) });
+
+    runJobNow(key);
+    await waitUntil(() => seen.length === 1);
+    await waitUntil(() => !listJobs().find((j) => j.key === key)!.running);
+    runJobNow(key);
+    await waitUntil(() => seen.length === 2);
+
+    expect(seen).toEqual([true, true]);
   });
 });

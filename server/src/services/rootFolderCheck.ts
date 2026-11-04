@@ -56,6 +56,30 @@ async function hasAnyEntry(dir: string, timeoutMs: number): Promise<boolean> {
   });
 }
 
+/**
+ * Why an import must not go into this root folder, or null. A share that did not come up leaves an empty mount point
+ * (the folder exists, so assertInsideRoot lets the import through): every destination folder would then be created
+ * on the container's own file system and the import would "succeed" into a tree nothing reads. A root that is empty
+ * while the library has files recorded in it is that case; an empty root with nothing recorded is a new library. A
+ * mount that does not answer reads as unknown (the move reports it). The caller throws a plain Error, which the
+ * poller parks as transient and retries after 15 minutes, an hour and six hours.
+ */
+export async function rootFolderUnmountedReason(row: { id: number; path: string }, timeoutMs = CHECK_TIMEOUT_MS): Promise<string | null> {
+  try {
+    if (await hasAnyEntry(row.path, timeoutMs)) return null;
+  } catch {
+    return null; // missing or not answering: assertInsideRoot and the move itself say so
+  }
+  const recorded = (await db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM media_items WHERE root_folder_id = ? AND (has_file = 1 OR EXISTS (SELECT 1 FROM episodes e WHERE e.media_item_id = media_items.id AND e.has_file = 1) OR EXISTS (SELECT 1 FROM sub_items s WHERE s.media_item_id = media_items.id AND s.has_file = 1))`
+    )
+    .get(row.id)) as { c: number };
+  return Number(recorded.c) > 0
+    ? `Root folder "${row.path}" is empty although ${recorded.c} item(s) have files recorded in it (is the share mounted?)`
+    : null;
+}
+
 function isInside(parent: string, child: string): boolean {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
@@ -68,7 +92,7 @@ function isInside(parent: string, child: string): boolean {
  * silently created by the first import, so a typo or an unmounted share became a real directory tree on
  * the container's own file system.
  */
-export async function validateNewRootFolder(rootPath: unknown): Promise<string> {
+export async function validateNewRootFolder(rootPath: unknown, options: { readOnly?: boolean } = {}): Promise<string> {
   if (typeof rootPath !== "string" || rootPath.trim() === "") throw new HttpError(400, "path is required");
   const trimmed = rootPath.trim();
   if (!path.isAbsolute(trimmed)) throw new HttpError(400, `"${trimmed}" is not an absolute path`);
@@ -101,14 +125,21 @@ export async function validateNewRootFolder(rootPath: unknown): Promise<string> 
   }
   if (!stat.isDirectory()) throw new HttpError(400, `"${trimmed}" is not a folder`);
 
+  // A library that is only scanned and served may sit on a read-only mount: nothing is ever imported into it.
+  if (options.readOnly) return trimmed;
+  await assertWritableRootFolder(resolved, trimmed);
+  return trimmed;
+}
+
+/** Throws a 400 when AoNarr cannot write into the folder (the real write probe, used when a root is added or made writable). */
+export async function assertWritableRootFolder(resolved: string, shown: string = resolved): Promise<void> {
   let writable;
   try {
     writable = await canWrite(resolved);
   } catch (err) {
-    throw new HttpError(400, `"${trimmed}" did not answer: ${(err as Error).message}`);
+    throw new HttpError(400, `"${shown}" did not answer: ${(err as Error).message}`);
   }
-  if (!writable.ok) throw new HttpError(400, `"${trimmed}" is not writable by AoNarr (${writable.reason}). Check the folder's owner or the mount's read-only flag.`);
-  return trimmed;
+  if (!writable.ok) throw new HttpError(400, `"${shown}" is not writable by AoNarr (${writable.reason}). Check the folder's owner or the mount's read-only flag, or add it as a read-only library.`);
 }
 
 /**
@@ -118,12 +149,12 @@ export async function validateNewRootFolder(rootPath: unknown): Promise<string> 
  * is left alone.
  */
 export async function findRootFolderProblems(timeoutMs = CHECK_TIMEOUT_MS): Promise<RootFolderProblem[]> {
-  const rows = (await db.prepare("SELECT id, path FROM root_folders").all()) as { id: number; path: string }[];
+  const rows = (await db.prepare("SELECT id, path, read_only FROM root_folders").all()) as { id: number; path: string; read_only?: number }[];
   // The roots are independent. One after another, several dead shares would cost the timeout each.
   return (await Promise.all(rows.map((row) => checkOneRoot(row, timeoutMs)))).flat();
 }
 
-async function checkOneRoot(row: { id: number; path: string }, timeoutMs: number): Promise<RootFolderProblem[]> {
+async function checkOneRoot(row: { id: number; path: string; read_only?: number }, timeoutMs: number): Promise<RootFolderProblem[]> {
   const one = (kind: RootFolderProblemKind, message: string): RootFolderProblem[] => [{ rootFolderId: row.id, path: row.path, kind, message }];
   try {
     let stat: fs.Stats;
@@ -135,8 +166,11 @@ async function checkOneRoot(row: { id: number; path: string }, timeoutMs: number
     }
     if (!stat.isDirectory()) return one("not_a_directory", `Root folder "${row.path}" is not a folder`);
 
-    const writable = await canWriteCheaply(row.path, timeoutMs);
-    if (!writable.ok) return one("unwritable", `Root folder "${row.path}" is not writable (${writable.reason}). Is it mounted read-only?`);
+    // A read-only library is meant to be: only the other checks apply to it.
+    if (!Number(row.read_only ?? 0)) {
+      const writable = await canWriteCheaply(row.path, timeoutMs);
+      if (!writable.ok) return one("unwritable", `Root folder "${row.path}" is not writable (${writable.reason}). Is it mounted read-only?`);
+    }
 
     if (!(await hasAnyEntry(row.path, timeoutMs))) {
       const recorded = (await db

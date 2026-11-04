@@ -164,20 +164,26 @@ async function fanOut(content: NotificationContent): Promise<void> {
   const pushoverUserKey = getSetting("pushoverUserKey");
 
   const jobs: Promise<void>[] = [];
+  const providers: string[] = [];
+  /** One provider's send, remembered by name so Health can say which one keeps failing (NotificationStatus). */
+  const send = (provider: string, job: Promise<void>) => {
+    providers.push(provider);
+    jobs.push(job);
+  };
 
   if (discordUrl && isEventEnabledFor("discord", event)) {
-    jobs.push(
+    send("discord",
       postJson(discordUrl, { embeds: [{ title: content.title, description: content.text, color: content.color }] })
     );
   }
   if (slackUrl && isEventEnabledFor("slack", event)) {
-    jobs.push(postJson(slackUrl, { text: `*${content.title}*\n${content.text}` }));
+    send("slack", postJson(slackUrl, { text: `*${content.title}*\n${content.text}` }));
   }
   if (genericUrl && isEventEnabledFor("generic", event)) {
-    jobs.push(postJson(genericUrl, content.payload));
+    send("generic webhook", postJson(genericUrl, content.payload));
   }
   if (telegramBotToken && telegramChatId && isEventEnabledFor("telegram", event)) {
-    jobs.push(
+    send("telegram",
       postForm(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
         chat_id: telegramChatId,
         text: `${content.title}\n${content.text}`,
@@ -185,7 +191,7 @@ async function fanOut(content: NotificationContent): Promise<void> {
     );
   }
   if (pushoverApiToken && pushoverUserKey && isEventEnabledFor("pushover", event)) {
-    jobs.push(
+    send("pushover",
       postForm("https://api.pushover.net/1/messages.json", {
         token: pushoverApiToken,
         user: pushoverUserKey,
@@ -198,12 +204,12 @@ async function fanOut(content: NotificationContent): Promise<void> {
   const ntfyServer = getSetting("ntfyServerUrl");
   const ntfyTopic = getSetting("ntfyTopic");
   if (ntfyServer && ntfyTopic && isEventEnabledFor("ntfy", event)) {
-    jobs.push(sendNtfy(ntfyServer, ntfyTopic, getSetting("ntfyToken") ?? "", content.title, content.text));
+    send("ntfy", sendNtfy(ntfyServer, ntfyTopic, getSetting("ntfyToken") ?? "", content.title, content.text));
   }
   const gotifyServer = getSetting("gotifyServerUrl");
   const gotifyToken = getSetting("gotifyToken");
   if (gotifyServer && gotifyToken && isEventEnabledFor("gotify", event)) {
-    jobs.push(sendGotify(gotifyServer, gotifyToken, content.title, content.text));
+    send("gotify", sendGotify(gotifyServer, gotifyToken, content.title, content.text));
   }
 
   const matrixHomeserver = getSetting("matrixHomeserverUrl");
@@ -214,7 +220,7 @@ async function fanOut(content: NotificationContent): Promise<void> {
     const url = `${matrixHomeserver.replace(/\/+$/, "")}/_matrix/client/v3/rooms/${encodeURIComponent(
       matrixRoomId
     )}/send/m.room.message/${txnId}?access_token=${encodeURIComponent(matrixAccessToken)}`;
-    jobs.push(
+    send("matrix",
       (async () => {
         const res = await fetch(url, {
           method: "PUT",
@@ -232,7 +238,7 @@ async function fanOut(content: NotificationContent): Promise<void> {
   const twilioFrom = getSetting("twilioFromNumber");
   const twilioTo = getSetting("twilioToNumber");
   if (twilioSid && twilioToken && twilioFrom && twilioTo && isEventEnabledFor("twilio", event)) {
-    jobs.push(
+    send("SMS (Twilio)",
       (async () => {
         const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`, {
           method: "POST",
@@ -252,7 +258,7 @@ async function fanOut(content: NotificationContent): Promise<void> {
   const smtpTo = getSetting("smtpTo");
   const smtpFrom = getSetting("smtpFrom");
   if (smtpHost && smtpTo && smtpFrom && isEventEnabledFor("smtp", event)) {
-    jobs.push(
+    send("email",
       sendEmail(
         {
           host: smtpHost,
@@ -271,17 +277,56 @@ async function fanOut(content: NotificationContent): Promise<void> {
 
   // Web push always fans out too — it has no separate "configured" gate since it's opt-in per
   // browser (no subscriptions means no-op), unlike the webhook/bot providers above.
-  if (isEventEnabledFor("push", event)) jobs.push(sendPush(content.title, content.text));
+  if (isEventEnabledFor("push", event)) send("web push", sendPush(content.title, content.text));
 
   if (isEventEnabledFor("customScript", event)) {
     const { event: _event, ...tokens } = content.payload as { event: string } & Record<string, string>;
-    jobs.push(runCustomScript(event, tokens));
+    send("custom script", runCustomScript(event, tokens));
   }
 
   const settled = await Promise.allSettled(jobs);
-  for (const s of settled) {
-    if (s.status === "rejected") log.warn("[notifications]", s.reason?.message ?? s.reason);
+  settled.forEach((s, i) => {
+    if (s.status === "rejected") {
+      log.warn("[notifications]", s.reason?.message ?? s.reason);
+      recordNotificationOutcome(providers[i], false, s.reason?.message ?? String(s.reason));
+    } else {
+      recordNotificationOutcome(providers[i], true);
+    }
+  });
+}
+
+interface ProviderFailure {
+  /** Failed sends in a row. */
+  failures: number;
+  since: number;
+  /** The latest failed send: a provider nobody sends through any more (its URL was cleared) stops being reported a day after it. */
+  last: number;
+  lastError: string;
+}
+const failingProviders = new Map<string, ProviderFailure>();
+const FAILURE_REPORT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function recordNotificationOutcome(provider: string, ok: boolean, error?: string): void {
+  if (ok) {
+    failingProviders.delete(provider);
+    return;
   }
+  const known = failingProviders.get(provider);
+  // The message can carry the target URL, which can carry a token: only its description (describeTarget) is ever in it.
+  failingProviders.set(provider, { failures: (known?.failures ?? 0) + 1, since: known?.since ?? Date.now(), last: Date.now(), lastError: (error ?? "").slice(0, 300) });
+}
+
+/** The notification providers whose last sends all failed (at least `threshold` in a row), for Health (Sonarr's NotificationStatusCheck). */
+export function failingNotificationProviders(threshold = 2): { provider: string; failures: number; since: string; lastError: string }[] {
+  const now = Date.now();
+  return Array.from(failingProviders)
+    .filter(([, f]) => f.failures >= threshold && now - f.last < FAILURE_REPORT_WINDOW_MS)
+    .map(([provider, f]) => ({ provider, failures: f.failures, since: new Date(f.since).toISOString(), lastError: f.lastError }));
+}
+
+/** Test-only: forget the failures. */
+export function __resetNotificationFailuresForTests(): void {
+  failingProviders.clear();
 }
 
 const DEFAULT_TEMPLATES = {
@@ -446,7 +491,23 @@ export async function notifyDuplicatesFound(count: number, sampleTitles: string[
  * credentials/URL are right without waiting for (or faking) a real grab/import/failure. Throws a
  * descriptive error when the provider isn't configured, rather than silently no-op'ing.
  */
+/** The name a provider's real sends are recorded under (send(...) above), by the key of its test button. */
+const PROVIDER_NAME_BY_TEST_KEY: Record<string, string> = {
+  generic: "generic webhook",
+  twilio: "SMS (Twilio)",
+  smtp: "email",
+  push: "web push",
+  customScript: "custom script",
+};
+
 export async function sendTestNotification(providerKey: string): Promise<void> {
+  await runTestNotification(providerKey);
+  // A test that went through shows the connection works again: the Health warning about failed sends is lifted now,
+  // not at the next real notification.
+  recordNotificationOutcome(PROVIDER_NAME_BY_TEST_KEY[providerKey] ?? providerKey, true);
+}
+
+async function runTestNotification(providerKey: string): Promise<void> {
   const title = "AoNarr test notification";
   const text = "If you're seeing this, this connection is configured correctly.";
   const payload = { event: "test", title, text };

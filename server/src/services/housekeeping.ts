@@ -3,10 +3,12 @@ import os from "node:os";
 import { db } from "../db/index.js";
 import { db as sqliteDb } from "../db/client.js";
 import { config } from "../config.js";
+import { failedRestoreSuffix } from "../restoreGuard.js";
 import { getSetting, setSetting } from "./settingsStore.js";
 import { ENCRYPTION_KEY_PATH } from "./encryption.js";
 import { createYielder, statfsAsync } from "./fsAsync.js";
 import { log } from "./logger.js";
+import { vacuumSqliteInWorker } from "./backupZip.js";
 
 /**
  * The daily housekeeping job (Sonarr's HousekeepingService, reduced to what AoNarr's tables and files need).
@@ -91,7 +93,13 @@ function daysSince(iso: string | null): number {
  * delete once the restored database has been running for a week. */
 function removeLeftoverFiles(): string[] {
   const removed: string[] = [];
-  for (const file of [`${config.dbPath}.pre-restore`, `${ENCRYPTION_KEY_PATH}.pre-restore`]) {
+  for (const file of [
+    `${config.dbPath}.pre-restore`,
+    `${ENCRYPTION_KEY_PATH}.pre-restore`,
+    // What an automatic swap-back set aside (restoreGuard.ts): kept as long as the other leftovers, then removed.
+    `${config.dbPath}${failedRestoreSuffix()}`,
+    `${ENCRYPTION_KEY_PATH}${failedRestoreSuffix()}`,
+  ]) {
     try {
       const ageDays = (Date.now() - fs.statSync(file).mtimeMs) / (24 * 60 * 60 * 1000);
       if (ageDays >= LEFTOVER_FILE_DAYS) {
@@ -146,14 +154,22 @@ async function maintainSqlite(result: HousekeepingResult): Promise<void> {
     return;
   }
   try {
-    log.info(`[housekeeping] VACUUM starting: the app pauses while it rewrites the ${Math.round(fileBytes / 1e6)} MB database file`);
+    log.info(`[housekeeping] VACUUM starting: writes to the database wait while it rewrites the ${Math.round(fileBytes / 1e6)} MB file; reads and the health check carry on`);
     const started = Date.now();
-    sqliteDb.exec("VACUUM");
+    // On a worker thread with its own connection (the main thread stayed frozen, and Docker's health check with it).
+    // Writes from the app are held (not failed) meanwhile: on the main connection a write that meets VACUUM's lock sleeps
+    // the whole event loop in SQLite's busy handler for up to 5 s and then throws.
+    const resumeWrites = db.pauseWrites?.();
+    try {
+      await vacuumSqliteInWorker(config.dbPath);
+    } finally {
+      resumeWrites?.();
+    }
     setSetting("lastVacuumAt", new Date().toISOString());
     result.vacuumed = true;
     log.info(`[housekeeping] VACUUM gave back about ${Math.round(reclaimable / 1e6)} MB in ${Math.round((Date.now() - started) / 1000)}s`);
   } catch (err) {
-    // Typically "cannot VACUUM from within a transaction": another request is mid-transaction. Tomorrow.
+    // A lock that did not clear in two minutes (a long write on the main connection), or a full disk. Tomorrow.
     result.skippedVacuum = (err as Error).message;
     log.warn("[housekeeping] VACUUM failed, will retry on the next run:", (err as Error).message);
   }

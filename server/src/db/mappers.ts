@@ -216,6 +216,8 @@ export function rootFolderFromRow(row: any) {
     defaultMonitor: row.default_monitor ?? null,
     defaultMonitorNewItems: row.default_monitor_new_items ?? null,
     defaultTagIds: parseTagIds(row.default_tag_ids),
+    // A library only scanned and served: nothing is imported into it, and its folder is allowed to be read-only.
+    readOnly: !!Number(row.read_only ?? 0),
   };
 }
 

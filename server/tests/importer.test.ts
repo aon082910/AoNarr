@@ -604,6 +604,8 @@ describe("placeFile — single shape (movie)", () => {
   it("fires notifyUpgraded instead when the item already had a file", async () => {
     const folder = await insertRootFolder("movie");
     const oldPath = writeDownloadFile("old-location.mkv");
+    // The library is not an empty mount point (the guard against an unmounted share would refuse the import).
+    fs.writeFileSync(path.join(folder.path, "already-there.mkv"), "old");
     const movie = await insertMovie({ root_folder_id: folder.id, has_file: 1, path: oldPath });
     const src = writeDownloadFile("new-source.mkv");
 
@@ -675,7 +677,7 @@ describe("placeFile — single shape (movie)", () => {
     const src = writeDownloadFile("x.mkv");
     setSetting("skipFreeSpaceCheck", "0");
     // Plenty free for root, almost nothing for the unprivileged server (ext4's reserved blocks).
-    vi.spyOn(fs, "statfsSync").mockReturnValue({ bavail: 1, bfree: 1e15, bsize: 1 } as any);
+    vi.spyOn(fs.promises, "statfs").mockResolvedValue({ bavail: 1, bfree: 1e15, bsize: 1 } as any);
 
     await expect(placeFile({ itemId: movie.id, episodeId: null, subItemId: null, sourceFile: src, quality: null })).rejects.toThrow(ImportSkippedError);
     vi.restoreAllMocks();
@@ -868,6 +870,7 @@ describe("placeFile — episodic shape (series)", () => {
     // placeFile itself has no has-file guard (that's scanAndImportLibrary's job) — this documents
     // that placeFile always places whatever it's given; verifying hadFileBefore drives Upgraded.
     const folder = await insertRootFolder("series");
+    fs.writeFileSync(path.join(folder.path, "already-there.mkv"), "old"); // not an empty mount point
     const { showId, epId } = await insertShowWithEpisode(folder.id, { hasFile: true });
     const src = writeDownloadFile("replacement.mkv");
 
@@ -4057,10 +4060,27 @@ describe("import verification (Round 2)", () => {
       expect(err.message).toMatch(/indexer's id only/);
       expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(auto)).toBeDefined();
 
-      // The admin's own interactive grab imports as before: neither the id-only hold nor the file gate applies to it.
-      const interactive = await insertQueueRow(movie.id, { title: "Some.Other.Name.1999.1080p.WEB-GRP", match_type: "id", grab_source: "interactive" });
+      // The admin's own interactive grab imports as before: neither the id-only hold nor the file gate applies to the
+      // file of the folder the client reported.
+      const reported = writeDownloadFile(path.join("Some.Other.Name.1999.1080p.WEB-GRP", "Some.Other.Name.1999.1080p.WEB-GRP.mkv"), "reported");
+      const interactive = await insertQueueRow(movie.id, {
+        title: "Some.Other.Name.1999.1080p.WEB-GRP",
+        match_type: "id",
+        grab_source: "interactive",
+        download_path: path.dirname(reported),
+      });
       await importQueueItem(interactive);
       expect((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(movie.id) as any).has_file).toBe(1);
+
+      // With no path reported, the file came from a search of the whole downloads folder and could be another
+      // download's: it is checked against the title like any other (the admin's way round it is a manual import).
+      await db.prepare("UPDATE media_items SET has_file = 0, path = NULL WHERE id = ?").run(movie.id);
+      fs.rmSync(reported, { force: true });
+      writeDownloadFile("Some.Other.Name.1999.1080p.WEB-GRP.mkv");
+      const noPath = await insertQueueRow(movie.id, { title: "Some.Other.Name.1999.1080p.WEB-GRP", match_type: "id", grab_source: "interactive" });
+      const refused = await importQueueItem(noPath).catch((e) => e);
+      expect(refused.constructor.name).toBe("ImportIdentityMismatchError");
+      expect((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(movie.id) as any).has_file).toBe(0);
     });
 
     it("in log mode imports an id-only automatic grab, logging only", async () => {

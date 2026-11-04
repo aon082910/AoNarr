@@ -15,11 +15,12 @@ afterEach(() => {
 /** `bavail` is what the unprivileged server can actually write into; `bfree` also counts the blocks
  * reserved for root (5% by default on ext4). */
 function mockFreeSpace(byPath: Record<string, { bfree: number; bavail: number; blocks: number; bsize: number }>): void {
-  vi.spyOn(fs, "statfsSync").mockImplementation((p: any) => {
+  // The source reads free space with fs.promises.statfs (fsAsync.statfsAsync), so that is what is faked.
+  vi.spyOn(fs.promises, "statfs").mockImplementation((async (p: any) => {
     const stat = byPath[p];
     if (!stat) throw new Error(`unexpected path in test: ${p}`);
     return stat as any;
-  });
+  }) as any);
 }
 
 describe("autoSelectRootFolderId", () => {
@@ -33,7 +34,7 @@ describe("autoSelectRootFolderId", () => {
     const id = Number(
       (await db.prepare("INSERT INTO root_folders (path, media_type) VALUES ('/only/one', 'onlyonetype')").run()).lastInsertRowid
     );
-    const statfsSpy = vi.spyOn(fs, "statfsSync");
+    const statfsSpy = vi.spyOn(fs.promises, "statfs");
 
     expect(await autoSelectRootFolderId("onlyonetype")).toBe(id);
     expect(statfsSpy).not.toHaveBeenCalled();
@@ -64,10 +65,10 @@ describe("autoSelectRootFolderId", () => {
     const reachableId = Number(
       (await db.prepare("INSERT INTO root_folders (path, media_type) VALUES ('/reachable', 'faulttype')").run()).lastInsertRowid
     );
-    vi.spyOn(fs, "statfsSync").mockImplementation((p: any) => {
+    vi.spyOn(fs.promises, "statfs").mockImplementation((async (p: any) => {
       if (p === "/unreachable") throw new Error("ENOENT");
       return { bfree: 1, bavail: 1, blocks: 10, bsize: 1_000_000 } as any;
-    });
+    }) as any);
 
     expect(await autoSelectRootFolderId("faulttype")).toBe(reachableId);
     expect(unreachableId).not.toBe(reachableId);
@@ -162,10 +163,61 @@ describe("isRootFolderOverQuota", () => {
           .run()
       ).lastInsertRowid
     );
-    vi.spyOn(fs, "statfsSync").mockImplementation(() => {
+    vi.spyOn(fs.promises, "statfs").mockImplementation((async () => {
       throw new Error("ENOENT");
-    });
+    }) as any);
 
     expect(await isRootFolderOverQuota(id)).toBe(false);
+  });
+
+  it("reports a read-only library as closed to grabs, with no quota set and plenty of room", async () => {
+    const { isRootFolderOverQuota } = await import("../src/services/rootFolderSelect.js");
+    const id = Number(
+      (await db.prepare("INSERT INTO root_folders (path, media_type, read_only) VALUES ('/read-only-plenty', 'readonlytype', 1)").run()).lastInsertRowid
+    );
+    mockFreeSpace({ "/read-only-plenty": { bfree: 99, bavail: 99, blocks: 100, bsize: 1_000_000 } });
+
+    expect(await isRootFolderOverQuota(id)).toBe(true);
+
+    // The same folder made writable again takes grabs.
+    await db.prepare("UPDATE root_folders SET read_only = 0 WHERE id = ?").run(id);
+    expect(await isRootFolderOverQuota(id)).toBe(false);
+  });
+
+  it("does not need the folder to answer to know a library is read-only", async () => {
+    const { isRootFolderOverQuota } = await import("../src/services/rootFolderSelect.js");
+    const id = Number(
+      (await db.prepare("INSERT INTO root_folders (path, media_type, read_only) VALUES ('/read-only-unmounted', 'readonlytype', 1)").run()).lastInsertRowid
+    );
+    const statfs = vi.spyOn(fs.promises, "statfs").mockImplementation((async () => {
+      throw new Error("ENOENT");
+    }) as any);
+
+    expect(await isRootFolderOverQuota(id)).toBe(true);
+    expect(statfs).not.toHaveBeenCalled();
+  });
+});
+
+describe("autoSelectRootFolderId and read-only libraries", () => {
+  it("never picks a read-only library, however much room it has", async () => {
+    const { autoSelectRootFolderId } = await import("../src/services/rootFolderSelect.js");
+    await db.prepare("INSERT INTO root_folders (path, media_type, read_only) VALUES ('/ro-huge', 'autoreadonlytype', 1)").run();
+    const smallId = Number((await db.prepare("INSERT INTO root_folders (path, media_type) VALUES ('/rw-small', 'autoreadonlytype')").run()).lastInsertRowid);
+    const otherId = Number((await db.prepare("INSERT INTO root_folders (path, media_type) VALUES ('/rw-medium', 'autoreadonlytype')").run()).lastInsertRowid);
+    mockFreeSpace({
+      "/ro-huge": { bfree: 95, bavail: 95, blocks: 100, bsize: 1_000_000 },
+      "/rw-small": { bfree: 5, bavail: 5, blocks: 100, bsize: 1_000_000 },
+      "/rw-medium": { bfree: 20, bavail: 20, blocks: 100, bsize: 1_000_000 },
+    });
+
+    expect(await autoSelectRootFolderId("autoreadonlytype")).toBe(otherId);
+    expect(smallId).not.toBe(otherId);
+  });
+
+  it("finds no folder for a type that has only read-only libraries", async () => {
+    const { autoSelectRootFolderId } = await import("../src/services/rootFolderSelect.js");
+    await db.prepare("INSERT INTO root_folders (path, media_type, read_only) VALUES ('/ro-only', 'onlyreadonlytype', 1)").run();
+
+    expect(await autoSelectRootFolderId("onlyreadonlytype")).toBeNull();
   });
 });

@@ -90,6 +90,7 @@ import { checkForUpdate } from "./updateCheck.js";
 import { checkIndexerHealth } from "./indexerClient.js";
 import { sceneIndexFor, syncAllSceneNumbering } from "./sceneNumbering.js";
 import { runDeletedFileCheckJob } from "./deletedFileJob.js";
+import { sweepStaleImportTemps } from "./importTempSweep.js";
 
 /** Radarr/Sonarr-style seed-goal cleanup — removes a torrent from every enabled download client
  * that supports it (qBittorrent) once it's met a configured ratio and/or seed-time goal. Both
@@ -137,11 +138,11 @@ import { getGroupReputation, recordGroupFailure } from "./releaseGroupStats.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { findUpgradeCandidates, isDirectSource } from "./upgradeCandidates.js";
 import { fetchCollectionChildrenFor } from "./metadata.js";
-import { scanAndImportAllLibraries, refreshAllLibraries, refreshNewChildren, childListProviderIds } from "./libraryScan.js";
+import { scanAndImportAllLibraries, refreshAllLibraries, refreshNewChildren, childListProviderIds, recentFullScan } from "./libraryScan.js";
 import { getSetting } from "./settingsStore.js";
 import { getMediaServerConfig, triggerFullMediaServerScan } from "./mediaServer.js";
 import { syncWatchStatusFromMediaServer } from "./mediaServerWebhook.js";
-import { catchUpMissedJobs, hydrateJobHistory, registerJob, runJobNow, startAllJobs } from "./jobRegistry.js";
+import { catchUpMissedJobs, hydrateJobHistory, isJobsStopped, registerJob, runJobNow, startAllJobs } from "./jobRegistry.js";
 import { runHousekeeping } from "./housekeeping.js";
 import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
 
@@ -2122,7 +2123,7 @@ export async function runAutoSearch(signal?: AbortSignal) {
     if (!ctx) {
       ctx = (async (): Promise<AutoSearchItemContext> => {
         if (await isRootFolderOverQuota(item.rootFolderId)) {
-          log.info(`[scheduler] skipping "${item.title}": its root folder is at/over its configured quota or below its minimum free space`);
+          log.info(`[scheduler] skipping "${item.title}": its root folder is read-only, at/over its configured quota or below its minimum free space`);
           return {
             allowedQualities: [],
             cutoff: "",
@@ -3562,7 +3563,9 @@ async function importCompletedDownload(
           ? `${match.importSkippedReason.split(" (retried")[0]} (${retryNote}: ${message})`
           : `Couldn't place the file: ${message}`;
         log.info(`[scheduler] import skipped for "${match.title}": ${reason}`);
-        await db.prepare("UPDATE queue SET import_started_at = NULL, import_skipped_reason = ? WHERE id = ?").run(reason, match.id);
+        await db.prepare(`UPDATE queue SET import_started_at = NULL, import_skipped_reason = ?, updated_at = ${nowExpr(db)} WHERE id = ?`).run(reason, match.id);
+        // A retry that ends with the reason the admin was already told about is not news.
+        if (reason === match.importSkippedReason) return;
         const mediaRow = (await db.prepare("SELECT title FROM media_items WHERE id = ?").get(match.mediaItemId)) as
           | { title: string }
           | undefined;
@@ -3583,6 +3586,50 @@ async function importCompletedDownload(
   });
   if (!ran) log.info(`[scheduler] "${match.title}" is being imported or removed from Activity; leaving it to that`);
   return imported;
+}
+
+/**
+ * Where a poll's imports run. Inline (the default, and what the tests use): the poll waits for each import before it
+ * goes on. On the import lane (`background`, what the Queue Poll job uses): the poll hands the import over and goes
+ * on polling, so a RAR extraction of up to two hours or a multi-GB copy across devices no longer freezes every
+ * client's progress. The lane runs one import at a time, so imports still never run side by side.
+ */
+interface PollContext {
+  background: boolean;
+}
+const INLINE_POLL: PollContext = { background: false };
+
+/** Rows waiting for, or running on, the import lane: the next poll must not hand them over a second time. */
+const importLaneIds = new Set<number>();
+let importLaneTail: Promise<void> = Promise.resolve();
+let importLaneDepth = 0;
+
+/** Whether the import lane has an import running or waiting (shutdown and restore wait for it as for the poll itself). */
+export function importLaneBusy(): boolean {
+  return importLaneDepth > 0;
+}
+
+/** Runs `work` after the imports already on the lane. It never rejects; once the jobs are stopped (a shutdown or a
+ * restore) it starts nothing new: a row it skips keeps its claim, which resumeInterruptedImports hands back at the next start. */
+function enqueueImport(rowIds: number[], work: () => Promise<void>): void {
+  for (const id of rowIds) importLaneIds.add(id);
+  importLaneDepth++;
+  importLaneTail = importLaneTail.then(async () => {
+    try {
+      if (isJobsStopped()) return;
+      await work();
+    } catch (err) {
+      log.warn("[scheduler] an import on the import lane failed unexpectedly:", (err as Error).message);
+    } finally {
+      for (const id of rowIds) importLaneIds.delete(id);
+      importLaneDepth--;
+    }
+  });
+}
+
+/** A test hook: resolves when everything handed to the import lane so far has finished. */
+export function whenImportLaneIdle(): Promise<void> {
+  return importLaneTail;
 }
 
 /** A Manual import that has ended takes the row back to never having been resumed. */
@@ -3664,7 +3711,7 @@ const PARKED_RETRY_DELAYS_MS = [15 * 60_000, 60 * 60_000, 6 * 3_600_000];
  * target from every search, so it is tried again after 15 minutes, an hour and six hours. A skip with a reason of
  * its own (not an upgrade, identity mismatch, no root folder) is deterministic and is left to the admin.
  */
-async function retryTransientParkedImports(): Promise<void> {
+async function retryTransientParkedImports(ctx: PollContext = INLINE_POLL): Promise<void> {
   const rows = (
     (await db
       .prepare("SELECT * FROM queue WHERE status = 'completed' AND import_started_at IS NULL AND import_skipped_reason LIKE ? ORDER BY id")
@@ -3673,6 +3720,7 @@ async function retryTransientParkedImports(): Promise<void> {
   const parkedIds = new Set(rows.map((r) => r.id));
   for (const id of parkedRetries.keys()) if (!parkedIds.has(id)) parkedRetries.delete(id);
   for (const match of rows) {
+    if (ctx.background && importLaneIds.has(match.id)) continue;
     const entry = parkedRetries.get(match.id);
     if (!entry) {
       parkedRetries.set(match.id, { attempts: 0, nextAt: Date.now() + PARKED_RETRY_DELAYS_MS[0] });
@@ -3689,35 +3737,94 @@ async function retryTransientParkedImports(): Promise<void> {
     entry.attempts += 1;
     // After the last try the next poll says the retries are used up (and is the only one that does).
     entry.nextAt = Date.now() + (PARKED_RETRY_DELAYS_MS[entry.attempts] ?? 0);
-    const claimed = await db
-      .prepare(`UPDATE queue SET import_started_at = ${nowExpr(db)} WHERE id = ? AND status = 'completed' AND import_started_at IS NULL`)
-      .run(match.id);
-    if (claimed.changes === 0) continue;
-    notifyQueueChanged();
-    log.info(`[scheduler] retrying the parked import of "${match.title}" (try ${entry.attempts} of ${PARKED_RETRY_DELAYS_MS.length})`);
-    await importCompletedDownload(match, false, true, "retried automatically");
+    const tryNumber = entry.attempts;
+    const attempt = async () => {
+      const claimed = await db
+        .prepare(`UPDATE queue SET import_started_at = ${nowExpr(db)} WHERE id = ? AND status = 'completed' AND import_started_at IS NULL`)
+        .run(match.id);
+      if (claimed.changes === 0) return;
+      notifyQueueChanged();
+      log.info(`[scheduler] retrying the parked import of "${match.title}" (try ${tryNumber} of ${PARKED_RETRY_DELAYS_MS.length})`);
+      await importCompletedDownload(match, false, true, "retried automatically");
+    };
+    if (ctx.background) enqueueImport([match.id], attempt);
+    else await attempt();
+  }
+}
+
+/** Parked because the file was already at its destination and no library entry owned it (importer.ts destinationRefusedMessage). */
+const UNTRACKED_DESTINATION_REASON = "%no library entry tracks it%";
+/** The full scan each such row was last retried after (in memory: a restart allows one more retry, which is harmless). */
+const retriedAfterScan = new Map<number, number>();
+
+function sqlTimeToMs(value: string | null | undefined): number {
+  if (!value) return Number.NaN;
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(" ", "T")}Z`);
+}
+
+/**
+ * An import refused because its destination holds a file no row owns is waiting for the library scan to link that
+ * file (the message says "Scan the library to link it"). Once a full scan has finished after the row was parked, the
+ * import is tried again, once per scan: the file is then either linked (an upgrade or the same release, which the
+ * normal rules decide) or still unowned (the row stays parked, with the same reason and no second notification).
+ */
+async function retryParkedAfterScan(ctx: PollContext = INLINE_POLL): Promise<void> {
+  const rows = (
+    (await db
+      .prepare("SELECT * FROM queue WHERE status = 'completed' AND import_started_at IS NULL AND import_skipped_reason LIKE ? ORDER BY id")
+      .all(UNTRACKED_DESTINATION_REASON)) as any[]
+  ).map(queueItemFromRow) as QueueItem[];
+  const parkedIds = new Set(rows.map((r) => r.id));
+  for (const id of retriedAfterScan.keys()) if (!parkedIds.has(id)) retriedAfterScan.delete(id);
+  if (rows.length === 0) return;
+  const scanAt = Date.parse(getSetting("lastFullScanAt") || "");
+  if (!Number.isFinite(scanAt)) return;
+  for (const match of rows) {
+    if (ctx.background && importLaneIds.has(match.id)) continue;
+    const parkedAt = sqlTimeToMs(match.updatedAt);
+    if (Number.isFinite(parkedAt) && scanAt <= parkedAt) continue;
+    if ((retriedAfterScan.get(match.id) ?? 0) >= scanAt) continue;
+    retriedAfterScan.set(match.id, scanAt);
+    const attempt = async () => {
+      const claimed = await db
+        .prepare(`UPDATE queue SET import_started_at = ${nowExpr(db)} WHERE id = ? AND status = 'completed' AND import_started_at IS NULL`)
+        .run(match.id);
+      if (claimed.changes === 0) return;
+      notifyQueueChanged();
+      log.info(`[scheduler] retrying the parked import of "${match.title}" after the library scan`);
+      await importCompletedDownload(match, false, true, "retried after the library scan");
+    };
+    if (ctx.background) enqueueImport([match.id], attempt);
+    else await attempt();
   }
 }
 
 /** Imports the rows resumeInterruptedImports handed back, through the same path as a download its
  * client has just reported complete; claiming each first makes this its one automatic retry. */
-async function resumePendingImports(): Promise<void> {
+async function resumePendingImports(ctx: PollContext = INLINE_POLL): Promise<void> {
   const pending = (
     (await db
       .prepare(`SELECT * FROM queue WHERE status = 'completed' AND import_resume_state = ${IMPORT_RESUME_PENDING} AND import_started_at IS NULL ORDER BY id`)
       .all()) as any[]
   ).map(queueItemFromRow) as QueueItem[];
   for (const match of pending) {
-    const claimed = await db
-      .prepare(
-        `UPDATE queue SET import_resume_state = ${IMPORT_RESUME_USED}, import_started_at = ${nowExpr(db)}, updated_at = ${nowExpr(db)}
-         WHERE id = ? AND status = 'completed' AND import_resume_state = ${IMPORT_RESUME_PENDING} AND import_started_at IS NULL`
-      )
-      .run(match.id);
-    if (claimed.changes === 0) continue;
-    notifyQueueChanged();
-    log.info(`[scheduler] retrying the import of "${match.title}", which a restart cut off`);
-    await importCompletedDownload(match, false, !!match.importSkippedReason);
+    if (ctx.background && importLaneIds.has(match.id)) continue;
+    // Claimed when its turn on the lane comes, not when it is handed over: a restart in between leaves it unclaimed,
+    // so it is still entitled to its one retry.
+    const attempt = async () => {
+      const claimed = await db
+        .prepare(
+          `UPDATE queue SET import_resume_state = ${IMPORT_RESUME_USED}, import_started_at = ${nowExpr(db)}, updated_at = ${nowExpr(db)}
+           WHERE id = ? AND status = 'completed' AND import_resume_state = ${IMPORT_RESUME_PENDING} AND import_started_at IS NULL`
+        )
+        .run(match.id);
+      if (claimed.changes === 0) return;
+      notifyQueueChanged();
+      log.info(`[scheduler] retrying the import of "${match.title}", which a restart cut off`);
+      await importCompletedDownload(match, false, !!match.importSkippedReason);
+    };
+    if (ctx.background) enqueueImport([match.id], attempt);
+    else await attempt();
   }
 }
 
@@ -3726,18 +3833,25 @@ type PolledStatus = QueueStatusUpdate & { stalled?: boolean };
 /**
  * Poll download clients for progress on active queue items, and import completed ones. Every
  * client is asked at once, so a slow or unreachable one doesn't hold up the rest; what they report
- * is then handled one client after another, so imports never run side by side.
+ * is then handled one client after another, so imports never run side by side. With `background`, the imports go
+ * to the import lane and the poll does not wait for them (see PollContext).
  */
-export async function pollQueue() {
+export async function pollQueue(options: { background?: boolean } = {}) {
+  const ctx: PollContext = options.background ? { background: true } : INLINE_POLL;
   try {
-    await resumePendingImports();
+    await resumePendingImports(ctx);
   } catch (err) {
     log.warn("[scheduler] retrying interrupted imports failed:", (err as Error).message);
   }
   try {
-    await retryTransientParkedImports();
+    await retryTransientParkedImports(ctx);
   } catch (err) {
     log.warn("[scheduler] retrying parked imports failed:", (err as Error).message);
+  }
+  try {
+    await retryParkedAfterScan(ctx);
+  } catch (err) {
+    log.warn("[scheduler] retrying imports parked until a library scan failed:", (err as Error).message);
   }
 
   const clients = await rowsToDownloadClients();
@@ -3770,7 +3884,7 @@ export async function pollQueue() {
     }
     await recordClientSuccess(client.id).catch(() => undefined);
     try {
-      await applyClientStatuses(client, relevant, answer.value);
+      await applyClientStatuses(client, relevant, answer.value, ctx);
     } catch (err) {
       log.warn(`[scheduler] queue poll failed for client "${client.name}":`, (err as Error).message);
     }
@@ -3778,7 +3892,7 @@ export async function pollQueue() {
 }
 
 /** Records what one client reported for its active rows, importing, failing and retrying them. */
-async function applyClientStatuses(client: DownloadClient, relevant: QueueItem[], statuses: PolledStatus[]): Promise<void> {
+async function applyClientStatuses(client: DownloadClient, relevant: QueueItem[], statuses: PolledStatus[], ctx: PollContext = INLINE_POLL): Promise<void> {
   for (const status of statuses) {
     // Translated through any configured remote path mapping before it's ever stored, so
     // nothing downstream (importer.ts included) has to know or care whether one applies —
@@ -3791,6 +3905,8 @@ async function applyClientStatuses(client: DownloadClient, relevant: QueueItem[]
     // of them, but a failure of it is one failure of its release, removed and held against it once.
     let sharedDownloadImported = false;
     let releaseFailureRecorded = false;
+    // On the import lane: the rows of this download that just completed, imported together once the loop is done.
+    const handedToLane: QueueItem[] = [];
 
     for (const match of relevant.filter((q) => q.downloadId === status.downloadId)) {
       // Every write only applies while the row is still active: since this run read it, an admin
@@ -3839,7 +3955,8 @@ async function applyClientStatuses(client: DownloadClient, relevant: QueueItem[]
 
       if (status.status === "completed") {
         log.info(`[scheduler] "${match.title}" finished downloading via "${client.name}" — importing`);
-        if (await importCompletedDownload(match, sharedDownloadImported)) sharedDownloadImported = true;
+        if (ctx.background) handedToLane.push(match);
+        else if (await importCompletedDownload(match, sharedDownloadImported)) sharedDownloadImported = true;
       } else if (status.status === "failed") {
         if (status.failureReason === DOWNLOAD_INTERRUPTED_REASON) {
           // Cut off by an AoNarr restart: the release did nothing wrong, so it's grabbed again
@@ -3861,6 +3978,23 @@ async function applyClientStatuses(client: DownloadClient, relevant: QueueItem[]
           await retryFailedGrab(match, status.failureReason ?? "Download failed at the download client");
         }
       }
+    }
+
+    if (handedToLane.length > 0) {
+      const group = handedToLane;
+      enqueueImport(
+        group.map((m) => m.id),
+        async () => {
+          // One after another, as the poll did inline: the rows that share a download are imported for each of them,
+          // and a later one is told when an earlier one took the files. A row removed from Activity meanwhile is left out.
+          let shared = false;
+          for (const m of group) {
+            const row = (await db.prepare("SELECT status FROM queue WHERE id = ?").get(m.id)) as { status: string } | undefined;
+            if (row?.status !== "completed") continue;
+            if (await importCompletedDownload(m, shared)) shared = true;
+          }
+        }
+      );
     }
   }
 
@@ -4264,11 +4398,13 @@ export function startScheduler() {
   registerJob({
     key: "queuePoll",
     name: "Queue Poll",
+    essential: true,
     scheduleType: "interval",
     defaultSchedule: String(Math.max(5, config.queuePollIntervalSeconds)),
     run: async () => {
       await interruptedImportsHandedBack;
-      await pollQueue();
+      // Imports go to the import lane (one at a time) so a long one does not stop every client being polled.
+      await pollQueue({ background: true });
     },
   });
 
@@ -4488,7 +4624,24 @@ export function startScheduler() {
     scheduleType: "cron",
     defaultSchedule: "0 5 * * *",
     heavy: true,
-    run: (signal) => scanAndImportAllLibraries(signal),
+    run: async (signal, info) => {
+      // "Run now" always scans; the schedule skips when the deleted-file job's scan finished a few hours ago.
+      if (!info?.manual && recentFullScan()) {
+        log.info("[libraryScan] skipped: a full library scan finished within the last 4 hours");
+        return;
+      }
+      await scanAndImportAllLibraries(signal);
+    },
+  });
+
+  registerJob({
+    key: "importTempSweep",
+    name: "Import Leftover Sweep",
+    scheduleType: "cron",
+    defaultSchedule: "30 4 * * 0",
+    heavy: true,
+    catchUp: true,
+    run: (signal) => sweepStaleImportTemps(signal),
   });
 
   registerJob({

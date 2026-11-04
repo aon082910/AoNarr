@@ -46,6 +46,10 @@ export async function initDb(): Promise<AsyncDb> {
 export const db: AsyncDb = new Proxy({} as AsyncDb, {
   get(_target, prop) {
     if (!dbInstance) throw new Error("db accessed before initDb() completed — check startup ordering in index.ts");
-    return (dbInstance as any)[prop];
+    const value = (dbInstance as any)[prop];
+    // Bound to the instance: called through the proxy, `this` would be the proxy, and the state the SQLite wrapper
+    // keeps (the open transaction, the transaction queue, the write pause) would be written onto the proxy's empty
+    // target while every read went to the instance, so none of it took effect.
+    return typeof value === "function" ? value.bind(dbInstance) : value;
   },
 });

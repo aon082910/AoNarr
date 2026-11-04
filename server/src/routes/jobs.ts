@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { cancelJob, listJobRuns, listJobs, runJobNow, updateJobSchedule } from "../services/jobRegistry.js";
+import { cancelJob, listJobRuns, listJobs, runJobNow, setJobEnabled, updateJobSchedule } from "../services/jobRegistry.js";
 
 export const jobsRouter = Router();
 jobsRouter.use(requireAdmin);
@@ -43,6 +43,17 @@ jobsRouter.post(
   asyncHandler(async (req, res) => {
     const cancelled = cancelJob(req.params.key);
     res.json({ cancelled });
+  })
+);
+
+/** Switches a job on or off (its schedule is kept); the queue poll cannot be switched off. */
+jobsRouter.patch(
+  "/:key/enabled",
+  asyncHandler(async (req, res) => {
+    if (typeof req.body?.enabled !== "boolean") throw new HttpError(400, "enabled must be true or false");
+    const result = setJobEnabled(req.params.key, req.body.enabled);
+    if (!result.ok) throw new HttpError(result.error === "Unknown job" ? 404 : 409, result.error ?? "Cannot change this job");
+    res.status(204).send();
   })
 );
 

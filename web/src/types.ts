@@ -240,6 +240,8 @@ export interface RootFolder {
   percentUsed?: number | null;
   quotaPercent?: number | null;
   pauseGrabsAtQuota?: 0 | 1;
+  /** Scanned and served only; nothing is imported into it. */
+  readOnly?: boolean;
   minFreeSpaceGb?: number | null;
   /** What is added into the folder starts from these. */
   defaultQualityProfileId?: number | null;
@@ -587,6 +589,10 @@ export interface JobStatus {
   name: string;
   scheduleType: "cron" | "interval";
   schedule: string;
+  /** Switched on; a job that is off has no timer ("Run now" still works). */
+  enabled?: boolean;
+  /** Has no off switch (the queue poll). */
+  essential?: boolean;
   running: boolean;
   /** Waiting for the heavy-job slot behind another heavy job. */
   queued?: boolean;
@@ -597,6 +603,16 @@ export interface JobStatus {
   lastError: string | null;
   lastDurationMs: number | null;
   nextRunAt: string | null;
+}
+
+/** One recorded run of a job (GET /api/jobs/:key/runs). */
+export interface JobRun {
+  id: number;
+  startedAt: string;
+  finishedAt: string | null;
+  status: string;
+  error: string | null;
+  durationMs: number | null;
 }
 
 export interface RecycleBinEntry {

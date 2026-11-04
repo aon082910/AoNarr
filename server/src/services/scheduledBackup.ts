@@ -15,6 +15,7 @@ import { uploadBackupToRemote } from "./remoteBackup.js";
 import { ENCRYPTION_KEY_PATH, decryptValue } from "./encryption.js";
 import { getPreMigrationProblem } from "../db/preMigrationBackup.js";
 import { checkSqliteFileInWorker, unzipBundleInWorker, zipFilesInWorker } from "./backupZip.js";
+import { emitHealthChange } from "./healthEvents.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -254,6 +255,7 @@ function describeBackupError(err: unknown): string {
 function recordBackupProblem(message: string): void {
   setSetting(BACKUP_PROBLEM_KEY, message);
   setSetting(BACKUP_PROBLEM_AT_KEY, new Date().toISOString());
+  emitHealthChange();
 }
 
 /** A backup the admin took by hand worked, so a failed scheduled run no longer says the folder is unusable. */
@@ -262,8 +264,10 @@ export function noteManualBackupSucceeded(): void {
 }
 
 function clearBackupProblem(): void {
-  if (getSetting(BACKUP_PROBLEM_KEY)) setSetting(BACKUP_PROBLEM_KEY, "");
+  const had = !!getSetting(BACKUP_PROBLEM_KEY);
+  if (had) setSetting(BACKUP_PROBLEM_KEY, "");
   if (getSetting(BACKUP_PROBLEM_AT_KEY)) setSetting(BACKUP_PROBLEM_AT_KEY, "");
+  if (had) emitHealthChange();
 }
 
 /** Why scheduled backups are not working, for the Health page and the health notification, or null.

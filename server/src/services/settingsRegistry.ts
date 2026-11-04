@@ -17,6 +17,7 @@ const KEY_PATTERNS: readonly RegExp[] = [
   /^notifyTemplate[A-Z][A-Za-z]*$/, // notifyTemplate<Event>
   /^strictReleaseIdentity(\.[a-z]+)?$/, // strictReleaseIdentity.<type>
   /^jobSchedule_[A-Za-z0-9_]+$/, // jobSchedule_<job>
+  /^jobEnabled_[A-Za-z0-9_]+$/, // jobEnabled_<job>: "0" = switched off
   /^default[A-Z][A-Za-z]*Provider$/, // default<Type>Provider
 ];
 

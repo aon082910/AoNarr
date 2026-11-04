@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import { statfsAsync } from "./fsAsync.js";
 import { db } from "../db/index.js";
 import { nowOffsetExpr } from "../db/asyncDb.js";
 import { getSetting, setSetting } from "./settingsStore.js";
@@ -27,7 +27,8 @@ export async function recordDiskUsageSamples(): Promise<void> {
     if (alreadySampledToday) continue;
 
     try {
-      const stat = fs.statfsSync(folder.path);
+      const stat = await statfsAsync(folder.path, 5_000);
+      if (!stat) continue;
       await db
         .prepare("INSERT INTO disk_usage_samples (root_folder_id, free_bytes, total_bytes) VALUES (?, ?, ?)")
         .run(folder.id, stat.bavail * stat.bsize, stat.blocks * stat.bsize);

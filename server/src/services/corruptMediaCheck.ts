@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import { pathExistsAsync, StorageTimeoutError, statAsync } from "./fsAsync.js";
 import { db } from "../db/index.js";
 import { probeMediaInfo } from "./ffprobe.js";
 import { recycleFile } from "./recycleBin.js";
@@ -33,9 +33,9 @@ function sleep(ms: number): Promise<void> {
  * risking real data over. */
 async function isStillBeingWritten(filePath: string): Promise<boolean> {
   try {
-    const before = fs.statSync(filePath).size;
+    const before = (await statAsync(filePath)).size;
     await sleep(3000);
-    const after = fs.statSync(filePath).size;
+    const after = (await statAsync(filePath)).size;
     return before !== after;
   } catch {
     return false;
@@ -51,13 +51,20 @@ async function isStillBeingWritten(filePath: string): Promise<boolean> {
  * `confirm: false` skips the wait-and-retry confirmation, for re-checking a file an admin already
  * reviewed. */
 export async function corruptReason(filePath: string, type: string, { confirm = true }: { confirm?: boolean } = {}): Promise<string | null> {
-  if (!fs.existsSync(filePath)) {
-    // A transient network/SMB mount hiccup can make a perfectly healthy file look momentarily
-    // missing (existsSync swallows ENOENT, ESTALE, ENOTCONN, etc. alike) — same class of glitch
-    // the ffprobe-failure path below already refuses to trust on a single check. Confirm the file
-    // is genuinely still missing after a short wait before recycling it and clearing its DB row.
-    if (confirm) await sleep(3000);
-    if (!fs.existsSync(filePath)) return "File is missing from disk";
+  // A share that does not answer at all (pathExistsAsync's StorageTimeoutError) says nothing about the file: not
+  // "missing", and so not corrupt. The synchronous existsSync this replaced froze the whole server on such a mount.
+  try {
+    if (!(await pathExistsAsync(filePath))) {
+      // A transient network/SMB mount hiccup can make a perfectly healthy file look momentarily
+      // missing (ENOENT, ESTALE, ENOTCONN, etc. alike) — same class of glitch
+      // the ffprobe-failure path below already refuses to trust on a single check. Confirm the file
+      // is genuinely still missing after a short wait before recycling it and clearing its DB row.
+      if (confirm) await sleep(3000);
+      if (!(await pathExistsAsync(filePath))) return "File is missing from disk";
+    }
+  } catch (err) {
+    if (err instanceof StorageTimeoutError) return null;
+    throw err;
   }
 
   // ffprobe only understands real video/audio containers — an ebook, comic archive, ROM, etc. is

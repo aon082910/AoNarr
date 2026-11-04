@@ -31,6 +31,8 @@ let notifyFailed: (typeof import("../src/services/notifications.js"))["notifyFai
 let notifyDuplicatesFound: (typeof import("../src/services/notifications.js"))["notifyDuplicatesFound"];
 let notifyHealthIssue: (typeof import("../src/services/notifications.js"))["notifyHealthIssue"];
 let sendTestNotification: (typeof import("../src/services/notifications.js"))["sendTestNotification"];
+let failingNotificationProviders: (typeof import("../src/services/notifications.js"))["failingNotificationProviders"];
+let resetNotificationFailures: (typeof import("../src/services/notifications.js"))["__resetNotificationFailuresForTests"];
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
 let deleteSetting: (typeof import("../src/services/settingsStore.js"))["deleteSetting"];
 
@@ -47,6 +49,8 @@ beforeAll(async () => {
     notifyDuplicatesFound,
     notifyHealthIssue,
     sendTestNotification,
+    failingNotificationProviders,
+    __resetNotificationFailuresForTests: resetNotificationFailures,
   } = await import("../src/services/notifications.js"));
   ({ setSetting, deleteSetting } = await import("../src/services/settingsStore.js"));
 });
@@ -684,5 +688,352 @@ describe("provider HTTP calls: credential redaction", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Which provider keeps failing (Sonarr's NotificationStatus): the outcome of every send is remembered per provider
+// ---------------------------------------------------------------------------
+
+describe("failing notification providers", () => {
+  beforeEach(() => {
+    resetNotificationFailures();
+    for (const key of ["ntfyServerUrl", "ntfyTopic", "ntfyToken", "gotifyServerUrl", "gotifyToken"]) setSetting(key, "");
+    for (const key of ["ntfyEvents", "gotifyEvents"]) deleteSetting(key);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetNotificationFailures();
+  });
+
+  function configureNtfy(): void {
+    setSetting("ntfyServerUrl", "https://ntfy.example");
+    setSetting("ntfyTopic", "aonarr");
+  }
+  function configureGotify(): void {
+    setSetting("gotifyServerUrl", "https://gotify.example");
+    setSetting("gotifyToken", "gotify-app-token");
+  }
+  /** Every fetch-based provider answers with this status. */
+  function everyWebhookAnswers(status: number): void {
+    vi.stubGlobal("fetch", vi.fn(async () => (status === 200 ? ok() : notOk(status))));
+  }
+
+  it("reports nothing while no send has failed", async () => {
+    configureDiscord();
+    everyWebhookAnswers(200);
+
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+
+    expect(failingNotificationProviders()).toEqual([]);
+  });
+
+  it("reports a provider only after its sends have failed twice in a row, with how many and what the last error was", async () => {
+    configureDiscord();
+    everyWebhookAnswers(500);
+
+    await notifyGrabbed("X", "Y");
+    expect(failingNotificationProviders()).toEqual([]);
+
+    await notifyGrabbed("X", "Y");
+    const failing = failingNotificationProviders();
+    expect(failing).toHaveLength(1);
+    expect(failing[0]).toMatchObject({ provider: "discord", failures: 2, lastError: "Webhook POST to discord.example failed: HTTP 500" });
+    expect(new Date(failing[0].since).toISOString()).toBe(failing[0].since);
+
+    await notifyGrabbed("X", "Y");
+    expect(failingNotificationProviders()[0].failures).toBe(3);
+  });
+
+  it("takes the number of failures that counts as 'failing' as a parameter", async () => {
+    configureDiscord();
+    everyWebhookAnswers(500);
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+
+    expect(failingNotificationProviders(1).map((f) => f.provider)).toEqual(["discord"]);
+    expect(failingNotificationProviders(2).map((f) => f.provider)).toEqual(["discord"]);
+    expect(failingNotificationProviders(3)).toEqual([]);
+  });
+
+  it("clears a provider with a single successful send, and counts from one again after that", async () => {
+    configureDiscord();
+    everyWebhookAnswers(500);
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+    expect(failingNotificationProviders()).toHaveLength(1);
+
+    everyWebhookAnswers(200);
+    await notifyGrabbed("X", "Y");
+    expect(failingNotificationProviders(1)).toEqual([]);
+
+    everyWebhookAnswers(500);
+    await notifyGrabbed("X", "Y");
+    expect(failingNotificationProviders()).toEqual([]); // one failure again, below the threshold
+    expect(failingNotificationProviders(1)[0].failures).toBe(1);
+  });
+
+  it("keeps the time of the first failure of the run while the count and the last error move on", async () => {
+    configureDiscord();
+    vi.useFakeTimers({ toFake: ["Date"] });
+
+    vi.setSystemTime(new Date("2026-03-01T10:00:00.000Z"));
+    vi.stubGlobal("fetch", vi.fn(async () => notOk(500)));
+    await notifyGrabbed("X", "Y");
+    vi.setSystemTime(new Date("2026-03-01T12:30:00.000Z"));
+    vi.stubGlobal("fetch", vi.fn(async () => notOk(429)));
+    await notifyGrabbed("X", "Y");
+
+    expect(failingNotificationProviders()[0]).toMatchObject({
+      failures: 2,
+      since: "2026-03-01T10:00:00.000Z",
+      lastError: "Webhook POST to discord.example failed: HTTP 429",
+    });
+
+    // A success ends the run: the next failures start a new one with a new first time.
+    vi.setSystemTime(new Date("2026-03-01T13:00:00.000Z"));
+    everyWebhookAnswers(200);
+    await notifyGrabbed("X", "Y");
+    vi.setSystemTime(new Date("2026-03-01T14:00:00.000Z"));
+    everyWebhookAnswers(500);
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+    expect(failingNotificationProviders()[0]).toMatchObject({ failures: 2, since: "2026-03-01T14:00:00.000Z" });
+  });
+
+  it("tracks each provider on its own, so a working one is never reported for a broken neighbour", async () => {
+    configureDiscord();
+    configureSlack();
+    configureGeneric();
+    vi.stubGlobal(
+      "fetch",
+      routedFetch([
+        { test: (u) => u === "https://discord.example/webhook", response: notOk(500) },
+        { test: (u) => u === "https://slack.example/webhook", response: ok() },
+        { test: (u) => u === "https://generic.example/webhook", response: notOk(502) },
+      ])
+    );
+
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+
+    expect(failingNotificationProviders().map((f) => f.provider).sort()).toEqual(["discord", "generic webhook"]);
+  });
+
+  it("does not count a send that an event filter skipped as either a failure or a success", async () => {
+    configureDiscord();
+    everyWebhookAnswers(500);
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+    expect(failingNotificationProviders()).toHaveLength(1);
+
+    setSetting("discordEvents", "imported"); // grabbed is no longer sent to Discord
+    await notifyGrabbed("X", "Y");
+
+    expect(failingNotificationProviders()[0].failures).toBe(2);
+  });
+
+  // The name is what Health shows, so each provider is recorded under its own readable one.
+  // `testKey` is the provider's key on the Settings page's Test button, which is not always the name its sends are recorded under.
+  const failWebhook = () => everyWebhookAnswers(500);
+  const recoverWebhook = () => everyWebhookAnswers(200);
+  const providers: { name: string; testKey: string; configure: () => void; fail: () => void; recover: () => void }[] = [
+    { name: "discord", testKey: "discord", configure: configureDiscord, fail: failWebhook, recover: recoverWebhook },
+    { name: "slack", testKey: "slack", configure: configureSlack, fail: failWebhook, recover: recoverWebhook },
+    { name: "generic webhook", testKey: "generic", configure: configureGeneric, fail: failWebhook, recover: recoverWebhook },
+    { name: "telegram", testKey: "telegram", configure: configureTelegram, fail: failWebhook, recover: recoverWebhook },
+    { name: "pushover", testKey: "pushover", configure: configurePushover, fail: failWebhook, recover: recoverWebhook },
+    { name: "ntfy", testKey: "ntfy", configure: configureNtfy, fail: failWebhook, recover: recoverWebhook },
+    { name: "gotify", testKey: "gotify", configure: configureGotify, fail: failWebhook, recover: recoverWebhook },
+    { name: "matrix", testKey: "matrix", configure: configureMatrix, fail: failWebhook, recover: recoverWebhook },
+    { name: "SMS (Twilio)", testKey: "twilio", configure: configureTwilio, fail: failWebhook, recover: recoverWebhook },
+    {
+      name: "email",
+      testKey: "smtp",
+      configure: configureSmtp,
+      fail: () => sendEmail.mockRejectedValue(new Error("smtp.example.com refused the connection")),
+      recover: () => sendEmail.mockResolvedValue(undefined),
+    },
+    {
+      name: "web push",
+      testKey: "push",
+      configure: () => {},
+      fail: () => sendPush.mockRejectedValue(new Error("push service down")),
+      recover: () => sendPush.mockResolvedValue(undefined),
+    },
+    {
+      name: "custom script",
+      testKey: "customScript",
+      configure: configureCustomScript,
+      fail: () => {
+        execFileError = new Error("exit code 1");
+      },
+      recover: () => {
+        execFileError = null;
+      },
+    },
+  ];
+
+  it.each(providers)("clears a failing $name provider when its Test button ($testKey) goes through", async ({ name, testKey, configure, fail, recover }) => {
+    configure();
+    fail();
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+    expect(failingNotificationProviders().map((f) => f.provider)).toEqual([name]);
+
+    recover();
+    await sendTestNotification(testKey);
+
+    expect(failingNotificationProviders(1)).toEqual([]);
+  });
+
+  it.each(providers)("leaves a failing $name provider reported when its Test button ($testKey) fails too", async ({ name, testKey, configure, fail }) => {
+    configure();
+    fail();
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+
+    await expect(sendTestNotification(testKey)).rejects.toThrow();
+
+    const failing = failingNotificationProviders();
+    expect(failing.map((f) => f.provider)).toEqual([name]);
+    expect(failing[0].failures).toBe(2); // a test is not one more failed send
+  });
+
+  it("clears only the provider that was tested", async () => {
+    configureDiscord();
+    configureSlack();
+    vi.stubGlobal("fetch", routedFetch([
+      { test: (u) => u === "https://discord.example/webhook", response: notOk(500) },
+      { test: (u) => u === "https://slack.example/webhook", response: notOk(500) },
+    ]));
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+    expect(failingNotificationProviders().map((f) => f.provider).sort()).toEqual(["discord", "slack"]);
+
+    everyWebhookAnswers(200);
+    await sendTestNotification("slack");
+
+    expect(failingNotificationProviders().map((f) => f.provider)).toEqual(["discord"]);
+  });
+
+  it("a Test of a provider that never failed, or of an unknown key, records nothing", async () => {
+    configureDiscord();
+    everyWebhookAnswers(200);
+
+    await sendTestNotification("discord");
+    await expect(sendTestNotification("carrier-pigeon")).rejects.toThrow("Unknown notification provider");
+
+    expect(failingNotificationProviders(1)).toEqual([]);
+  });
+
+  it("stops reporting a provider a day after its last failed send, and reports it again after a new failure", async () => {
+    configureDiscord();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = Date.parse("2026-03-01T10:00:00.000Z");
+    const hour = 60 * 60 * 1000;
+    vi.setSystemTime(start);
+    everyWebhookAnswers(500);
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+
+    vi.setSystemTime(start + 24 * hour - 1000);
+    expect(failingNotificationProviders().map((f) => f.provider)).toEqual(["discord"]);
+
+    vi.setSystemTime(start + 24 * hour);
+    expect(failingNotificationProviders()).toEqual([]);
+    vi.setSystemTime(start + 30 * hour);
+    expect(failingNotificationProviders()).toEqual([]);
+
+    // The provider is still configured, and its next send fails as well: it is back.
+    await notifyGrabbed("X", "Y");
+    expect(failingNotificationProviders().map((f) => f.provider)).toEqual(["discord"]);
+  });
+
+  it("measures the day from the latest failed send, not the first", async () => {
+    configureDiscord();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = Date.parse("2026-03-01T10:00:00.000Z");
+    const hour = 60 * 60 * 1000;
+    everyWebhookAnswers(500);
+    vi.setSystemTime(start);
+    await notifyGrabbed("X", "Y");
+    vi.setSystemTime(start + 20 * hour);
+    await notifyGrabbed("X", "Y");
+
+    vi.setSystemTime(start + 30 * hour); // 30 h after the first failure, 10 h after the latest
+    expect(failingNotificationProviders()[0]).toMatchObject({ provider: "discord", failures: 2, since: new Date(start).toISOString() });
+  });
+
+  it("does not keep reporting a provider whose settings were cleared, once its failures are a day old", async () => {
+    configureDiscord();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = Date.parse("2026-03-01T10:00:00.000Z");
+    vi.setSystemTime(start);
+    everyWebhookAnswers(500);
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+
+    setSetting("discordWebhookUrl", ""); // the admin switched Discord off; nothing is sent to it any more
+    vi.setSystemTime(start + 25 * 60 * 60 * 1000);
+    await notifyGrabbed("X", "Y");
+
+    expect(failingNotificationProviders(1)).toEqual([]);
+  });
+
+  it.each(providers)("records a failing $name send under that name", async ({ name, configure, fail }) => {
+    configure();
+    fail();
+
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+
+    const failing = failingNotificationProviders();
+    expect(failing.map((f) => f.provider)).toEqual([name]);
+    expect(failing[0].failures).toBe(2);
+    expect(failing[0].lastError).not.toBe("");
+  });
+
+  it("records a provider that is set up wrongly (a Gotify URL with no scheme) as failing, with the reason", async () => {
+    setSetting("gotifyServerUrl", "gotify.example");
+    setSetting("gotifyToken", "gotify-app-token");
+    vi.stubGlobal("fetch", vi.fn());
+
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+
+    expect(failingNotificationProviders()).toMatchObject([
+      { provider: "gotify", failures: 2, lastError: "The Gotify server URL must start with http:// or https://" },
+    ]);
+  });
+
+  it("keeps the secret-bearing URL out of what it remembers, and cuts a very long error to 300 characters", async () => {
+    setSetting("discordWebhookUrl", "https://discord.example/api/webhooks/123/super-secret-token");
+    everyWebhookAnswers(429);
+    configureSmtp();
+    sendEmail.mockRejectedValue(new Error("e".repeat(500)));
+
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+
+    const failing = failingNotificationProviders();
+    const discord = failing.find((f) => f.provider === "discord")!;
+    expect(discord.lastError).toContain("discord.example");
+    expect(JSON.stringify(failing)).not.toContain("super-secret-token");
+    expect(failing.find((f) => f.provider === "email")!.lastError).toBe("e".repeat(300));
+  });
+
+  it("forgets every failure when reset for a test", async () => {
+    configureDiscord();
+    everyWebhookAnswers(500);
+    await notifyGrabbed("X", "Y");
+    await notifyGrabbed("X", "Y");
+    expect(failingNotificationProviders()).toHaveLength(1);
+
+    resetNotificationFailures();
+
+    expect(failingNotificationProviders(1)).toEqual([]);
   });
 });

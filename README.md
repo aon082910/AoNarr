@@ -732,6 +732,25 @@ Without an entry, other sites' pages can't read the API's responses, and form or
 from them are refused with `Cross-origin request from … refused`. Scripts and server-to-server
 integrations (curl, webhooks, other *arr apps) send no `Origin` and never need it.
 
+### Operator controls: jobs, one instance, bind address, restore safety
+
+- **Jobs on/off** — System → Jobs has a switch per scheduled job (the Queue Poll has none: imports
+  depend on it). A job switched off has no timer and no catch-up run, and still runs on **Run now**;
+  the choice is kept across restarts. A job's row opens to its last runs.
+- **One instance per config folder** — a second AoNarr started on the same `/config` (SQLite) stops
+  with a message that names the first one, instead of running every job twice against one database.
+  `AONARR_ALLOW_MULTIPLE_INSTANCES=1` turns the check off.
+- **Bind address** — `AONARR_BIND_ADDRESS` (e.g. `127.0.0.1` behind a reverse proxy) limits the
+  interface the API listens on; unset, it listens on all of them. An address that is not on the host
+  stops the app with a clear error.
+- **Restore safety (SQLite)** — a restore keeps the old database as `aonarr.db.pre-restore`. If the
+  restored database fails to start twice in a row, the third start puts the old database (and its
+  encryption key) back, keeps the restored file as `aonarr.db.failed-restore`, and Health reports it.
+- **Read-only libraries** — a root folder can be marked read-only (Settings → Root folders): AoNarr
+  still scans and plays it, but never downloads for it, imports into it, renames or moves its files.
+- **Health** adds checks for failing notification services, an unreachable proxy, and unexpected
+  errors that no code handled; `/metrics` has `aonarr_uncaught_errors_total`.
+
 ## Verification
 
 This has been built and smoke-tested sixteen times with `docker compose build` + live

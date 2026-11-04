@@ -186,6 +186,8 @@ export interface RootFolder {
   defaultMonitor?: string | null;
   defaultMonitorNewItems?: string | null;
   defaultTagIds?: number[];
+  /** Only scanned and served: no import goes into it, and its folder may be read-only. */
+  readOnly?: boolean;
 }
 
 export type QueueStatus = "queued" | "downloading" | "completed" | "failed" | "importing" | "imported";

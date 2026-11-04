@@ -37,8 +37,8 @@ describe("recordDiskUsageSamples", () => {
   it("records the space the server can actually use, not blocks reserved for root", async () => {
     const { recordDiskUsageSamples } = await import("../src/services/storageForecast.js");
     const { id, realPath } = await insertRootFolder();
-    const realStatfs = fs.statfsSync;
-    vi.spyOn(fs, "statfsSync").mockImplementation(((p: string, ...rest: unknown[]) =>
+    const realStatfs = fs.promises.statfs;
+    vi.spyOn(fs.promises, "statfs").mockImplementation((async (p: string, ...rest: unknown[]) =>
       p === realPath ? ({ bfree: 30, bavail: 10, blocks: 100, bsize: 1000 } as any) : (realStatfs as any)(p, ...rest)) as any);
 
     await recordDiskUsageSamples();

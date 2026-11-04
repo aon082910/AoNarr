@@ -669,6 +669,7 @@ export default function Settings() {
   const [opdsUrl, setOpdsUrl] = useState<string | null>(null);
 
   const [folderPath, setFolderPath] = useState("");
+  const [folderReadOnly, setFolderReadOnly] = useState(false);
   const [showFolderPicker, setShowFolderPicker] = useState(false);
   const [namingModalType, setNamingModalType] = useState<MediaType | null>(null);
   const [folderType, setFolderType] = useState<MediaType>("movie");
@@ -1698,8 +1699,9 @@ export default function Settings() {
   async function addFolder(e: FormEvent) {
     e.preventDefault();
     if (!folderPath) return;
-    await api.post("/root-folders", { path: folderPath, mediaType: folderType });
+    await api.post("/root-folders", { path: folderPath, mediaType: folderType, readOnly: folderReadOnly });
     setFolderPath("");
+    setFolderReadOnly(false);
     load();
   }
 
@@ -1743,9 +1745,14 @@ export default function Settings() {
     else notify.info(`Moving ${result.itemCount} item(s) in the background — check back in a bit, or watch the Audit Log.`, 6000);
   }
 
-  async function updateFolderQuota(id: number, field: "name" | "quotaPercent" | "pauseGrabsAtQuota" | "minFreeSpaceGb", value: number | boolean | string | null) {
-    await api.patch(`/root-folders/${id}`, { [field]: value });
-    notify.success("Saved.", 1500);
+  async function updateFolderQuota(id: number, field: "name" | "quotaPercent" | "pauseGrabsAtQuota" | "minFreeSpaceGb" | "readOnly", value: number | boolean | string | null) {
+    try {
+      await api.patch(`/root-folders/${id}`, { [field]: value });
+      notify.success("Saved.", 1500);
+    } catch (e) {
+      // Making a library writable again checks the folder, and says why when it cannot be written.
+      notify.error((e as Error).message);
+    }
     load();
   }
 
@@ -3653,6 +3660,15 @@ export default function Settings() {
                 <label className="toolbar" style={{ gap: 8 }}>
                   <input
                     type="checkbox"
+                    checked={!!f.readOnly}
+                    onChange={(e) => updateFolderQuota(f.id, "readOnly", e.target.checked)}
+                    style={{ width: "auto" }}
+                  />
+                  Read-only library (scanned and served; nothing is downloaded for it, imported into it, renamed or moved)
+                </label>
+                <label className="toolbar" style={{ gap: 8 }}>
+                  <input
+                    type="checkbox"
                     checked={!!f.pauseGrabsAtQuota}
                     onChange={(e) => updateFolderQuota(f.id, "pauseGrabsAtQuota", e.target.checked)}
                     style={{ width: "auto" }}
@@ -3783,6 +3799,10 @@ export default function Settings() {
                     </option>
                   ))}
                 </select>
+                <label className="toolbar" style={{ gap: 8 }}>
+                  <input type="checkbox" checked={folderReadOnly} onChange={(e) => setFolderReadOnly(e.target.checked)} style={{ width: "auto" }} />
+                  Read-only library (the folder may be a read-only mount; it is scanned and served, nothing is downloaded for it, imported into it, renamed or moved)
+                </label>
                 <button type="submit">Add root folder</button>
               </form>
             ),

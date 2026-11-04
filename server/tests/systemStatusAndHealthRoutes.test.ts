@@ -133,3 +133,30 @@ describe("the run-now buttons do not wait behind a heavy job (review F9)", () =>
     }
   });
 });
+
+describe("GET /api/system/status — uncaughtErrors", () => {
+  afterEach(async () => {
+    (await import("../src/services/uncaughtErrors.js")).__resetUncaughtErrorsForTests();
+  });
+
+  it("reports none while nothing uncaught has happened", async () => {
+    (await import("../src/services/uncaughtErrors.js")).__resetUncaughtErrorsForTests();
+
+    const res = await get("/api/system/status");
+
+    expect(res.status).toBe(200);
+    expect(res.body.uncaughtErrors).toEqual({ total: 0, lastHour: 0, lastAt: null, lastMessage: null });
+  });
+
+  it("reports the count, the count for the last hour and the last error", async () => {
+    const uncaught = await import("../src/services/uncaughtErrors.js");
+    uncaught.__resetUncaughtErrorsForTests();
+    uncaught.recordUncaughtError("exception", new Error("two hours ago"), Date.now() - 2 * 60 * 60 * 1000);
+    const lastAt = Date.now() - 1000;
+    uncaught.recordUncaughtError("rejection", new Error("timer callback failed"), lastAt);
+
+    const res = await get("/api/system/status");
+
+    expect(res.body.uncaughtErrors).toEqual({ total: 2, lastHour: 1, lastAt: new Date(lastAt).toISOString(), lastMessage: "timer callback failed" });
+  });
+});

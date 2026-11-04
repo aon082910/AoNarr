@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
+import { EventEmitter } from "node:events";
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
 import type { __setHealthTimeoutsForTests as SetTimeouts } from "../src/services/healthReport.js";
@@ -11,6 +13,9 @@ let setHealthTimeouts: typeof SetTimeouts;
 let clearHealthReportCache: (typeof import("../src/services/healthReport.js"))["clearHealthReportCache"];
 let registerJob: (typeof import("../src/services/jobRegistry.js"))["registerJob"];
 let setSetting: (key: string, value: string) => void;
+let notifyGrabbed: (typeof import("../src/services/notifications.js"))["notifyGrabbed"];
+let resetNotificationFailures: (typeof import("../src/services/notifications.js"))["__resetNotificationFailuresForTests"];
+let config: (typeof import("../src/config.js"))["config"];
 let baseDir: string;
 let uniqueCounter = 0;
 
@@ -19,6 +24,8 @@ beforeAll(async () => {
   ({ getHealthReport, clearHealthReportCache, __setHealthTimeoutsForTests: setHealthTimeouts } = await import("../src/services/healthReport.js"));
   ({ registerJob } = await import("../src/services/jobRegistry.js"));
   ({ setSetting } = await import("../src/services/settingsStore.js"));
+  ({ notifyGrabbed, __resetNotificationFailuresForTests: resetNotificationFailures } = await import("../src/services/notifications.js"));
+  ({ config } = await import("../src/config.js"));
   baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-health-"));
 });
 
@@ -297,5 +304,386 @@ describe("getHealthReport — review fixes", () => {
     } finally {
       setHealthTimeouts({ build: 3 * 60 * 1000 });
     }
+  });
+});
+
+describe("getHealthReport — notification providers that keep failing", () => {
+  const DISCORD = "https://discord.example/api/webhooks/123/super-secret-token";
+
+  beforeEach(() => {
+    resetNotificationFailures();
+    setSetting("discordWebhookUrl", DISCORD);
+  });
+
+  afterEach(() => {
+    setSetting("discordWebhookUrl", "");
+    resetNotificationFailures();
+  });
+
+  function webhooksAnswer(status: number): void {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: status < 400, status })));
+  }
+
+  it("reports a provider whose sends failed twice in a row, naming the provider, the count, the start and the last error", async () => {
+    webhooksAnswer(500);
+    await notifyGrabbed("Movie", "Release");
+    await notifyGrabbed("Movie", "Release");
+
+    const issues = await issuesOf("notification:");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ source: "notification:discord", severity: "warning", transient: true });
+    expect(issues[0].message).toMatch(
+      /^Notifications to discord have failed 2 times in a row since \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC \(last error: Webhook POST to discord\.example failed: HTTP 500\)\.$/
+    );
+  });
+
+  it("does not put the webhook's secret path in the message", async () => {
+    webhooksAnswer(403);
+    await notifyGrabbed("Movie", "Release");
+    await notifyGrabbed("Movie", "Release");
+
+    const issues = await issuesOf("notification:");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).not.toContain("super-secret-token");
+  });
+
+  it("says nothing after a single failure, which may be a blip", async () => {
+    webhooksAnswer(500);
+    await notifyGrabbed("Movie", "Release");
+
+    expect(await issuesOf("notification:")).toEqual([]);
+  });
+
+  it("stops reporting the provider after its next successful send", async () => {
+    webhooksAnswer(500);
+    await notifyGrabbed("Movie", "Release");
+    await notifyGrabbed("Movie", "Release");
+    expect(await issuesOf("notification:")).toHaveLength(1);
+
+    webhooksAnswer(200);
+    await notifyGrabbed("Movie", "Release");
+
+    expect(await issuesOf("notification:")).toEqual([]);
+  });
+
+  it("says nothing when no provider has ever failed", async () => {
+    webhooksAnswer(200);
+    await notifyGrabbed("Movie", "Release");
+
+    expect(await issuesOf("notification:")).toEqual([]);
+  });
+
+  it("stops reporting a provider nothing has been sent to for a day, such as one the admin switched off", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const start = Date.parse("2026-03-01T10:00:00.000Z");
+      vi.setSystemTime(start);
+      webhooksAnswer(500);
+      await notifyGrabbed("Movie", "Release");
+      await notifyGrabbed("Movie", "Release");
+
+      vi.setSystemTime(start + 23 * 60 * 60 * 1000);
+      expect(await issuesOf("notification:")).toHaveLength(1);
+
+      setSetting("discordWebhookUrl", "");
+      vi.setSystemTime(start + 25 * 60 * 60 * 1000);
+      expect(await issuesOf("notification:")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("getHealthReport — the outbound proxy", () => {
+  beforeEach(() => {
+    setSetting("socks5ProxyUrl", "");
+  });
+
+  afterEach(() => {
+    setSetting("socks5ProxyUrl", "");
+    vi.restoreAllMocks();
+  });
+
+  /** A port nothing listens on: it was just free, and is closed again. */
+  async function closedPort(): Promise<number> {
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as net.AddressInfo;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    return port;
+  }
+
+  /** A TCP server that accepts a connection and drops it, as a proxy that is up would. */
+  async function proxyThatIsUp(): Promise<{ port: number; close: () => Promise<void> }> {
+    const server = net.createServer((socket) => socket.destroy());
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return {
+      port: (server.address() as net.AddressInfo).port,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  }
+
+  /** Stands in for net.connect: records where the check dialled and then fails the way `how` says. */
+  function dialling(how: "refused" | "times-out") {
+    const socket = new EventEmitter() as EventEmitter & { setTimeout: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> };
+    socket.destroy = vi.fn();
+    socket.setTimeout = vi.fn((_ms: number, onTimeout: () => void) => {
+      if (how === "times-out") setImmediate(onTimeout);
+    });
+    const connect = vi.spyOn(net, "connect").mockImplementation((() => {
+      if (how === "refused") setImmediate(() => socket.emit("error", new Error("connect ECONNREFUSED")));
+      return socket;
+    }) as never);
+    return { socket, connect };
+  }
+
+  it("says nothing when no proxy is configured, and does not dial anything", async () => {
+    const { connect } = dialling("refused");
+
+    expect(await issuesOf("proxy")).toEqual([]);
+    setSetting("socks5ProxyUrl", "   ");
+    expect(await issuesOf("proxy")).toEqual([]);
+
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it.each(["socks5", "socks4", "http"])("says nothing when a %s proxy accepts a connection", async (scheme) => {
+    const proxy = await proxyThatIsUp();
+    try {
+      setSetting("socks5ProxyUrl", `${scheme}://user:secret@127.0.0.1:${proxy.port}`);
+
+      expect(await issuesOf("proxy")).toEqual([]);
+    } finally {
+      await proxy.close();
+    }
+  });
+
+  it("warns, as something that may clear itself, when the proxy does not accept connections, without its credentials", async () => {
+    const port = await closedPort();
+    setSetting("socks5ProxyUrl", `socks5://proxyuser:proxypass@127.0.0.1:${port}`);
+
+    const issues = await issuesOf("proxy");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ source: "proxy", severity: "warning", transient: true });
+    expect(issues[0].message).toBe(
+      `The outbound proxy socks5://127.0.0.1:${port} does not accept connections. Everything that is sent through it fails until it is back.`
+    );
+    expect(issues[0].message).not.toContain("proxypass");
+    expect(issues[0].message).not.toContain("proxyuser");
+  });
+
+  it.each([
+    ["socks5://proxy.local", 1080],
+    ["socks4://proxy.local", 1080],
+    ["http://proxy.local", 80],
+    ["https://proxy.local", 443],
+    ["http://proxy.local:3128", 3128],
+  ])("dials %s on port %i", async (url, port) => {
+    const { connect } = dialling("refused");
+    setSetting("socks5ProxyUrl", url);
+
+    const issues = await issuesOf("proxy");
+
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(connect).toHaveBeenCalledWith({ host: "proxy.local", port });
+    expect(issues[0].message).toContain(`proxy.local:${port} does not accept connections`);
+  });
+
+  it("gives up on a proxy that never answers after five seconds, and closes the connection it left open", async () => {
+    const { socket } = dialling("times-out");
+    setSetting("socks5ProxyUrl", "socks5://proxy.local:1080");
+
+    const issues = await issuesOf("proxy");
+
+    expect(socket.setTimeout).toHaveBeenCalledWith(5000, expect.any(Function));
+    expect(socket.destroy).toHaveBeenCalled();
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain("does not accept connections");
+  });
+
+  it("reports a proxy setting that cannot be used as an error, without the credentials, and does not dial it", async () => {
+    const { connect } = dialling("refused");
+    setSetting("socks5ProxyUrl", "ftp://proxyuser:proxypass@proxy.local:21");
+
+    const issues = await issuesOf("proxy");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ source: "proxy", severity: "error", transient: false });
+    expect(issues[0].message).toBe(
+      'The outbound proxy "ftp://***@proxy.local:21" must start with socks5://, socks4://, http:// or https://, so requests go out without a proxy.'
+    );
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("reports a proxy setting that is not a URL at all", async () => {
+    setSetting("socks5ProxyUrl", "proxy.local 1080");
+
+    const issues = await issuesOf("proxy");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ severity: "error", transient: false });
+    expect(issues[0].message).toContain("must be a URL such as socks5://host:1080 or http://host:3128");
+  });
+
+  // An IPv6 literal comes out of URL.hostname with its brackets ("[::1]"), which net.connect cannot resolve.
+  it("dials an IPv6 proxy without the brackets around its address, and names it with them", async () => {
+    const { connect } = dialling("refused");
+    setSetting("socks5ProxyUrl", "socks5://[::1]:1080");
+
+    const issues = await issuesOf("proxy");
+
+    expect(connect).toHaveBeenCalledWith({ host: "::1", port: 1080 });
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain("socks5://[::1]:1080 does not accept connections");
+  });
+
+  it("dials an IPv6 proxy on the default port when the URL names none", async () => {
+    const { connect } = dialling("refused");
+    setSetting("socks5ProxyUrl", "http://[2001:db8::1]");
+
+    await issuesOf("proxy");
+
+    expect(connect).toHaveBeenCalledWith({ host: "2001:db8::1", port: 80 });
+  });
+
+  /** A TCP server on the IPv6 loopback, or null where the container has no ::1. */
+  async function ipv6ProxyThatIsUp(): Promise<{ port: number; close: () => Promise<void> } | null> {
+    const server = net.createServer((socket) => socket.destroy());
+    const listening = await new Promise<boolean>((resolve) => {
+      server.once("error", () => resolve(false));
+      server.listen(0, "::1", () => resolve(true));
+    });
+    if (!listening) return null;
+    return {
+      port: (server.address() as net.AddressInfo).port,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  }
+
+  it("says nothing when an IPv6 proxy that is really listening accepts a connection", async (context) => {
+    const proxy = await ipv6ProxyThatIsUp();
+    if (!proxy) return context.skip();
+    try {
+      setSetting("socks5ProxyUrl", `socks5://[::1]:${proxy.port}`);
+
+      expect(await issuesOf("proxy")).toEqual([]);
+    } finally {
+      await proxy.close();
+    }
+  });
+
+  it("warns about an IPv6 proxy that is not listening", async (context) => {
+    const proxy = await ipv6ProxyThatIsUp();
+    if (!proxy) return context.skip();
+    const port = proxy.port;
+    await proxy.close(); // the port is now closed
+    setSetting("socks5ProxyUrl", `socks5://[::1]:${port}`);
+
+    const issues = await issuesOf("proxy");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain(`socks5://[::1]:${port} does not accept connections`);
+  });
+});
+
+describe.skipIf(process.env.AONARR_DATABASE_DRIVER === "postgres")("getHealthReport — a restore that was rolled back at start-up", () => {
+  const noticeFile = () => path.join(path.dirname(config.dbPath), "restore-rolled-back.json");
+  const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+  afterEach(() => {
+    fs.rmSync(noticeFile(), { force: true });
+  });
+
+  it("reports the notice the start-up guard left as an error naming the file that failed", async () => {
+    const failedDatabase = `${config.dbPath}.failed-restore`;
+    fs.writeFileSync(noticeFile(), JSON.stringify({ at: daysAgo(1), failedDatabase, startsTried: 2 }));
+
+    const issues = await issuesOf("restore-rolled-back");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ source: "restore-rolled-back", severity: "error", transient: false });
+    expect(issues[0].message).toBe(
+      `The database you restored did not start (2 tries), so the previous database was put back. The restored file is kept as ${failedDatabase}; the backup it came from may be damaged or from an incompatible version.`
+    );
+  });
+
+  it("says nothing when there is no notice", async () => {
+    expect(await issuesOf("restore-rolled-back")).toEqual([]);
+  });
+
+  it("stops reporting the notice once it is a week old", async () => {
+    fs.writeFileSync(noticeFile(), JSON.stringify({ at: daysAgo(6), failedDatabase: "a.failed-restore", startsTried: 2 }));
+    expect(await issuesOf("restore-rolled-back")).toHaveLength(1);
+
+    fs.writeFileSync(noticeFile(), JSON.stringify({ at: daysAgo(8), failedDatabase: "a.failed-restore", startsTried: 2 }));
+    expect(await issuesOf("restore-rolled-back")).toEqual([]);
+  });
+
+  it("says nothing, and does not fail the report, when the notice file is unreadable", async () => {
+    fs.writeFileSync(noticeFile(), "{ not json");
+
+    const report = await getHealthReport({ refresh: true });
+
+    expect(report.issues.filter((i) => i.source === "restore-rolled-back")).toEqual([]);
+    expect(Array.isArray(report.issues)).toBe(true);
+  });
+});
+
+describe("getHealthReport — errors nothing handled (uncaught-errors)", () => {
+  let uncaught: typeof import("../src/services/uncaughtErrors.js");
+
+  beforeAll(async () => {
+    uncaught = await import("../src/services/uncaughtErrors.js");
+  });
+
+  beforeEach(() => {
+    uncaught.__resetUncaughtErrorsForTests();
+  });
+
+  afterEach(() => {
+    uncaught.__resetUncaughtErrorsForTests();
+  });
+
+  const record = (count: number, ageMs = 0) => {
+    for (let i = 1; i <= count; i++) uncaught.recordUncaughtError("exception", new Error(`boom ${i}`), Date.now() - ageMs);
+  };
+
+  it("says nothing when no uncaught error was recorded", async () => {
+    expect(await issuesOf("uncaught-errors")).toEqual([]);
+  });
+
+  it("says nothing up to the warning limit, since a few are a one-off", async () => {
+    record(uncaught.UNCAUGHT_WARN_PER_HOUR);
+
+    expect(await issuesOf("uncaught-errors")).toEqual([]);
+  });
+
+  it("warns as soon as there are more than the limit in an hour, with the count and the last message", async () => {
+    record(uncaught.UNCAUGHT_WARN_PER_HOUR + 1);
+
+    const issues = await issuesOf("uncaught-errors");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ source: "uncaught-errors", severity: "warning", transient: true });
+    expect(issues[0].message).toContain(`${uncaught.UNCAUGHT_WARN_PER_HOUR + 1} unexpected errors in the last hour`);
+    expect(issues[0].message).toContain(`(the last: boom ${uncaught.UNCAUGHT_WARN_PER_HOUR + 1})`);
+  });
+
+  it("does not count errors that are more than an hour old", async () => {
+    record(uncaught.UNCAUGHT_WARN_PER_HOUR + 5, 2 * 60 * 60 * 1000);
+
+    expect(await issuesOf("uncaught-errors")).toEqual([]);
+  });
+
+  it("counts only the recent ones when old and new errors are mixed", async () => {
+    record(10, 2 * 60 * 60 * 1000);
+    record(uncaught.UNCAUGHT_WARN_PER_HOUR);
+
+    expect(await issuesOf("uncaught-errors")).toEqual([]);
+    record(1);
+    expect(await issuesOf("uncaught-errors")).toHaveLength(1);
   });
 });

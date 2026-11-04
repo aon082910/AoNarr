@@ -229,12 +229,125 @@ describe("checkForUpdate on a built image (RB5)", () => {
   });
 });
 
+/** Docker Hub's tag page, the registry's token / manifest / config blob answers and GitHub's changelog. */
+function mockRegistry(opts: {
+  pushed: string;
+  tagManifest?: unknown;
+  manifests?: Record<string, unknown>;
+  blobs?: Record<string, unknown>;
+  registryFails?: boolean;
+}): ReturnType<typeof vi.fn> {
+  const json = (body: unknown) => ({ ok: true, json: async () => body }) as any;
+  const fetchMock = vi.fn(async (url: string) => {
+    const u = String(url);
+    if (u.includes("hub.docker.com")) return json({ tag_last_pushed: opts.pushed });
+    if (u.includes("raw.githubusercontent.com")) return { ok: true, text: async () => "## Round 372 — Same\n" } as any;
+    if (opts.registryFails) return { ok: false, status: 429 } as any;
+    if (u.includes("auth.docker.io")) return json({ token: "t" });
+    const manifestAt = u.match(/\/manifests\/(.+)$/);
+    if (manifestAt) {
+      const name = decodeURIComponent(manifestAt[1]);
+      return json(name === "combined" ? opts.tagManifest : opts.manifests?.[name]);
+    }
+    const blobAt = u.match(/\/blobs\/(.+)$/);
+    if (blobAt) return json(opts.blobs?.[decodeURIComponent(blobAt[1])]);
+    throw new Error(`unexpected request ${u}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+const OUR_ARCH = process.arch === "arm64" ? "arm64" : "amd64";
+const OTHER_ARCH = OUR_ARCH === "amd64" ? "arm64" : "amd64";
+
+describe("checkForUpdate reads the tag's own build time from the registry", () => {
+  const BUILT = "2026-10-20T10:00:00Z";
+  const single = (configDigest: string) => ({ config: { digest: configDigest } });
+
+  it("notices a rebuild pushed within six hours of the running one, which the push time could not tell", async () => {
+    config.imageTag = "combined";
+    config.buildTime = BUILT;
+    mockLocalChangelog("## Round 372 — Same\n");
+    mockRegistry({
+      pushed: "2026-10-20T14:30:00Z", // 4.5 h after our build: inside the old grace
+      tagManifest: single("sha256:cfg"),
+      blobs: { "sha256:cfg": { created: "2026-10-20T12:30:00Z", config: { Env: ["PATH=/bin", "AONARR_BUILD_TIME=2026-10-20T12:00:00Z"] } } },
+    });
+
+    const result = await checkForUpdate();
+
+    expect(result.updateAvailable).toBe(true);
+    expect(result.latestId).toBe("2026-10-20T12:00:00Z");
+  });
+
+  it("is up to date when the tag is this very build, however long after it the push came", async () => {
+    config.imageTag = "combined";
+    config.buildTime = BUILT;
+    mockLocalChangelog("## Round 372 — Same\n");
+    mockRegistry({
+      pushed: "2026-10-21T10:00:00Z",
+      tagManifest: single("sha256:cfg"),
+      blobs: { "sha256:cfg": { config: { Env: [`AONARR_BUILD_TIME=${BUILT}`] } } },
+    });
+
+    expect((await checkForUpdate()).updateAvailable).toBe(false);
+  });
+
+  it("takes the manifest of this machine's platform out of a multi-platform tag", async () => {
+    config.imageTag = "combined";
+    config.buildTime = BUILT;
+    mockLocalChangelog("## Round 372 — Same\n");
+    mockRegistry({
+      pushed: "2026-10-20T10:30:00Z",
+      tagManifest: {
+        manifests: [
+          { digest: "sha256:other", platform: { os: "linux", architecture: OTHER_ARCH } },
+          { digest: "sha256:att", platform: { os: "unknown", architecture: "unknown" } },
+          { digest: "sha256:ours", platform: { os: "linux", architecture: OUR_ARCH } },
+        ],
+      },
+      manifests: { "sha256:other": single("sha256:cfg-other"), "sha256:ours": single("sha256:cfg-ours") },
+      blobs: {
+        "sha256:cfg-other": { config: { Env: ["AONARR_BUILD_TIME=2027-01-01T00:00:00Z"] } },
+        "sha256:cfg-ours": { config: { Env: [`AONARR_BUILD_TIME=${BUILT}`] } },
+      },
+    });
+
+    expect((await checkForUpdate()).updateAvailable).toBe(false);
+  });
+
+  it("falls back to the image's created time, an hour apart being the same build", async () => {
+    config.imageTag = "combined";
+    config.buildTime = BUILT;
+    mockLocalChangelog("## Round 372 — Same\n");
+    mockRegistry({ pushed: "2026-10-20T10:30:00Z", tagManifest: single("sha256:cfg"), blobs: { "sha256:cfg": { created: "2026-10-20T10:20:00Z", config: { Env: [] } } } });
+    expect((await checkForUpdate()).updateAvailable).toBe(false);
+
+    mockRegistry({ pushed: "2026-10-20T14:30:00Z", tagManifest: single("sha256:cfg"), blobs: { "sha256:cfg": { created: "2026-10-20T13:00:00Z", config: { Env: [] } } } });
+    expect((await checkForUpdate()).updateAvailable).toBe(true);
+  });
+
+  it("falls back to the push time when the registry cannot be read", async () => {
+    config.imageTag = "combined";
+    config.buildTime = BUILT;
+    mockLocalChangelog("## Round 372 — Same\n");
+    mockRegistry({ pushed: "2026-10-20T14:30:00Z", registryFails: true });
+    const result = await checkForUpdate();
+    expect(result.updateAvailable).toBe(false);
+    expect(result.latestId).toBe("2026-10-20T14:30:00Z");
+
+    mockRegistry({ pushed: new Date(new Date(BUILT).getTime() + UPDATE_PUSH_GRACE_MS + 60_000).toISOString(), registryFails: true });
+    expect((await checkForUpdate()).updateAvailable).toBe(true);
+  });
+});
+
 describe("the changelog bundled into the image (RB5)", () => {
-  it("server/CHANGELOG.md is the same file as the repository's CHANGELOG.md, so the server image cannot ship a stale one", () => {
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const serverCopy = path.join(here, "..", "CHANGELOG.md");
-    const rootCopy = path.join(here, "..", "..", "CHANGELOG.md");
-    if (!fs.existsSync(rootCopy)) return; // the test container mounts only server/
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const serverCopy = path.join(here, "..", "CHANGELOG.md");
+  const rootCopy = path.join(here, "..", "..", "CHANGELOG.md");
+  // Skipped visibly (not returned from) when a test container mounts only server/: the run then says "skipped".
+  it.skipIf(!fs.existsSync(rootCopy) && process.env.AONARR_REQUIRE_REPO_FILES !== "1")("server/CHANGELOG.md is the same file as the repository's CHANGELOG.md, so the server image cannot ship a stale one", () => {
+    expect(fs.existsSync(rootCopy), "AONARR_REQUIRE_REPO_FILES=1 needs the whole repository mounted").toBe(true);
     expect(fs.readFileSync(serverCopy, "utf-8").replace(/\r\n/g, "\n")).toBe(fs.readFileSync(rootCopy, "utf-8").replace(/\r\n/g, "\n"));
   });
 });

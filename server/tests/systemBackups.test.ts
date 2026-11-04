@@ -611,3 +611,201 @@ describe("GET /api/system/health shows a failed backup (RB2)", () => {
     expect(res.body.configWarnings.some((w: { key: string }) => w.key === "backup_failed")).toBe(false);
   });
 });
+
+describe("the copy taken before an upgrade, among the backups", () => {
+  const onPostgres = process.env.AONARR_DATABASE_DRIVER === "postgres";
+  let preMigrationDir: () => string;
+  let copiesDir: string;
+
+  beforeAll(async () => {
+    ({ preMigrationDir } = await import("../src/db/preMigrationBackup.js"));
+    copiesDir = preMigrationDir();
+  });
+
+  afterEach(() => {
+    fs.rmSync(copiesDir, { recursive: true, force: true });
+  });
+
+  /** Writes `name` into `folder` with a modification time `minutesAgo` minutes back, so the order is well defined. */
+  function writeFile(folder: string, name: string, content: string, minutesAgo = 0): string {
+    fs.mkdirSync(folder, { recursive: true });
+    const file = path.join(folder, name);
+    fs.writeFileSync(file, content);
+    const at = new Date(Date.now() - minutesAgo * 60_000);
+    fs.utimesSync(file, at, at);
+    return file;
+  }
+
+  async function list(): Promise<{ fileName: string; kind: string; sizeBytes: number; createdAt: string }[]> {
+    const res = await request(app).get("/api/system/backups").set("X-Api-Key", apiKey);
+    expect(res.status).toBe(200);
+    return res.body.backups;
+  }
+
+  async function download(fileName: string) {
+    return request(app)
+      .get(`/api/system/backups/${fileName}`)
+      .set("X-Api-Key", apiKey)
+      .buffer(true)
+      .parse((r, cb) => {
+        const chunks: Buffer[] = [];
+        r.on("data", (c: Buffer) => chunks.push(c));
+        r.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+  }
+
+  it.skipIf(onPostgres)("lists the copies beside the backups, each with its kind, newest first across both folders", async () => {
+    setSetting("backupDir", backupDir);
+    writeFile(backupDir, "aonarr-backup-2021-01-01.db", "scheduled", 30);
+    writeFile(copiesDir, "aonarr-pre-migration-build-2.db", "copy two", 10);
+    writeFile(copiesDir, "aonarr-pre-migration-build-1.db", "copy-one!", 60);
+
+    const backups = await list();
+
+    expect(backups.map((b) => [b.fileName, b.kind])).toEqual([
+      ["aonarr-pre-migration-build-2.db", "pre-migration"],
+      ["aonarr-backup-2021-01-01.db", "backup"],
+      ["aonarr-pre-migration-build-1.db", "pre-migration"],
+    ]);
+    expect(backups[0].sizeBytes).toBe("copy two".length);
+    expect(typeof backups[0].createdAt).toBe("string");
+  });
+
+  it.skipIf(onPostgres)("lists only the copies themselves, not the marker or a copy still being written or other files in that folder", async () => {
+    setSetting("backupDir", backupDir);
+    writeFile(copiesDir, "aonarr-pre-migration-build-1.db", "copy");
+    writeFile(copiesDir, "aonarr-pre-migration-build-2.db.partial", "half");
+    writeFile(copiesDir, "last-build.json", "{}");
+    writeFile(copiesDir, "aonarr-pre-migration-build-3.dump", "not ours");
+    writeFile(copiesDir, "unrelated.db", "not ours either");
+
+    expect((await list()).map((b) => b.fileName)).toEqual(["aonarr-pre-migration-build-1.db"]);
+  });
+
+  it.skipIf(onPostgres)("lists the copies when no backup folder exists yet, and marks the ordinary backups as such", async () => {
+    setSetting("backupDir", path.join(backupDir, "does-not-exist"));
+    writeFile(copiesDir, "aonarr-pre-migration-build-1.db", "copy");
+
+    expect(await list()).toMatchObject([{ fileName: "aonarr-pre-migration-build-1.db", kind: "pre-migration" }]);
+
+    setSetting("backupDir", backupDir);
+    writeFile(backupDir, "aonarr-backup-2020-01-01.aonarrbackup", "bundle", 5);
+    expect((await list()).find((b) => b.fileName === "aonarr-backup-2020-01-01.aonarrbackup")?.kind).toBe("backup");
+  });
+
+  it.skipIf(onPostgres)("lists a pre-migration-named file that sits in the backup folder as an ordinary backup, beside the real copy in its own folder", async () => {
+    setSetting("backupDir", backupDir);
+    writeFile(backupDir, "aonarr-pre-migration-x.db", "stray", 5);
+    writeFile(copiesDir, "aonarr-pre-migration-real.db", "real", 10);
+
+    const backups = await list();
+
+    expect(backups.map((b) => [b.fileName, b.kind])).toEqual([
+      ["aonarr-pre-migration-x.db", "backup"],
+      ["aonarr-pre-migration-real.db", "pre-migration"],
+    ]);
+    expect(backups[0].sizeBytes).toBe("stray".length);
+  });
+
+  it.skipIf(onPostgres)("treats a pre-migration prefix on a bundle or dump as an ordinary backup", async () => {
+    setSetting("backupDir", backupDir);
+    writeFile(backupDir, "aonarr-pre-migration-odd.aonarrbackup", "bundle in the backup folder");
+
+    expect(await list()).toMatchObject([{ fileName: "aonarr-pre-migration-odd.aonarrbackup", kind: "backup" }]);
+    const res = await download("aonarr-pre-migration-odd.aonarrbackup");
+    expect(res.status).toBe(200);
+    expect((res.body as Buffer).toString()).toBe("bundle in the backup folder");
+  });
+
+  it.runIf(onPostgres)("does not list the copies on Postgres, which takes none", async () => {
+    setSetting("backupDir", backupDir);
+    writeFile(copiesDir, "aonarr-pre-migration-build-1.db", "copy");
+
+    expect(await list()).toEqual([]);
+  });
+
+  it("downloads a pre-migration-named file from the backup folder when it is there, even if the copies folder has one of the same name", async () => {
+    setSetting("backupDir", backupDir);
+    writeFile(backupDir, "aonarr-pre-migration-x.db", "the file in the backup folder");
+    writeFile(copiesDir, "aonarr-pre-migration-x.db", "the copy in the pre-migration folder");
+
+    const res = await download("aonarr-pre-migration-x.db");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toContain("aonarr-pre-migration-x.db");
+    expect((res.body as Buffer).toString()).toBe("the file in the backup folder");
+  });
+
+  it("downloads a copy from the pre-migration folder when the backup folder has no file of that name", async () => {
+    setSetting("backupDir", backupDir);
+    writeFile(backupDir, "aonarr-backup-2021-01-01.db", "an ordinary backup");
+    writeFile(copiesDir, "aonarr-pre-migration-only-here.db", "the real pre-migration copy");
+
+    const res = await download("aonarr-pre-migration-only-here.db");
+
+    expect(res.status).toBe(200);
+    expect((res.body as Buffer).toString()).toBe("the real pre-migration copy");
+  });
+
+  it("answers 404 for a pre-migration name that is in neither folder", async () => {
+    setSetting("backupDir", backupDir);
+    writeFile(backupDir, "aonarr-backup-2021-01-01.db", "an ordinary backup");
+
+    const res = await request(app).get("/api/system/backups/aonarr-pre-migration-build-9.db").set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("deletes a pre-migration-named file from the backup folder and leaves a same-named copy in its own folder alone", async () => {
+    setSetting("backupDir", backupDir);
+    const inBackupFolder = writeFile(backupDir, "aonarr-pre-migration-x.db", "backup folder file");
+    const copy = writeFile(copiesDir, "aonarr-pre-migration-x.db", "copy");
+
+    const res = await request(app).delete("/api/system/backups/aonarr-pre-migration-x.db").set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(204);
+    expect(fs.existsSync(inBackupFolder)).toBe(false);
+    expect(fs.existsSync(copy)).toBe(true);
+    // and once the backup folder's file is gone, the same name reaches the copy
+    const second = await request(app).delete("/api/system/backups/aonarr-pre-migration-x.db").set("X-Api-Key", apiKey);
+    expect(second.status).toBe(204);
+    expect(fs.existsSync(copy)).toBe(false);
+  });
+
+  it("deletes a copy from its own folder when the backup folder has no file of that name, and leaves the other copies alone", async () => {
+    setSetting("backupDir", backupDir);
+    const unrelated = writeFile(backupDir, "aonarr-backup-2021-01-01.db", "ordinary backup");
+    const copy = writeFile(copiesDir, "aonarr-pre-migration-build-1.db", "copy");
+    const other = writeFile(copiesDir, "aonarr-pre-migration-build-2.db", "other copy");
+
+    const res = await request(app).delete("/api/system/backups/aonarr-pre-migration-build-1.db").set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(204);
+    expect(fs.existsSync(copy)).toBe(false);
+    expect(fs.existsSync(other)).toBe(true);
+    expect(fs.existsSync(unrelated)).toBe(true);
+    // The audit row is written without the request waiting for it: look for it for a moment (Postgres takes a round trip).
+    let audit: { detail: string } | undefined;
+    for (let i = 0; i < 80 && !audit; i++) {
+      audit = (await db.prepare("SELECT detail FROM audit_log WHERE event_type = 'backup_deleted' AND detail = ?").get("aonarr-pre-migration-build-1.db")) as { detail: string } | undefined;
+      if (!audit) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(audit?.detail).toBe("aonarr-pre-migration-build-1.db");
+  });
+
+  it("answers 404 when deleting a copy that is not there", async () => {
+    const res = await request(app).delete("/api/system/backups/aonarr-pre-migration-build-404.db").set("X-Api-Key", apiKey);
+    expect(res.status).toBe(404);
+  });
+
+  it("keeps refusing names that try to leave the folder, and names with an extension this app never writes", async () => {
+    writeFile(copiesDir, "aonarr-pre-migration-build-1.db", "copy");
+    for (const name of ["aonarr-pre-migration-..%2F..%2Fetc.db", "aonarr-pre-migration-%2Fetc%2Fpasswd.db", "aonarr-pre-migration-%5Cwindows.db", "aonarr-pre-migration-build-1.txt"]) {
+      const get = await request(app).get(`/api/system/backups/${name}`).set("X-Api-Key", apiKey);
+      const del = await request(app).delete(`/api/system/backups/${name}`).set("X-Api-Key", apiKey);
+      expect(get.status, `GET ${name}`).toBe(400);
+      expect(del.status, `DELETE ${name}`).toBe(400);
+    }
+    expect(fs.readdirSync(copiesDir)).toEqual(["aonarr-pre-migration-build-1.db"]);
+  });
+});

@@ -66,6 +66,64 @@ async function fetchTagPushedAt(imageTag: string): Promise<string | null> {
   return body.tag_last_pushed ?? body.last_updated ?? null;
 }
 
+const REGISTRY_ACCEPT = [
+  "application/vnd.oci.image.index.v1+json",
+  "application/vnd.docker.distribution.manifest.list.v2+json",
+  "application/vnd.oci.image.manifest.v1+json",
+  "application/vnd.docker.distribution.manifest.v2+json",
+].join(", ");
+
+/** The Docker platform name for this process's CPU, to pick our manifest out of a multi-platform tag. */
+function dockerArchitecture(): string {
+  return process.arch === "x64" ? "amd64" : process.arch === "arm64" ? "arm64" : process.arch;
+}
+
+/**
+ * The build time baked into the image the tag points at now (its AONARR_BUILD_TIME, the same value this container
+ * was started with), read from the registry: anonymous token, the tag's manifest (our platform's, out of a list),
+ * its config blob. This is exact where Docker Hub's push time is not: the push comes hours after the build, so the
+ * push time could only be compared with a 6-hour grace, and a rebuild pushed inside it was never noticed. A config
+ * that carries no AONARR_BUILD_TIME gives its own `created` time instead. Null for anything unexpected (the caller
+ * falls back to the push time), never a throw.
+ */
+async function fetchTagBuildTime(imageTag: string): Promise<{ builtAt: string; exact: boolean } | null> {
+  try {
+    const get = async (url: string, headers: Record<string, string> = {}) => {
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(10000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res;
+    };
+    const tokenRes = await get(`https://auth.docker.io/token?service=registry.docker.io&scope=repository:${DOCKER_HUB_REPO}:pull`);
+    const token = ((await tokenRes.json()) as { token?: string }).token;
+    if (!token) return null;
+    const auth = { Authorization: `Bearer ${token}`, Accept: REGISTRY_ACCEPT };
+    const registry = `https://registry-1.docker.io/v2/${DOCKER_HUB_REPO}`;
+    let manifest = (await (await get(`${registry}/manifests/${encodeURIComponent(imageTag)}`, auth)).json()) as {
+      manifests?: { digest: string; platform?: { architecture?: string; os?: string } }[];
+      config?: { digest?: string };
+    };
+    if (manifest.manifests) {
+      const ours = manifest.manifests.find((m) => m.platform?.os === "linux" && m.platform.architecture === dockerArchitecture());
+      if (!ours) return null;
+      manifest = (await (await get(`${registry}/manifests/${ours.digest}`, auth)).json()) as typeof manifest;
+    }
+    const configDigest = manifest.config?.digest;
+    if (!configDigest) return null;
+    const config = (await (await get(`${registry}/blobs/${configDigest}`, { Authorization: auth.Authorization })).json()) as {
+      created?: string;
+      config?: { Env?: string[] };
+    };
+    const env = config.config?.Env?.find((entry) => entry.startsWith("AONARR_BUILD_TIME="))?.slice("AONARR_BUILD_TIME=".length).trim();
+    if (env && /(Z|[+-]\d{2}:?\d{2})$/i.test(env) && Number.isFinite(new Date(env).getTime())) return { builtAt: env, exact: true };
+    return config.created && Number.isFinite(new Date(config.created).getTime()) ? { builtAt: config.created, exact: false } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An image's `created` comes some minutes after the build time given to the build; this much apart is the same build. */
+const CREATED_GRACE_MS = 60 * 60 * 1000;
+
 export async function checkForUpdate(): Promise<UpdateCheckResult> {
   const local = parseTopRound(readLocalChangelog());
   // A build time without a zone ("2026-11-02 10:00:00") would be read in the container's TZ and could trip the
@@ -77,17 +135,23 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
     const pushedMs = latestPushedAt ? new Date(latestPushedAt).getTime() : NaN;
     // The round numbers are only for display here; GitHub being unreachable must not hide the answer.
     const remote = await fetchRemoteChangelogRound().catch(() => ({ round: null, title: null }));
+    // What the tag's image says about when it was built beats the push time, which trails the build by hours.
+    const tagBuild = await fetchTagBuildTime(config.imageTag);
+    const tagBuildMs = tagBuild ? new Date(tagBuild.builtAt).getTime() : NaN;
+    const newer = Number.isFinite(tagBuildMs)
+      ? tagBuildMs > buildMs + (tagBuild!.exact ? 0 : CREATED_GRACE_MS)
+      : Number.isFinite(pushedMs) && pushedMs > buildMs + UPDATE_PUSH_GRACE_MS;
     return {
       currentRound: local.round,
       currentTitle: local.title,
       latestRound: remote.round,
       latestTitle: remote.title,
-      updateAvailable: Number.isFinite(pushedMs) && pushedMs > buildMs + UPDATE_PUSH_GRACE_MS,
+      updateAvailable: newer,
       source: "docker-hub",
       imageTag: config.imageTag,
       currentBuildTime: config.buildTime,
       latestPushedAt,
-      latestId: latestPushedAt,
+      latestId: tagBuild?.exact ? tagBuild.builtAt : latestPushedAt,
     };
   }
 

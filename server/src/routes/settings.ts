@@ -17,6 +17,9 @@ import { auditActor, logAuditEvent } from "../services/audit.js";
 export const settingsRouter = Router();
 settingsRouter.use(requireAdmin);
 
+/** Settings rows that hold the server's own working state, kept out of GET /settings. */
+const INTERNAL_STATE_KEYS = ["deletedFilePendingUnmonitor", "albumBackfillEmpty"];
+
 /** Settings that change how outbound requests are made, so the dispatcher is rebuilt when one is written. */
 const NETWORK_SETTING_KEYS = new Set(["socks5ProxyUrl", "tlsRejectUnauthorized", "proxyBypassLocal", "proxyBypassFilter"]);
 
@@ -29,6 +32,9 @@ settingsRouter.get(
     // defeat that guarantee; the dedicated /totp/* endpoints below only ever verify a code against
     // it, never return it once set.
     const { totpSecret: _totpSecret, totpPendingSecret: _totpPendingSecret, ...safeSettings } = getAllSettings();
+    // State the server keeps for itself (every cleared row id of the deleted-file job, the album backfill memory) is
+    // not a setting the page shows, and can be large.
+    for (const key of INTERNAL_STATE_KEYS) delete (safeSettings as Record<string, string>)[key];
     res.json(safeSettings);
   })
 );

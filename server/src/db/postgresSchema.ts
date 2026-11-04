@@ -115,6 +115,7 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE root_folders ADD COLUMN IF NOT EXISTS default_monitor TEXT`,
   `ALTER TABLE root_folders ADD COLUMN IF NOT EXISTS default_monitor_new_items TEXT`,
   `ALTER TABLE root_folders ADD COLUMN IF NOT EXISTS default_tag_ids TEXT`,
+  `ALTER TABLE root_folders ADD COLUMN IF NOT EXISTS read_only INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE download_clients ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 1`,
   `ALTER TABLE download_clients ADD COLUMN IF NOT EXISTS url_base TEXT`,
   `ALTER TABLE download_clients ADD COLUMN IF NOT EXISTS category_by_type TEXT`,

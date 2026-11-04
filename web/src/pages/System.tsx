@@ -245,7 +245,7 @@ export default function System() {
   const [backingUp, setBackingUp] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const restoreInputRef = useRef<HTMLInputElement>(null);
-  const [backups, setBackups] = useState<{ fileName: string; sizeBytes: number; createdAt: string }[]>([]);
+  const [backups, setBackups] = useState<{ fileName: string; sizeBytes: number; createdAt: string; kind?: "backup" | "pre-migration" }[]>([]);
   const [deletingBackup, setDeletingBackup] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[] | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
@@ -602,7 +602,7 @@ export default function System() {
 
   function loadBackups() {
     api
-      .get<{ backups: { fileName: string; sizeBytes: number; createdAt: string }[] }>("/system/backups")
+      .get<{ backups: { fileName: string; sizeBytes: number; createdAt: string; kind?: "backup" | "pre-migration" }[] }>("/system/backups")
       .then((data) => setBackups(data.backups))
       .catch(() => setBackups([]));
   }
@@ -1295,7 +1295,14 @@ export default function System() {
           <tbody>
             {backups.map((b) => (
               <tr key={b.fileName}>
-                <td>{b.fileName}</td>
+                <td>
+                  {b.fileName}
+                  {b.kind === "pre-migration" && (
+                    <span className="badge" style={{ marginLeft: 6 }} title="Taken automatically before the database was upgraded. Download it and use Restore to go back.">
+                      before upgrade
+                    </span>
+                  )}
+                </td>
                 <td>{new Date(b.createdAt).toLocaleString()}</td>
                 <td>{formatBytes(b.sizeBytes)}</td>
                 <td>

@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   PRE_MIGRATION_KEEP,
   getPreMigrationProblem,
+  isPreMigrationBackupName,
   recordMigrationDone,
   snapshotBeforeMigration,
 } from "../src/db/preMigrationBackup.js";
@@ -142,5 +143,36 @@ describe("snapshotBeforeMigration (RB2)", () => {
     const result = snapshotBeforeMigration(live, true, "build-ok", backups);
     recordMigrationDone("build-ok", result, backups);
     expect(getPreMigrationProblem(backups)).toBeNull();
+  });
+});
+
+describe("isPreMigrationBackupName", () => {
+  it("recognises the file names the copy is written under, whatever the build id looks like", () => {
+    for (const buildId of ["build-1", "2026-11-02T10:00:00Z", "a build with spaces/and:odd*chars"]) {
+      const result = snapshotBeforeMigration(live, true, buildId, backups);
+      expect(result.kind).toBe("written");
+      expect(isPreMigrationBackupName(path.basename((result as { file: string }).file))).toBe(true);
+    }
+  });
+
+  it("accepts a pre-migration database file name", () => {
+    expect(isPreMigrationBackupName("aonarr-pre-migration-build-1.db")).toBe(true);
+    expect(isPreMigrationBackupName("aonarr-pre-migration-.db")).toBe(true);
+  });
+
+  it("rejects the other files of a backup folder", () => {
+    for (const name of [
+      "",
+      "aonarr-backup-2020-01-01.db",
+      "aonarr-manual-2020-01-01.aonarrbackup",
+      "aonarr-pre-migration-build-1.dump", // the right start, but not a database file
+      "aonarr-pre-migration-build-1.aonarrbackup",
+      "aonarr-pre-migration-build-1.db.partial", // a copy still being written
+      "last-build.json", // the marker that sits in the same folder
+      "my-aonarr-pre-migration-build-1.db", // the prefix must be at the start
+      "AONARR-PRE-MIGRATION-build-1.db",
+    ]) {
+      expect(isPreMigrationBackupName(name), name).toBe(false);
+    }
   });
 });

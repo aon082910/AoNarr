@@ -8,6 +8,7 @@ import { getHttpMetricsSamples } from "../services/httpMetrics.js";
 import { statfsAsync } from "../services/fsAsync.js";
 import { getSetting } from "../services/settingsStore.js";
 import { safeEqual } from "../middleware/auth.js";
+import { uncaughtErrorStats } from "../services/uncaughtErrors.js";
 
 /** A scrape or status page must not wait out a dead mount. */
 const METRICS_STATFS_TIMEOUT_MS = 5000;
@@ -158,6 +159,9 @@ metricsRouter.get(
         "gauge",
         queueByStatus.map((r) => ({ labels: { status: r.status }, value: Number(r.c) }))
       ),
+      metricLine("aonarr_uncaught_errors_total", "Uncaught exceptions and unhandled rejections the process carried on after (since process start)", "counter", [
+        { value: uncaughtErrorStats().total },
+      ]),
       metricLine("aonarr_indexers_enabled", "Enabled indexers", "gauge", [{ value: indexerCount }]),
       metricLine("aonarr_download_clients_enabled", "Enabled download clients", "gauge", [{ value: clientCount }]),
       metricLine("aonarr_pending_requests", "Pending household requests", "gauge", [{ value: pendingRequests }]),

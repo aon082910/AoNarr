@@ -59,6 +59,8 @@ export interface AsyncDb {
    * whatever `db` instance it needs, same as every existing db.transaction(() => {...}) callback
    * already does; only the wrapping syntax differs from better-sqlite3's version. */
   transaction<T>(fn: () => Promise<T>): Promise<T>;
+  /** SQLite only: holds writes (not reads) until the returned function is called, while a maintenance job on another connection has the file locked. Absent on Postgres. */
+  pauseWrites?(): () => void;
   close(): Promise<void>;
 }
 
@@ -66,38 +68,101 @@ export interface AsyncDb {
 // SQLite implementation — wraps the existing synchronous driver
 // ---------------------------------------------------------------------------
 
+/** How long a statement from outside an open SQLite transaction waits for it before going ahead. */
+const GATE_TIMEOUT_MS = 10_000;
+
 class SqliteAsyncDb implements AsyncDb {
   readonly dialect = "sqlite" as const;
-  constructor(private db: Database.Database) {}
+  constructor(
+    private db: Database.Database,
+    private readonly gateTimeoutMs: number = GATE_TIMEOUT_MS
+  ) {}
 
   // One connection serves the whole process, so BEGIN ... COMMIT on it covers every statement that runs
-  // while the callback awaits something slow, from any request: an unrelated insert joins the transaction
-  // and vanishes with its rollback. That cannot be fixed here without making every other request wait for
-  // the whole transaction (a library-scan conversion runs for minutes), so the rule stays: a transaction
-  // callback awaits only database calls (tests/transactionCallbacks.test.ts checks every call site).
-  // What this queue does fix: a second transaction() used to throw "cannot start a transaction within a
-  // transaction" while the first awaited anything; it now waits its turn.
+  // while the callback awaits something, from any request: an unrelated insert joined the transaction and
+  // vanished with its rollback. A statement from outside the transaction's own async chain now waits until the
+  // transaction has ended (see `gate`). That is cheap because of the rule that a transaction callback awaits only
+  // database calls (tests/transactionCallbacks.test.ts checks every call site), so a transaction lasts
+  // milliseconds; and bounded, so a callback that breaks the rule and waits for something that needs the
+  // database cannot freeze the process (the waiter goes ahead after GATE_TIMEOUT_MS and says so).
+  // A second transaction() waits its turn in `transactionQueue` instead of throwing "cannot start a
+  // transaction within a transaction".
   private transactionQueue: Promise<void> = Promise.resolve();
+  /** The transaction that is open now, with the promise that settles when it has ended. */
+  private openTransaction: { ended: Promise<void> } | null = null;
   // Tells a transaction() started from inside a transaction callback (which would wait for its own
   // caller for ever) from one started by another request: the first throws, as it always did.
   // The marker is an object that is switched off when the transaction ends: async work started inside the
   // callback keeps this context for good (a timer, a fire-and-forget promise), and must not read as nested later.
   private readonly insideTransaction = new AsyncLocalStorage<{ active: boolean }>();
 
+  // Writes held back while a maintenance job on another connection (VACUUM in a worker thread) has the file's write
+  // lock: a write attempted meanwhile would sit in SQLite's busy handler, which sleeps the whole event loop (the
+  // driver is synchronous) and then fails after its 5 s timeout. Reads go on (WAL readers are not blocked).
+  private writePause: { released: Promise<void> } | null = null;
+
+  /** Holds every write that is not part of an open transaction until the returned function is called. */
+  pauseWrites(): () => void {
+    if (this.writePause) return () => undefined; // already paused by someone else: that one releases it
+    let resume!: () => void;
+    const pause = { released: new Promise<void>((resolve) => (resume = resolve)) };
+    this.writePause = pause;
+    return () => {
+      if (this.writePause === pause) this.writePause = null;
+      resume();
+    };
+  }
+
+  /**
+   * Runs `action` once nothing stands in its way, with no await between the last check and the call: a statement from
+   * outside the open transaction's own async chain waits for the transaction to end (and for the next queued one, which
+   * can open the moment the first closes, so it checks again), and a write waits out a write pause. The transaction
+   * wait is bounded; a pause is held for as long as its owner needs.
+   */
+  private async whenClear<T>(isWrite: boolean, action: () => T): Promise<T> {
+    const blocked = () => (!!this.openTransaction && !this.insideTransaction.getStore()?.active) || (isWrite && !!this.writePause && !this.insideTransaction.getStore()?.active);
+    if (!blocked()) return action();
+    const deadline = Date.now() + this.gateTimeoutMs;
+    while (blocked()) {
+      if (this.openTransaction && !this.insideTransaction.getStore()?.active) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          console.warn(`[db] a statement waited ${this.gateTimeoutMs / 1000}s for an open transaction and went ahead: something inside the transaction is awaiting a non-database call`);
+          break;
+        }
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([
+          this.openTransaction.ended,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, remaining);
+            timer.unref?.();
+          }),
+        ]);
+        clearTimeout(timer);
+      } else if (this.writePause) {
+        await this.writePause.released;
+      }
+    }
+    return action();
+  }
+
   prepare(sql: string): AsyncStatement {
     const stmt = this.db.prepare(sql);
+    // INSERT/UPDATE/DELETE ... RETURNING comes back through get/all, so the statement text decides, not the method.
+    const writes = !stmt.reader || /^\s*(insert|update|delete|replace)\b/i.test(sql);
     return {
-      run: async (...params: any[]) => {
-        const info = stmt.run(...params);
-        return { changes: info.changes, lastInsertRowid: info.lastInsertRowid };
-      },
-      get: async (...params: any[]) => stmt.get(...params),
-      all: async (...params: any[]) => stmt.all(...params),
+      run: (...params: any[]) =>
+        this.whenClear(true, () => {
+          const info = stmt.run(...params);
+          return { changes: info.changes, lastInsertRowid: info.lastInsertRowid };
+        }),
+      get: (...params: any[]) => this.whenClear(writes, () => stmt.get(...params)),
+      all: (...params: any[]) => this.whenClear(writes, () => stmt.all(...params)),
     };
   }
 
   async exec(sql: string): Promise<void> {
-    this.db.exec(sql);
+    await this.whenClear(true, () => this.db.exec(sql));
   }
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
@@ -107,7 +172,10 @@ class SqliteAsyncDb implements AsyncDb {
     const finished = new Promise<void>((resolve) => (release = resolve));
     this.transactionQueue = previous.then(() => finished);
     await previous;
+    // A transaction is a write: it waits for a maintenance pause too (before it takes the slot, so nothing else waits behind it for long).
+    while (this.writePause) await this.writePause.released;
     const scope = { active: true };
+    this.openTransaction = { ended: finished };
     try {
       this.db.exec("BEGIN");
       try {
@@ -120,6 +188,7 @@ class SqliteAsyncDb implements AsyncDb {
       }
     } finally {
       scope.active = false;
+      this.openTransaction = null;
       release();
     }
   }
@@ -287,8 +356,8 @@ class PostgresAsyncDb implements AsyncDb {
   }
 }
 
-export function createSqliteAsyncDb(sqliteDb: Database.Database): AsyncDb {
-  return new SqliteAsyncDb(sqliteDb);
+export function createSqliteAsyncDb(sqliteDb: Database.Database, options: { gateTimeoutMs?: number } = {}): AsyncDb {
+  return new SqliteAsyncDb(sqliteDb, options.gateTimeoutMs);
 }
 
 export function createPostgresAsyncDb(connectionString: string): AsyncDb {

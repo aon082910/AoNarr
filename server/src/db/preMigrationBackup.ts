@@ -38,6 +38,11 @@ export function preMigrationDir(): string {
   return path.join(config.configDir, "Backups", "pre-migration");
 }
 
+/** A copy taken before an upgrade (named aonarr-pre-migration-<build>.db), as opposed to a scheduled or manual backup. */
+export function isPreMigrationBackupName(fileName: string): boolean {
+  return fileName.startsWith(FILE_PREFIX) && fileName.endsWith(".db");
+}
+
 export function currentBuildId(): string | null {
   return config.buildTime || null;
 }

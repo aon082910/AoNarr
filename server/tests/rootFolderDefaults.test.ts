@@ -146,33 +146,33 @@ describe("a root folder's minimum free space stops grabs (ST25)", () => {
   const stat = (freeGb: number) => ({ blocks: 1000 * 1024 ** 3 / 4096, bfree: (freeGb * 1024 ** 3) / 4096, bavail: (freeGb * 1024 ** 3) / 4096, bsize: 4096 });
 
   it("is not over when the folder has no minimum and no quota", async () => {
-    vi.spyOn(fs, "statfsSync").mockImplementation(() => stat(1) as any);
+    vi.spyOn(fs.promises, "statfs").mockImplementation((async () => stat(1)) as any);
     expect(await isRootFolderOverQuota(rootId)).toBe(false);
   });
 
   it("is over when less than the minimum is free, even with no quota set", async () => {
     await db.prepare("UPDATE root_folders SET min_free_space_gb = 50 WHERE id = ?").run(rootId);
-    vi.spyOn(fs, "statfsSync").mockImplementation(() => stat(10) as any);
+    vi.spyOn(fs.promises, "statfs").mockImplementation((async () => stat(10)) as any);
     expect(await isRootFolderOverQuota(rootId)).toBe(true);
   });
 
   it("is not over when at least the minimum is free", async () => {
     await db.prepare("UPDATE root_folders SET min_free_space_gb = 50 WHERE id = ?").run(rootId);
-    vi.spyOn(fs, "statfsSync").mockImplementation(() => stat(80) as any);
+    vi.spyOn(fs.promises, "statfs").mockImplementation((async () => stat(80)) as any);
     expect(await isRootFolderOverQuota(rootId)).toBe(false);
   });
 
   it("an unreachable folder is never treated as full", async () => {
     await db.prepare("UPDATE root_folders SET min_free_space_gb = 50 WHERE id = ?").run(rootId);
-    vi.spyOn(fs, "statfsSync").mockImplementation(() => {
+    vi.spyOn(fs.promises, "statfs").mockImplementation((async () => {
       throw new Error("gone");
-    });
+    }) as any);
     expect(await isRootFolderOverQuota(rootId)).toBe(false);
   });
 
   it("still pauses at the quota as before", async () => {
     await db.prepare("UPDATE root_folders SET quota_percent = 90, pause_grabs_at_quota = 1 WHERE id = ?").run(rootId);
-    vi.spyOn(fs, "statfsSync").mockImplementation(() => stat(50) as any); // 95% used
+    vi.spyOn(fs.promises, "statfs").mockImplementation((async () => stat(50)) as any); // 95% used
     expect(await isRootFolderOverQuota(rootId)).toBe(true);
   });
 });

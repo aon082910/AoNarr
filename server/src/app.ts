@@ -8,6 +8,7 @@ import { backfillEpisodicAndCollectionHasFile } from "./services/libraryScan.js"
 import { backfillCleanTitles } from "./services/releaseAliases.js";
 import { errorHandler, asyncHandler } from "./middleware/errorHandler.js";
 import { requireAdmin, requireAuth } from "./middleware/auth.js";
+import { healthStaleOnChange } from "./middleware/healthStale.js";
 import { bootstrapAdminFromEnv } from "./services/bootstrapAdmin.js";
 import { applySocksProxySetting } from "./services/socksProxy.js";
 import { generateRequestId, runWithRequestId } from "./services/requestContext.js";
@@ -404,6 +405,11 @@ export async function createApp(): Promise<Express> {
   // other routers require.
   app.use("/api/media", localArtworkRouter);
   app.use("/api/media", mediaRouter);
+  // A saved change to what the health checks read drops the kept report (see middleware/healthStale.ts).
+  app.use(
+    ["/api/indexers", "/api/download-clients", "/api/root-folders", "/api/import-lists", "/api/remote-path-mappings", "/api/settings"],
+    healthStaleOnChange
+  );
   app.use("/api/indexers", indexersRouter);
   app.use("/api/download-clients", downloadClientsRouter);
   app.use("/api/quality-profiles", qualityProfilesRouter);

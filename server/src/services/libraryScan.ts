@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { db } from "../db/index.js";
-import { createYielder } from "./fsAsync.js";
+import { createYielder, FS_CALL_TIMEOUT_MS, guardedFsCall, StorageTimeoutError, statAsync } from "./fsAsync.js";
+import { getSetting, setSetting } from "./settingsStore.js";
 import { getMediaTypeConfig, isPlaceholderParent, isProbeableFile, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { parseReleaseTitle, FILE_NAME, type ParsedRelease } from "./releaseParser.js";
@@ -377,11 +378,29 @@ function guessSeriesTitle(parentDir: string, filenameBase: string): string {
   return guessShowTitleFromFolder(parentDir);
 }
 
-function walkForExtensions(dir: string, extensions: string[], knownPaths: Set<string>, out: string[], filter?: ScanFilter, depth = 0): void {
+/**
+ * Walks a folder tree for files of the given extensions. Each folder is read off the main thread and raced against a
+ * timeout (fsAsync.ts): a share that has gone away used to freeze the whole server in readdirSync, for as long as
+ * the scan took to get there. A folder that does not answer is skipped, as an unreadable one always was.
+ */
+async function walkForExtensions(
+  dir: string,
+  extensions: string[],
+  knownPaths: Set<string>,
+  out: string[],
+  filter?: ScanFilter,
+  depth = 0,
+  problems?: { outages: number }
+): Promise<void> {
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
+    entries = await guardedFsCall("readdir", dir, FS_CALL_TIMEOUT_MS, () => fs.promises.readdir(dir, { withFileTypes: true }));
+  } catch (err) {
+    // A folder the scan could not read because its storage is not answering is told apart from one it may not read:
+    // the first says nothing about the files in it, the second never did.
+    if (err instanceof StorageTimeoutError || ["ENOTCONN", "EIO", "ESTALE", "ETIMEDOUT", "EHOSTDOWN"].includes((err as NodeJS.ErrnoException)?.code ?? "")) {
+      if (problems) problems.outages++;
+    }
     return;
   }
   for (const entry of entries) {
@@ -389,7 +408,7 @@ function walkForExtensions(dir: string, extensions: string[], knownPaths: Set<st
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (filter && isExcludedFolder(entry.name, full, filter, depth)) continue;
-      walkForExtensions(full, extensions, knownPaths, out, filter, depth + 1);
+      await walkForExtensions(full, extensions, knownPaths, out, filter, depth + 1, problems);
     } else if (extensions.includes(path.extname(entry.name).toLowerCase()) && !knownPaths.has(full)) {
       if (filter && isExcludedFile(entry.name, filter)) continue;
       out.push(full);
@@ -524,7 +543,7 @@ async function readEmbeddedUncached(filePath: string): Promise<EmbeddedTitleAuth
 async function readEmbeddedTitleAuthor(filePath: string): Promise<EmbeddedTitleAuthor> {
   let stat: fs.Stats;
   try {
-    stat = fs.statSync(filePath);
+    stat = await statAsync(filePath);
   } catch {
     return null;
   }
@@ -858,6 +877,8 @@ export interface ScanImportResult {
   skippedFiles: SkippedFile[];
   unsupported?: string;
   alreadyRunning?: boolean;
+  /** A folder of the library did not answer (a share that hung or is gone): what is not found says nothing about its files. */
+  incomplete?: boolean;
 }
 
 /** Guards against two overlapping scans of the same type racing each other — e.g. a scheduled
@@ -981,9 +1002,10 @@ async function scanAndImportLibraryInner(
   // list, which picked /data/music for a file under /data/music-lossless.
   const fileRootFolders = new Map<string, (typeof folders)[number]>();
   const scanFilter = scanFilterFor(type, [recycleBinDirectory()]);
+  const walkProblems = { outages: 0 };
   for (const folder of folders) {
     const folderFiles: string[] = [];
-    walkForExtensions(folder.path, typeConfig.extensions, knownPaths, folderFiles, scanFilter);
+    await walkForExtensions(folder.path, typeConfig.extensions, knownPaths, folderFiles, scanFilter, 0, walkProblems);
     for (const f of folderFiles) fileRootFolders.set(f, folder);
     files.push(...folderFiles);
   }
@@ -1755,10 +1777,24 @@ async function scanAndImportLibraryInner(
       .run(type);
   }
 
+  if (walkProblems.outages > 0) result.incomplete = true;
   return result;
 }
 
 const refreshesInProgress = new Set<string>();
+
+/** How long a scheduled full refresh waits for the cheap new-children pass (or a button's refresh) on the same type. */
+const REFRESH_SLOT_WAIT_MS = 45 * 60 * 1000;
+
+/** True once the type's refresh slot is free (the caller takes it in the same tick), false when the wait ran out or was cancelled. */
+async function waitForRefreshSlot(type: string, signal: AbortSignal | undefined, maxWaitMs: number): Promise<boolean> {
+  const deadline = Date.now() + maxWaitMs;
+  while (refreshesInProgress.has(type)) {
+    if (signal?.aborted || Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  return true;
+}
 
 /** Re-pulls overview/poster/year from the same metadata provider used at add-time for every item
  * of a type. An already-matched item is looked up directly by its own stored id (see
@@ -1778,11 +1814,17 @@ const refreshesInProgress = new Set<string>();
 export async function refreshLibraryMetadata(
   type: string,
   signal?: AbortSignal,
-  mediaItemIds?: number[]
+  mediaItemIds?: number[],
+  options: { waitForSlotMs?: number } = {}
 ): Promise<{ updated: number; failed: number; childrenAdded: number; alreadyRunning?: boolean }> {
   // The Library page's Refresh button and the weekly job would otherwise walk the same items twice
   // at once, each backfilling the same children. A selected-items run shares this same guard/slot,
-  // so it can't overlap a whole-library refresh for the same type either.
+  // so it can't overlap a whole-library refresh for the same type either. The weekly job waits its turn
+  // behind the short new-children pass instead of skipping the type for the week.
+  if (options.waitForSlotMs && refreshesInProgress.has(type)) {
+    log.info(`[libraryScan] a refresh of "${type}" is running — the scheduled full refresh waits for it`);
+    await waitForRefreshSlot(type, signal, options.waitForSlotMs);
+  }
   if (refreshesInProgress.has(type)) {
     log.warn(`[libraryScan] a refresh of "${type}" is already running — skipping this overlapping request`);
     return { updated: 0, failed: 0, childrenAdded: 0, alreadyRunning: true };
@@ -2879,6 +2921,27 @@ export async function backfillEpisodicAndCollectionHasFile(): Promise<void> {
   if (fixed > 0) log.info(`[libraryScan] startup data fix: corrected has_file on ${fixed} item(s) that had files but were still marked missing`);
 }
 
+/** When a folder, or one of its direct subfolders (a multi-disc album's CD1/CD2), last changed: files added inside an
+ * existing disc folder change that folder's time, not the album folder's. */
+async function folderChangeStamp(dir: string): Promise<number> {
+  let latest = (await statAsync(dir)).mtimeMs;
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = await guardedFsCall("readdir", dir, FS_CALL_TIMEOUT_MS, () => fs.promises.readdir(dir, { withFileTypes: true }));
+  } catch {
+    return latest; // the folder itself answered; its listing is the walk's problem
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    try {
+      latest = Math.max(latest, (await statAsync(path.join(dir, entry.name))).mtimeMs);
+    } catch {
+      // a subfolder that vanished between the listing and the stat
+    }
+  }
+  return latest;
+}
+
 /**
  * One-time-per-startup data fix for albums that were Scan & Import-created before this round added
  * per-file track-row insertion (see upsertTrackFromFile()) — those albums have `has_file = 1` and a
@@ -2893,6 +2956,16 @@ export async function backfillMissingAlbumTracks(): Promise<void> {
   let fixed = 0;
   // Runs after the port is open (index.ts), so it must not hold the event loop: each album is a folder walk.
   const giveEventLoopATurn = createYielder();
+  // An album whose folder holds no audio file (moved away, emptied) is walked again at every start for nothing: its
+  // folder's modification time is remembered, and it is walked again only once the folder has changed.
+  let emptyAt: Record<string, number> = {};
+  try {
+    emptyAt = JSON.parse(getSetting("albumBackfillEmpty") || "{}") as Record<string, number>;
+  } catch {
+    emptyAt = {};
+  }
+  let emptyChanged = false;
+  const candidateIds = new Set<string>();
   for (const type of MEDIA_TYPE_KEYS) {
     const cfg = getMediaTypeConfig(type);
     if (cfg.shape !== "collection" || !cfg.multiFilePerChild) continue;
@@ -2906,19 +2979,51 @@ export async function backfillMissingAlbumTracks(): Promise<void> {
       )
       .all(type)) as { id: number; file_path: string }[];
 
+    for (const album of albums) candidateIds.add(String(album.id));
+    for (const album of albums) candidateIds.add(String(album.id));
     for (const album of albums) {
       await giveEventLoopATurn();
       // A scan running in the meantime may have filled this album's tracks since the list was read.
       if (await db.prepare("SELECT 1 AS x FROM tracks WHERE sub_item_id = ? LIMIT 1").get(album.id)) continue;
       // Recursive — a multi-disc album's file_path is the album's own folder, with tracks actually
       // living one level deeper in per-disc subfolders (CD1/CD2/...), not directly inside it.
+      let mtimeMs: number;
+      try {
+        mtimeMs = await folderChangeStamp(album.file_path);
+      } catch {
+        continue; // the folder is gone or its storage is not answering: nothing to walk
+      }
+      if (emptyAt[album.id] === mtimeMs) continue;
       const files: string[] = [];
-      walkForExtensions(album.file_path, cfg.extensions, new Set(), files);
-      if (files.length === 0) continue;
+      await walkForExtensions(album.file_path, cfg.extensions, new Set(), files);
+      if (files.length === 0) {
+        emptyAt[album.id] = mtimeMs;
+        emptyChanged = true;
+        continue;
+      }
+      if (album.id in emptyAt) {
+        delete emptyAt[album.id];
+        emptyChanged = true;
+      }
       for (const filePath of files) await upsertTrackFromFile(album.id, filePath);
       fixed++;
     }
   }
+  // An album a scan has filled since, or that is gone, no longer needs its entry.
+  for (const id of Object.keys(emptyAt)) {
+    if (!candidateIds.has(id)) {
+      delete emptyAt[id];
+      emptyChanged = true;
+    }
+  }
+  // An album a scan has filled since, or that is gone, no longer needs its entry.
+  for (const id of Object.keys(emptyAt)) {
+    if (!candidateIds.has(id)) {
+      delete emptyAt[id];
+      emptyChanged = true;
+    }
+  }
+  if (emptyChanged) setSetting("albumBackfillEmpty", Object.keys(emptyAt).length > 0 ? JSON.stringify(emptyAt) : "");
   if (fixed > 0) log.info(`[libraryScan] startup data fix: backfilled track listings for ${fixed} previously-scanned album(s)`);
 }
 
@@ -2941,14 +3046,33 @@ export function logScanResult(type: string, result: ScanImportResult): void {
   }
 }
 
-export async function scanAndImportAllLibraries(signal?: AbortSignal): Promise<void> {
+export async function scanAndImportAllLibraries(signal?: AbortSignal): Promise<boolean> {
+  let complete = true;
   for (const type of MEDIA_TYPE_KEYS) {
-    if (signal?.aborted) return;
+    if (signal?.aborted) return false;
     const result = await scanAndImportLibrary(type, signal);
     if (result.matched > 0 || result.created > 0 || result.skipped > 0) {
       logScanResult(type, result);
     }
+    // Another scan of this type was already running (this one looked at nothing), or a folder did not answer.
+    if (result.alreadyRunning || result.incomplete) complete = false;
   }
+  // Only a scan that looked at every library counts: the 05:00 job skips itself right after one (see recentFullScan).
+  // A cancel during the last library leaves the loop without returning early, so it is checked here too.
+  if (signal?.aborted) return false;
+  if (complete) setSetting(LAST_FULL_SCAN_KEY, new Date().toISOString());
+  return complete;
+}
+
+const LAST_FULL_SCAN_KEY = "lastFullScanAt";
+
+/** A full scan this recent makes the scheduled one pointless: the deleted-file job scans straight after a check, and
+ * the 05:00 job then walked the same folders again (twice the disk reads on a big library, for no new files). */
+export const RECENT_FULL_SCAN_MS = 4 * 60 * 60 * 1000;
+
+export function recentFullScan(now = Date.now()): boolean {
+  const at = Date.parse(getSetting(LAST_FULL_SCAN_KEY) || "");
+  return Number.isFinite(at) && now - at >= 0 && now - at < RECENT_FULL_SCAN_MS;
 }
 
 /** A series that has ended or been cancelled gets no new episodes; everything else (returning, in
@@ -3006,7 +3130,7 @@ export async function refreshNewChildren(signal?: AbortSignal): Promise<{ checke
 export async function refreshAllLibraries(signal?: AbortSignal): Promise<void> {
   for (const type of MEDIA_TYPE_KEYS) {
     if (signal?.aborted) return;
-    const result = await refreshLibraryMetadata(type, signal);
+    const result = await refreshLibraryMetadata(type, signal, undefined, { waitForSlotMs: REFRESH_SLOT_WAIT_MS });
     if (result.updated > 0)
       log.info(
         `[libraryScan] refreshed "${type}": ${result.updated} updated, ${result.failed} failed, ${result.childrenAdded} episode(s)/child(ren) added`

@@ -52,6 +52,8 @@ import { convertComicImagesBestEffort } from "./comicImageConvert.js";
 import { recycleFile } from "./recycleBin.js";
 import { MAX_NAME_BYTES, truncateToBytes } from "./pathNames.js";
 import { finishBackgroundJob, incrementBackgroundJobDone, isBackgroundJobRunning, startBackgroundJob } from "./backgroundJobs.js";
+import { FS_CALL_TIMEOUT_MS, guardedFsCall, statAsync, statfsAsync } from "./fsAsync.js";
+import { rootFolderUnmountedReason } from "./rootFolderCheck.js";
 import { discographyAlbumsOf, queueTargetIds } from "./discography.js";
 import { matchAlbumFolders } from "./discographyMatch.js";
 import { addToBlocklist } from "./blocklist.js";
@@ -383,6 +385,15 @@ function resolveDest(
   const destPath = path.join(rootFolderPath, ...folderSegments, fileLabel);
   assertInsideRoot(rootFolderPath, destPath);
   return { destPath, fileLabel };
+}
+
+/** Refuses an import into a root folder that is an empty mount point while the library has files recorded in it. */
+async function assertRootFolderMounted(rootFolder: { id: number; path: string; readOnly?: boolean }): Promise<void> {
+  // A decision, not a glitch: the admin made this library read-only, so nothing is placed into it.
+  if (rootFolder.readOnly) throw new ImportSkippedError(`Root folder "${rootFolder.path}" is a read-only library: nothing is imported into it`);
+  const reason = await rootFolderUnmountedReason(rootFolder);
+  // A plain Error, not an ImportSkippedError: the share comes back, and a plain error is parked and retried later.
+  if (reason) throw new Error(`${reason} — kept for a manual import from Activity`);
 }
 
 /** Accents and apostrophes are folded away so an indexer's "Grey's"/"Pokémon" still matches the
@@ -1089,7 +1100,7 @@ function tempPrefixFor(dest: string): string {
 export async function removeStaleImportTemps(dir: string, forDest?: string): Promise<void> {
   let names: string[];
   try {
-    names = await fsp.readdir(dir);
+    names = await guardedFsCall("readdir", dir, FS_CALL_TIMEOUT_MS, () => fsp.readdir(dir));
   } catch {
     return;
   }
@@ -1488,6 +1499,39 @@ function folderHasAnyFile(dir: string | null | undefined): boolean {
   }
 }
 
+/** The resolution tier (480, 720, 1080, 2160) a quality name stands for, or null for a name that gives none. */
+export function resolutionOfQualityName(name: string | null): number | null {
+  if (!name) return null;
+  const match = /(\d{3,4})p/i.exec(name);
+  if (match) {
+    const lines = Number(match[1]);
+    return lines >= 2000 ? 2160 : lines >= 1000 ? 1080 : lines >= 700 ? 720 : 480;
+  }
+  return /\b(dvd|sdtv)\b/i.test(name) ? 480 : null;
+}
+
+/** The resolution tier a video's frame size stands for (a widescreen 1080p film is 1920x800, so the width counts too). */
+export function resolutionOfFrame(width: number | null, height: number | null): number | null {
+  if (!width && !height) return null;
+  if ((width ?? 0) >= 3000 || (height ?? 0) >= 2000) return 2160;
+  if ((width ?? 0) >= 1800 || (height ?? 0) >= 1000) return 1080;
+  if ((width ?? 0) >= 1200 || (height ?? 0) >= 700) return 720;
+  return 480;
+}
+
+/** Whether the file's own frame size is a higher resolution than the quality `existing` names. False when either is unknown. */
+async function probedResolutionBeats(sourceFile: string, existingQuality: string | null): Promise<boolean> {
+  const have = resolutionOfQualityName(existingQuality);
+  if (have === null || !isProbeableFile(sourceFile)) return false;
+  try {
+    const info = await probeMediaInfo(sourceFile);
+    const found = info ? resolutionOfFrame(info.width, info.height) : null;
+    return found !== null && found > have;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Sonarr/Radarr's import-time "not an upgrade" check, as far as a downgrade goes: an automatic import
  * must not put a file of a worse quality over a better one the library already has. The grab-time
@@ -1496,18 +1540,21 @@ function folderHasAnyFile(dir: string | null | undefined): boolean {
  * quality is allowed (a repair, a repack, a retry); so is a file the library no longer has on disk.
  * A type without quality tiers compares the file format instead (an epub over a pdf, flac over mp3).
  */
-function assertNotADowngrade(
+async function assertNotADowngrade(
   type: MediaType,
   quality: string | null,
   sourceFile: string,
   existing: { quality: string | null; filePath: string | null }[],
   groups: QualityGroups
-): void {
+): Promise<void> {
   for (const file of existing) {
     if (!file.filePath || !fs.existsSync(file.filePath)) continue;
     if (usesQualityTiers(type)) {
       const have = groupedRank(file.quality, groups);
       if (have >= 0 && groupedRank(quality, groups) < have) {
+        // A release name with no quality in it (rank below every tier) is refused over a known one, unless the file
+        // itself shows a higher resolution than the library's: that much is an upgrade whatever the source was.
+        if (groupedRank(quality, groups) < 0 && (await probedResolutionBeats(sourceFile, file.quality))) continue;
         throw new ImportSkippedError(
           `Not an upgrade: the library already has a "${file.quality}" file here and this download is "${quality ?? "unknown"}" — left in the download for a manual import`
         );
@@ -1716,6 +1763,7 @@ export async function placeFile(params: {
   const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
   if (!folderRow) throw new ImportSkippedError(`Root folder for "${item.title}" no longer exists`);
   const rootFolder = rootFolderFromRow(folderRow);
+  await assertRootFolderMounted(rootFolder);
   const template = namingTemplateFor(item);
 
   const ext = path.extname(sourceFile);
@@ -1906,7 +1954,7 @@ export async function placeFile(params: {
     if (mismatch) throw new ImportIdentityMismatchError(`Not importing: ${mismatch} — left in the download for a manual import`);
     await assertFileIsWorthImporting(sourceFile, item.type, mediaRow.runtime_minutes, verify, shape === "single" || shape === "episodic");
   }
-  if (refuseDowngrade) assertNotADowngrade(item.type, quality, sourceFile, existingFiles, await qualityGroupsOfProfile(item.qualityProfileId));
+  if (refuseDowngrade) await assertNotADowngrade(item.type, quality, sourceFile, existingFiles, await qualityGroupsOfProfile(item.qualityProfileId));
   const claimKeys =
     shape === "single" ? [`item:${item.id}`] : episodeId ? ownEpisodeIds.map((id) => `episode:${id}`) : [`sub:${subItemId}`];
   if (batchClaims && claimKeys.some((key) => batchClaims.has(key))) {
@@ -1921,8 +1969,9 @@ export async function placeFile(params: {
   // this stays conservative and checks against the file's full size either way.
   if (getSetting("skipFreeSpaceCheck") !== "1") {
     try {
-      const sourceSize = fs.statSync(sourceFile).size;
-      const stat = fs.statfsSync(rootFolder.path);
+      const sourceSize = (await statAsync(sourceFile)).size;
+      const stat = await statfsAsync(rootFolder.path);
+      if (!stat) throw new Error("the destination did not report its free space");
       // bavail, not bfree: the server runs unprivileged and can't write into root-reserved blocks.
       const freeBytes = stat.bavail * stat.bsize;
       // Plus the reserve (Sonarr's MinimumFreeSpaceWhenImporting, or the root folder's own minimum).
@@ -2102,7 +2151,7 @@ export async function manualImportWarnings(params: {
     if (row?.has_file) existing = [{ quality: row.quality ?? null, filePath: row.file_path ?? null }];
   }
   try {
-    assertNotADowngrade(item.type, params.quality, params.sourceFile, existing, await qualityGroupsOfProfile(item.qualityProfileId));
+    await assertNotADowngrade(item.type, params.quality, params.sourceFile, existing, await qualityGroupsOfProfile(item.qualityProfileId));
   } catch (err) {
     if (err instanceof ImportSkippedError) warnings.push(err.message.replace(/ — left in the download for a manual import$/, ""));
     else throw err;
@@ -2180,6 +2229,7 @@ export async function placeAlbumFiles(params: {
   const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
   if (!folderRow) throw new ImportSkippedError(`Root folder for "${item.title}" no longer exists`);
   const rootFolder = rootFolderFromRow(folderRow);
+  await assertRootFolderMounted(rootFolder);
 
   const subRow = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(subItemId)) as any;
   if (!subRow) throw new Error(`Sub-item ${subItemId} not found`);
@@ -2447,7 +2497,7 @@ export async function placeAlbumFiles(params: {
   // A manual import places just the files it was given; the rest of the folder isn't left over from it.
   if (onlyAnchor) leftInPlace = 0;
 
-  assertEnoughFreeSpaceForImport(toPlace.map((p) => p.src), rootFolder.path, rootFolder.minFreeSpaceGb);
+  await assertEnoughFreeSpaceForImport(toPlace.map((p) => p.src), rootFolder.path, rootFolder.minFreeSpaceGb);
 
   // Checked before anything moves, so a refusal never leaves the album half imported.
   for (const { dest } of toPlace) {
@@ -3028,6 +3078,7 @@ export async function placeSeasonPackFiles(params: {
   const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
   if (!folderRow) throw new ImportSkippedError(`Root folder for "${item.title}" no longer exists`);
   const rootFolder = rootFolderFromRow(folderRow);
+  await assertRootFolderMounted(rootFolder);
 
   const ctx: DownloadContext = { releaseTitle, downloadPath, category };
   const { files: siblings, leftInPlace, packDir } = collectSeasonPackFiles(anchorFile, seasonNumber, typeConfig.extensions, ctx);
@@ -3098,7 +3149,7 @@ export async function placeSeasonPackFiles(params: {
     throw new NoPackFileMatchedError(`No files in this download could be matched to a known episode of season ${seasonNumber}`);
   }
 
-  assertEnoughFreeSpaceForImport(toPlace.map((p) => p.src), rootFolder.path, rootFolder.minFreeSpaceGb);
+  await assertEnoughFreeSpaceForImport(toPlace.map((p) => p.src), rootFolder.path, rootFolder.minFreeSpaceGb);
 
   let importedCount = 0;
   let upgradedCount = 0;
@@ -3439,7 +3490,9 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
   // stale or unmapped, is checked like any other: it may be another download's file, and importing it
   // moved that download's data out from under its own torrent.
   const interactive = queueItem.grabSource === "interactive";
-  const foundOutsideReportedDownload = !manualSourceFile && !!queueItem.downloadPath && !isWithinReportedDownload(sourceFile, queueItem.downloadPath);
+  // A client that reported no path at all is the same case: the file was found by searching the whole downloads
+  // folder, and nothing says it is this download's (isWithinReportedDownload is false for a missing path).
+  const foundOutsideReportedDownload = !manualSourceFile && !isWithinReportedDownload(sourceFile, queueItem.downloadPath);
   const verify = manualSourceFile || (interactive && !foundOutsideReportedDownload) ? undefined : ctx;
   // Only an automatic import is held to the downgrade check: the admin chose the other two.
   const automatic = !manualSourceFile && !interactive;
@@ -3797,11 +3850,16 @@ function findNonJunkFile(dir: string, root: string): string | null {
  * but for a multi-file move (a whole album, a whole season pack) — sums every source file's size
  * first so the check still runs against the operation's true total rather than being silently
  * skipped just because no single file in the batch happens to exceed free space alone. */
-function assertEnoughFreeSpaceForImport(sourceFiles: string[], rootFolderPath: string, rootMinFreeSpaceGb?: number | null): void {
+async function assertEnoughFreeSpaceForImport(sourceFiles: string[], rootFolderPath: string, rootMinFreeSpaceGb?: number | null): Promise<void> {
   if (getSetting("skipFreeSpaceCheck") === "1") return;
   try {
-    const totalSize = sourceFiles.reduce((sum, f) => sum + fs.statSync(f).size, 0);
-    const stat = fs.statfsSync(rootFolderPath);
+    // Off the main thread and raced against a timeout: these are the download and library mounts, and a share that
+    // stopped answering used to freeze the whole server here. A mount that does not answer lets the import go on
+    // (the catch below), where the move itself reports what is wrong.
+    let totalSize = 0;
+    for (const f of sourceFiles) totalSize += (await statAsync(f)).size;
+    const stat = await statfsAsync(rootFolderPath);
+    if (!stat) return;
     const freeBytes = stat.bavail * stat.bsize; // see placeFile: root-reserved blocks aren't ours
     const reserve = importReserveBytes(rootMinFreeSpaceGb);
     if (freeBytes < totalSize + reserve) {
@@ -4002,6 +4060,7 @@ export async function moveItemFolder(itemId: number, newName?: string): Promise<
   const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
   if (!folderRow) throw new ImportSkippedError(`Root folder for "${item.title}" no longer exists`);
   const rootFolder = rootFolderFromRow(folderRow);
+  if (rootFolder.readOnly) throw new ImportSkippedError(`Root folder "${rootFolder.path}" is a read-only library: its folders are not moved`);
 
   const template = namingTemplateFor(item);
   const own = ownFolderDepth(template, true);
@@ -4104,6 +4163,8 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
   const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
   if (!folderRow) return;
   const rootFolder = rootFolderFromRow(folderRow);
+  // A library the admin marked read-only is never rewritten: no file in it is renamed (a rename would be a write to another tool's files).
+  if (rootFolder.readOnly) return;
   const namingEnabled = getNamingEnabled(item.type);
   const template = namingTemplateFor(item);
   // Destinations already taken by an earlier file of this item — also what a dry run checks against.

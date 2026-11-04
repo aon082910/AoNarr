@@ -86,6 +86,8 @@ function writeTracks(release: string, folder: string, names: string[]): string[]
 }
 
 async function queen(): Promise<{ artistId: number; albums: Record<string, number> }> {
+  // A library that has files recorded in it holds something: an empty root would read as a share that is not mounted.
+  fs.writeFileSync(path.join(rootFolder.path, ".library-in-use"), "");
   const artistId = Number(
     (
       await db

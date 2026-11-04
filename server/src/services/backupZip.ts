@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { runInWorkerWithTimeout } from "./workerThread.js";
 
 /**
@@ -54,6 +55,17 @@ try {
     } finally {
       db.close();
     }
+  } else if (workerData.op === "vacuum") {
+    // A second connection of its own: the app's keeps answering reads (WAL) and its writes wait for the lock
+    // (its busy timeout), where a VACUUM on the main thread stopped everything, health check included.
+    const Database = createRequire(workerData.requireFrom)("better-sqlite3");
+    const db = new Database(workerData.path, { fileMustExist: true, timeout: 120000 });
+    try {
+      db.exec("VACUUM");
+      parentPort.postMessage({ ok: true, result: null });
+    } finally {
+      db.close();
+    }
   } else {
     throw new Error("unknown backup worker operation");
   }
@@ -65,8 +77,27 @@ try {
 /** A 400 MB database zips in about 10 s; this only has to catch a worker that never answers. */
 export const BACKUP_ZIP_TIMEOUT_MS = 30 * 60 * 1000;
 
+/**
+ * What the zip library can hold: it reads each file whole into memory (a Buffer tops out at 2 GiB on the Node builds
+ * AoNarr supports) and writes the classic zip format, which cannot name a file past 4 GiB. A database nearer that
+ * limit used to die inside the worker with an out-of-memory error; it is now refused up front with a plain message.
+ * (A streaming zip64 writer would lift the limit; the database of a very large library is better backed up with
+ * the Postgres driver and pg_dump, which streams.)
+ */
+export const MAX_BUNDLE_BYTES = 1.5 * 1024 * 1024 * 1024;
+
+export function bundleTooLargeMessage(totalBytes: number): string | null {
+  if (totalBytes <= MAX_BUNDLE_BYTES) return null;
+  const gib = (n: number) => (n / 1024 ** 3).toFixed(1);
+  return `The database is ${gib(totalBytes)} GiB, over the ${gib(MAX_BUNDLE_BYTES)} GiB that a backup zip can hold. Shrink it (Housekeeping vacuum, a shorter history) or move to the Postgres driver, which backs up with pg_dump.`;
+}
+
 /** Zips `entries` (local file + the name it gets inside the zip) into `destPath`. */
-export function zipFilesInWorker(entries: { path: string; name: string }[], destPath: string): Promise<void> {
+export async function zipFilesInWorker(entries: { path: string; name: string }[], destPath: string): Promise<void> {
+  let total = 0;
+  for (const entry of entries) total += (await fs.promises.stat(entry.path).catch(() => ({ size: 0 }))).size;
+  const tooLarge = bundleTooLargeMessage(total);
+  if (tooLarge) throw new Error(tooLarge);
   return runInWorkerWithTimeout<null>(
     WORKER_SOURCE,
     { op: "zip", entries, destPath, requireFrom: import.meta.url },
@@ -92,6 +123,15 @@ export async function unzipBundleInWorker(
     dbBuffer: Buffer.from(result.db.buffer, result.db.byteOffset, result.db.byteLength),
     keyBuffer: result.key ? Buffer.from(result.key.buffer, result.key.byteOffset, result.key.byteLength) : null,
   };
+}
+
+/** Runs `VACUUM` on the SQLite file from a worker thread, over a connection of its own. A big database takes a minute
+ * or more; on the main thread that was a minute with no timer tick, no health answer and Docker calling the
+ * container unhealthy. */
+export function vacuumSqliteInWorker(filePath: string): Promise<void> {
+  return runInWorkerWithTimeout<null>(WORKER_SOURCE, { op: "vacuum", path: filePath, requireFrom: import.meta.url }, BACKUP_ZIP_TIMEOUT_MS, {
+    eval: true,
+  }).then(() => undefined);
 }
 
 /** Opens the SQLite file read-only on the worker thread, runs `PRAGMA quick_check` and requires the

@@ -187,3 +187,300 @@ describe("PATCH /api/root-folders/:id", () => {
     expect(await folderRow(id)).toEqual({ quota_percent: null, min_free_space_gb: null });
   });
 });
+
+/**
+ * Makes `dir` behave like a read-only mount for the write probe a root folder is checked with (it fails with EROFS).
+ * Everything else on the file system is untouched. The tests run as root, where a chmod would not stop a write.
+ */
+function mountReadOnly(dir: string) {
+  const realWriteFile = fs.promises.writeFile;
+  return vi.spyOn(fs.promises, "writeFile").mockImplementation((async (p: unknown, ...rest: unknown[]) => {
+    if (path.dirname(String(p)) === dir && path.basename(String(p)).startsWith(".aonarr-write-test-")) {
+      throw Object.assign(new Error("EROFS: read-only file system"), { code: "EROFS" });
+    }
+    return (realWriteFile as any)(p, ...rest);
+  }) as any);
+}
+
+describe("read-only root folders", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function readOnlyColumn(id: number): Promise<number> {
+    return Number(((await db.prepare("SELECT read_only FROM root_folders WHERE id = ?").get(id)) as { read_only: number }).read_only);
+  }
+
+  function newDir(name: string): string {
+    const dir = path.join(baseDir, name);
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  it("a root folder added without saying is writable, in the column and in the answer", async () => {
+    const dir = newDir("ro-default");
+
+    const res = await request(app).post("/api/root-folders").set("X-Api-Key", apiKey).send({ path: dir, mediaType: "movie" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.readOnly).toBe(false);
+    expect(await readOnlyColumn(res.body.id)).toBe(0);
+  });
+
+  it("a root folder added as read-only is stored as such and listed as such", async () => {
+    const dir = newDir("ro-added");
+
+    const res = await request(app).post("/api/root-folders").set("X-Api-Key", apiKey).send({ path: dir, mediaType: "movie", readOnly: true });
+
+    expect(res.status).toBe(201);
+    expect(res.body.readOnly).toBe(true);
+    expect(await readOnlyColumn(res.body.id)).toBe(1);
+    const list = await request(app).get("/api/root-folders").set("X-Api-Key", apiKey);
+    expect(list.body.find((f: { id: number }) => f.id === res.body.id)).toMatchObject({ path: dir, readOnly: true });
+  });
+
+  it("only a folder AoNarr cannot write into needs to be added as read-only", async () => {
+    const dir = newDir("ro-unwritable");
+    mountReadOnly(dir);
+
+    const refused = await request(app).post("/api/root-folders").set("X-Api-Key", apiKey).send({ path: dir, mediaType: "movie" });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toMatch(/not writable/);
+
+    const accepted = await request(app).post("/api/root-folders").set("X-Api-Key", apiKey).send({ path: dir, mediaType: "movie", readOnly: true });
+    expect(accepted.status).toBe(201);
+    expect(accepted.body.readOnly).toBe(true);
+  });
+
+  it("PATCH switches a library to read-only without testing the folder, and back once the folder is writable", async () => {
+    const { id, dir } = await createRootFolder("ro-patch-roundtrip", "movie");
+
+    const toReadOnly = await request(app).patch(`/api/root-folders/${id}`).set("X-Api-Key", apiKey).send({ readOnly: true });
+    expect(toReadOnly.status).toBe(200);
+    expect(toReadOnly.body.readOnly).toBe(true);
+    expect(await readOnlyColumn(id)).toBe(1);
+
+    const back = await request(app).patch(`/api/root-folders/${id}`).set("X-Api-Key", apiKey).send({ readOnly: false });
+    expect(back.status).toBe(200);
+    expect(back.body.readOnly).toBe(false);
+    expect(await readOnlyColumn(id)).toBe(0);
+    expect(fs.readdirSync(dir)).toEqual([]); // the writable test left nothing behind
+  });
+
+  it("PATCH switches a folder that cannot be written into to read-only, but refuses to switch it back", async () => {
+    const { id, dir } = await createRootFolder("ro-patch-unwritable", "movie");
+    mountReadOnly(dir);
+
+    const toReadOnly = await request(app).patch(`/api/root-folders/${id}`).set("X-Api-Key", apiKey).send({ readOnly: true });
+    expect(toReadOnly.status).toBe(200);
+
+    const back = await request(app).patch(`/api/root-folders/${id}`).set("X-Api-Key", apiKey).send({ readOnly: false, name: "Renamed" });
+    expect(back.status).toBe(400);
+    expect(back.body.error).toMatch(/is not writable by AoNarr \(EROFS\)/);
+    expect(await readOnlyColumn(id)).toBe(1); // unchanged, and so is everything else in that request
+    expect(((await db.prepare("SELECT name FROM root_folders WHERE id = ?").get(id)) as { name: string | null }).name).toBeNull();
+  });
+
+  it("PATCH refuses to make a library writable when its folder is gone", async () => {
+    const { id, dir } = await createRootFolder("ro-patch-gone", "movie");
+    await db.prepare("UPDATE root_folders SET read_only = 1 WHERE id = ?").run(id);
+    fs.rmSync(dir, { recursive: true, force: true });
+
+    const res = await request(app).patch(`/api/root-folders/${id}`).set("X-Api-Key", apiKey).send({ readOnly: false });
+
+    expect(res.status).toBe(400);
+    expect(await readOnlyColumn(id)).toBe(1);
+  });
+
+  it.each([["yes"], [1], [0], ["true"], [null]])("PATCH rejects readOnly given as %j", async (value) => {
+    const { id } = await createRootFolder(`ro-patch-invalid-${String(value)}`, "movie");
+
+    const res = await request(app).patch(`/api/root-folders/${id}`).set("X-Api-Key", apiKey).send({ readOnly: value });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/readOnly must be true or false/);
+    expect(await readOnlyColumn(id)).toBe(0);
+  });
+
+  it("PATCH of another field leaves a read-only library read-only", async () => {
+    const { id } = await createRootFolder("ro-patch-other", "movie");
+    await db.prepare("UPDATE root_folders SET read_only = 1 WHERE id = ?").run(id);
+
+    const res = await request(app).patch(`/api/root-folders/${id}`).set("X-Api-Key", apiKey).send({ name: "Archive", quotaPercent: 50 });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ name: "Archive", readOnly: true });
+    expect(await readOnlyColumn(id)).toBe(1);
+  });
+
+  it("PATCH answers 404 for a root folder that does not exist, whichever way readOnly is set", async () => {
+    for (const readOnly of [true, false]) {
+      const res = await request(app).patch("/api/root-folders/987654").set("X-Api-Key", apiKey).send({ readOnly });
+      expect(res.status, String(readOnly)).toBe(404);
+    }
+  });
+
+  it.each([["true"], ["false"], ["yes"], [1], [0], [null]])("POST rejects readOnly given as %j, and adds nothing", async (value) => {
+    const dir = newDir(`ro-post-invalid-${String(value)}`);
+
+    const res = await request(app).post("/api/root-folders").set("X-Api-Key", apiKey).send({ path: dir, mediaType: "movie", readOnly: value });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/readOnly must be true or false/);
+    expect(await db.prepare("SELECT id FROM root_folders WHERE path = ?").get(dir)).toBeUndefined();
+  });
+
+  it("POST judges the type of readOnly before the folder, and still accepts an explicit false", async () => {
+    const missing = await request(app)
+      .post("/api/root-folders")
+      .set("X-Api-Key", apiKey)
+      .send({ path: path.join(baseDir, "ro-post-never-created"), mediaType: "movie", readOnly: "true" });
+    expect(missing.status).toBe(400);
+    expect(missing.body.error).toMatch(/readOnly must be true or false/);
+
+    const dir = newDir("ro-post-explicit-false");
+    const explicit = await request(app).post("/api/root-folders").set("X-Api-Key", apiKey).send({ path: dir, mediaType: "movie", readOnly: false });
+    expect(explicit.status).toBe(201);
+    expect(explicit.body.readOnly).toBe(false);
+    expect(await readOnlyColumn(explicit.body.id)).toBe(0);
+  });
+});
+
+describe("POST /api/root-folders/:id/move-to/:destinationId and read-only libraries", () => {
+  /** A movie with a file in `source`, to see whether a move touches it. */
+  async function movieWithFileIn(source: { id: number; dir: string }, title: string): Promise<{ itemId: number; file: string }> {
+    const file = path.join(source.dir, `${title} (2020)`, `${title} (2020).mkv`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "video");
+    return { itemId: await insertItem("movie", title, source.id, file), file };
+  }
+
+  async function auditedMoves(): Promise<number> {
+    return Number(((await db.prepare("SELECT COUNT(*) AS c FROM audit_log WHERE event_type = 'root_folder_moved'").get()) as { c: number }).c);
+  }
+
+  async function expectNothingMoved(itemId: number, source: { id: number }, file: string, destination: { dir: string }, movesBefore: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 100)); // a move would have started in the background by now
+    expect(Number((await itemRow(itemId)).root_folder_id)).toBe(source.id);
+    expect((await itemRow(itemId)).path).toBe(file);
+    expect(fs.existsSync(file)).toBe(true);
+    expect(fs.readdirSync(destination.dir)).toEqual([]);
+    expect(await auditedMoves()).toBe(movesBefore);
+  }
+
+  it("refuses to move into a read-only library, and moves nothing", async () => {
+    const source = await createRootFolder("ro-move-src-a", "movie");
+    const destination = await createRootFolder("ro-move-dst-a", "movie");
+    await db.prepare("UPDATE root_folders SET read_only = 1 WHERE id = ?").run(destination.id);
+    const { itemId, file } = await movieWithFileIn(source, "Stays Put");
+    const movesBefore = await auditedMoves();
+
+    const res = await request(app).post(`/api/root-folders/${source.id}/move-to/${destination.id}`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/destination is a read-only library/);
+    await expectNothingMoved(itemId, source, file, destination, movesBefore);
+  });
+
+  it("refuses to move out of a read-only library, and moves nothing", async () => {
+    const source = await createRootFolder("ro-move-src-b", "movie");
+    const destination = await createRootFolder("ro-move-dst-b", "movie");
+    await db.prepare("UPDATE root_folders SET read_only = 1 WHERE id = ?").run(source.id);
+    const { itemId, file } = await movieWithFileIn(source, "Cannot Leave");
+    const movesBefore = await auditedMoves();
+
+    const res = await request(app).post(`/api/root-folders/${source.id}/move-to/${destination.id}`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/source is a read-only library/);
+    await expectNothingMoved(itemId, source, file, destination, movesBefore);
+  });
+
+  it("refuses even when the source has no items to move", async () => {
+    const source = await createRootFolder("ro-move-src-c", "movie");
+    const destination = await createRootFolder("ro-move-dst-c", "movie");
+    await db.prepare("UPDATE root_folders SET read_only = 1 WHERE id = ?").run(destination.id);
+
+    const res = await request(app).post(`/api/root-folders/${source.id}/move-to/${destination.id}`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(400);
+  });
+
+  it("says the destination is read-only when both are", async () => {
+    const source = await createRootFolder("ro-move-src-d", "movie");
+    const destination = await createRootFolder("ro-move-dst-d", "movie");
+    await db.prepare("UPDATE root_folders SET read_only = 1 WHERE id IN (?, ?)").run(source.id, destination.id);
+
+    const res = await request(app).post(`/api/root-folders/${source.id}/move-to/${destination.id}`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/destination is a read-only library/);
+  });
+
+  it("still moves between two writable libraries after a library has been switched back to writable", async () => {
+    const source = await createRootFolder("ro-move-src-e", "movie");
+    const destination = await createRootFolder("ro-move-dst-e", "movie");
+    await db.prepare("UPDATE root_folders SET read_only = 1 WHERE id = ?").run(destination.id);
+    await request(app).patch(`/api/root-folders/${destination.id}`).set("X-Api-Key", apiKey).send({ readOnly: false });
+    const { itemId } = await movieWithFileIn(source, "Moves Now");
+
+    const res = await request(app).post(`/api/root-folders/${source.id}/move-to/${destination.id}`).set("X-Api-Key", apiKey);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ started: true, itemCount: 1 });
+    await waitForMoveAudit(source.dir);
+    expect(Number((await itemRow(itemId)).root_folder_id)).toBe(destination.id);
+  });
+});
+
+describe("rootFolderFromRow readOnly", () => {
+  it.each([
+    [1, true],
+    ["1", true],
+    [0, false],
+    ["0", false],
+    [null, false],
+    [undefined, false],
+  ])("maps read_only %j to %s", async (value, expected) => {
+    const { rootFolderFromRow } = await import("../src/db/mappers.js");
+
+    expect(rootFolderFromRow({ id: 1, path: "/media", media_type: "movie", read_only: value }).readOnly).toBe(expected);
+  });
+});
+
+describe("autoSelectRootFolderId and read-only libraries", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function addRoot(name: string, mediaType: string, readOnly: boolean): Promise<{ id: number; dir: string }> {
+    const dir = path.join(baseDir, name);
+    fs.mkdirSync(dir, { recursive: true });
+    const id = Number((await db.prepare("INSERT INTO root_folders (path, media_type, read_only) VALUES (?, ?, ?)").run(dir, mediaType, readOnly ? 1 : 0)).lastInsertRowid);
+    return { id, dir };
+  }
+
+  it("never picks a read-only library for an add, however much room it has", async () => {
+    const { autoSelectRootFolderId } = await import("../src/services/rootFolderSelect.js");
+    const roomy = await addRoot("auto-ro-roomy", "auto-ro-type", true);
+    const small = await addRoot("auto-ro-small", "auto-ro-type", false);
+    const big = await addRoot("auto-ro-big", "auto-ro-type", false);
+    const statfs = vi.spyOn(fs.promises, "statfs").mockImplementation((async (p: string) =>
+      ({ [roomy.dir]: { bavail: 99, blocks: 100, bsize: 1000 }, [small.dir]: { bavail: 10, blocks: 100, bsize: 1000 }, [big.dir]: { bavail: 50, blocks: 100, bsize: 1000 } })[p]) as any);
+
+    expect(await autoSelectRootFolderId("auto-ro-type")).toBe(big.id);
+    expect(statfs.mock.calls.map((c) => c[0])).not.toContain(roomy.dir);
+  });
+
+  it("returns the only writable library without comparing space, and null when every library of the type is read-only", async () => {
+    const { autoSelectRootFolderId } = await import("../src/services/rootFolderSelect.js");
+    await addRoot("auto-ro-first", "auto-ro-mixed", true);
+    const writable = await addRoot("auto-ro-second", "auto-ro-mixed", false);
+    const statfs = vi.spyOn(fs.promises, "statfs");
+    expect(await autoSelectRootFolderId("auto-ro-mixed")).toBe(writable.id);
+    expect(statfs).not.toHaveBeenCalled();
+
+    await addRoot("auto-ro-only", "auto-ro-all-read-only", true);
+    expect(await autoSelectRootFolderId("auto-ro-all-read-only")).toBeNull();
+  });
+});

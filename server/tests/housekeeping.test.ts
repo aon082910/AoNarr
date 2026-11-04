@@ -1,6 +1,20 @@
 import fs from "node:fs";
-import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { setupTestDb } from "./helpers/testDb.js";
+
+// The VACUUM runs through the real worker unless a test swaps in its own (to hold it, or make it fail); every call is recorded.
+let vacuumReplacement: ((filePath: string) => Promise<void>) | null = null;
+const vacuumCalls: string[] = [];
+vi.mock("../src/services/backupZip.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/backupZip.js")>();
+  return {
+    ...actual,
+    vacuumSqliteInWorker: (filePath: string) => {
+      vacuumCalls.push(filePath);
+      return vacuumReplacement ? vacuumReplacement(filePath) : actual.vacuumSqliteInWorker(filePath);
+    },
+  };
+});
 
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let runHousekeeping: (typeof import("../src/services/housekeeping.js"))["runHousekeeping"];
@@ -224,5 +238,206 @@ describe("runHousekeeping keeps what other screens still read (review F1, F13)",
     const rows = (await db.prepare("SELECT job_key, started_at FROM job_runs ORDER BY started_at").all()) as any[];
     expect(rows.map((r) => r.job_key)).toEqual(["monthly", "weekly"]);
     expect(Date.parse(rows[0].started_at)).toBeLessThan(Date.now() - 50 * 86_400_000); // the 60 day old one, not the 90
+  });
+});
+
+describe("runHousekeeping leaves the files an automatic swap-back set aside for a week", () => {
+  it("removes the failed restore's database and key once a week old, and keeps the ones set aside more recently", async () => {
+    const failedDb = `${config.dbPath}.failed-restore`;
+    const failedKey = `${ENCRYPTION_KEY_PATH}.failed-restore`;
+    fs.mkdirSync(config.configDir, { recursive: true });
+    fs.writeFileSync(failedDb, "x");
+    fs.writeFileSync(failedKey, "x");
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(failedDb, old, old);
+    try {
+      const result = await runHousekeeping();
+
+      expect(result.leftoversRemoved).toEqual([failedDb]);
+      expect(fs.existsSync(failedDb)).toBe(false);
+      expect(fs.existsSync(failedKey)).toBe(true);
+
+      fs.utimesSync(failedKey, old, old);
+      expect((await runHousekeeping()).leftoversRemoved).toEqual([failedKey]);
+      expect(fs.existsSync(failedKey)).toBe(false);
+    } finally {
+      fs.rmSync(failedDb, { force: true });
+      fs.rmSync(failedKey, { force: true });
+    }
+  });
+});
+
+describe.skipIf(process.env.AONARR_DATABASE_DRIVER === "postgres")("runHousekeeping vacuums on a worker thread", () => {
+  let sqliteDb: (typeof import("../src/db/client.js"))["db"];
+  let log: (typeof import("../src/services/logger.js"))["log"];
+  let getSetting: (key: string) => string | null;
+
+  beforeAll(async () => {
+    ({ db: sqliteDb } = await import("../src/db/client.js"));
+    ({ log } = await import("../src/services/logger.js"));
+    ({ getSetting } = await import("../src/services/settingsStore.js"));
+  });
+
+  beforeEach(async () => {
+    vacuumReplacement = null;
+    vacuumCalls.length = 0;
+    setSetting("lastVacuumAt", "");
+    // Fill the file and empty it again, so a large part of it is free pages (and VACUUM is worth running).
+    await db.transaction(async () => {
+      const insert = db.prepare("INSERT INTO audit_log (username, event_type, detail, created_at) VALUES ('a', 'x', ?, ?)");
+      for (let i = 0; i < 4000; i++) await insert.run("d".repeat(900), new Date().toISOString());
+    });
+    await db.prepare("DELETE FROM audit_log").run();
+  });
+
+  afterEach(() => {
+    vacuumReplacement = null;
+    vi.restoreAllMocks();
+  });
+
+  it("hands the live database file to the worker, and records the vacuum once it has finished", async () => {
+    vacuumReplacement = async () => {};
+
+    const result = await runHousekeeping();
+
+    expect(vacuumCalls).toEqual([config.dbPath]);
+    expect(result).toMatchObject({ vacuumed: true, skippedVacuum: null });
+    expect(getSetting("lastVacuumAt")).toBeTruthy();
+  });
+
+  it("does not run VACUUM on the application's own connection, and the real worker still gives the space back", async () => {
+    const exec = vi.spyOn(sqliteDb, "exec");
+    const pagesBefore = Number(sqliteDb.pragma("page_count", { simple: true }));
+
+    const result = await runHousekeeping();
+
+    expect(result.vacuumed).toBe(true);
+    expect(exec.mock.calls.map((call) => String(call[0]))).not.toContain("VACUUM");
+    expect(Number(sqliteDb.pragma("freelist_count", { simple: true }))).toBe(0);
+    expect(Number(sqliteDb.pragma("page_count", { simple: true }))).toBeLessThan(pagesBefore);
+  });
+
+  it("waits for the worker before it answers, and records nothing until the worker is done", async () => {
+    let release!: () => void;
+    vacuumReplacement = () => new Promise<void>((resolve) => (release = resolve));
+
+    let settled = false;
+    const running = runHousekeeping().then((result) => {
+      settled = true;
+      return result;
+    });
+    await vi.waitFor(() => expect(vacuumCalls).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(settled).toBe(false);
+    expect(getSetting("lastVacuumAt")).toBeFalsy();
+
+    release();
+    const result = await running;
+
+    expect(result.vacuumed).toBe(true);
+    expect(getSetting("lastVacuumAt")).toBeTruthy();
+  });
+
+  it("says that writes wait and reads carry on, not that the application pauses, and says how much it gave back", async () => {
+    vacuumReplacement = async () => {};
+    const info = vi.spyOn(log, "info");
+
+    await runHousekeeping();
+
+    const lines = info.mock.calls.map((args) => args.map(String).join(" "));
+    const starting = lines.find((line) => line.includes("VACUUM starting"));
+    expect(starting).toMatch(/\[housekeeping\] VACUUM starting: writes to the database wait while it rewrites the \d+ MB file; reads and the health check carry on/);
+    expect(starting).not.toContain("pauses");
+    expect(lines.some((line) => /\[housekeeping\] VACUUM gave back about \d+ MB in \d+s/.test(line))).toBe(true);
+  });
+
+  /** Resolves true when `promise` has settled by the time `ms` have passed. */
+  const settlesWithin = async (promise: Promise<unknown>, ms: number): Promise<boolean> => {
+    let settled = false;
+    promise.then(
+      () => (settled = true),
+      () => (settled = true)
+    );
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    return settled;
+  };
+
+  const auditCount = async () => Number(((await db.prepare("SELECT COUNT(*) AS c FROM audit_log").get()) as { c: number }).c);
+  const insertAudit = () => db.prepare("INSERT INTO audit_log (username, event_type, detail, created_at) VALUES ('w', 'x', 'written during the vacuum', ?)").run(new Date().toISOString());
+
+  it("holds a write issued while the worker is vacuuming until the worker has finished, and lets reads through", async () => {
+    const events: string[] = [];
+    let finishWorker!: () => void;
+    vacuumReplacement = () =>
+      new Promise<void>((resolve) => {
+        finishWorker = () => {
+          events.push("worker finished");
+          resolve();
+        };
+      });
+    const before = await auditCount();
+
+    const running = runHousekeeping();
+    await vi.waitFor(() => expect(vacuumCalls).toHaveLength(1));
+    const write = insertAudit().then(() => events.push("write done"));
+
+    expect(await settlesWithin(write, 80)).toBe(false);
+    expect(await auditCount()).toBe(before); // a read answers meanwhile and the write has not happened
+
+    finishWorker();
+    await Promise.all([running, write]);
+
+    expect(events).toEqual(["worker finished", "write done"]);
+    expect(await auditCount()).toBe(before + 1);
+  });
+
+  it("releases the writes again when the worker fails, and a write after that is not held", async () => {
+    let failWorker!: () => void;
+    vacuumReplacement = () =>
+      new Promise<void>((_resolve, reject) => {
+        failWorker = () => reject(new Error("database is locked"));
+      });
+    const before = await auditCount();
+
+    const running = runHousekeeping();
+    await vi.waitFor(() => expect(vacuumCalls).toHaveLength(1));
+    const write = insertAudit();
+    expect(await settlesWithin(write, 60)).toBe(false);
+
+    failWorker();
+    const result = await running;
+    await write;
+
+    expect(result).toMatchObject({ vacuumed: false, skippedVacuum: "database is locked" });
+    expect(await auditCount()).toBe(before + 1);
+    // the pause is over: a new write goes straight through
+    expect(await settlesWithin(insertAudit(), 50)).toBe(true);
+  });
+
+  it("releases the writes when the worker rejects at once, before any write was issued", async () => {
+    vacuumReplacement = () => Promise.reject(new Error("no space left on device"));
+
+    const result = await runHousekeeping();
+
+    expect(result.skippedVacuum).toBe("no space left on device");
+    expect(await settlesWithin(insertAudit(), 50)).toBe(true);
+  });
+
+  it("reports a worker that fails as the reason it was skipped, logs it, keeps the schedule so tomorrow tries again", async () => {
+    vacuumReplacement = async () => {
+      throw new Error("database is locked");
+    };
+    const warn = vi.spyOn(log, "warn");
+
+    const result = await runHousekeeping();
+
+    expect(result).toMatchObject({ vacuumed: false, skippedVacuum: "database is locked" });
+    expect(getSetting("lastVacuumAt")).toBeFalsy();
+    expect(warn.mock.calls.some((args) => args.map(String).join(" ").includes("[housekeeping] VACUUM failed, will retry on the next run: database is locked"))).toBe(true);
+
+    vacuumReplacement = async () => {};
+    const next = await runHousekeeping();
+    expect(vacuumCalls).toHaveLength(2);
+    expect(next.vacuumed).toBe(true);
   });
 });

@@ -51,4 +51,11 @@ export const config = {
   imageTag: process.env.AONARR_IMAGE_TAG ?? null,
   // The git commit the image was built from (Dockerfile --build-arg GIT_COMMIT), shown on System, Status.
   commit: process.env.AONARR_COMMIT || null,
+  // The address the Node server listens on. Unset = every interface (what the image needs: nginx reaches it from
+  // 127.0.0.1, but a plain `docker run -p` of the Node port reaches it from the bridge). "127.0.0.1" with the
+  // bundled nginx in front keeps the Node port off the network.
+  bindAddress: process.env.AONARR_BIND_ADDRESS?.trim() || undefined,
+  // Two AoNarr processes on one /config would run every job twice against one SQLite file; the second one to start
+  // refuses (services/instanceLock.ts). "1" turns that check off.
+  allowMultipleInstances: process.env.AONARR_ALLOW_MULTIPLE_INSTANCES === "1",
 };

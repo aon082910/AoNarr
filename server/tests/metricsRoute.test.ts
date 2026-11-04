@@ -124,3 +124,31 @@ describe("GET /api/metrics", () => {
     }
   });
 });
+
+describe("GET /api/metrics — aonarr_uncaught_errors_total", () => {
+  afterEach(async () => {
+    (await import("../src/services/uncaughtErrors.js")).__resetUncaughtErrorsForTests();
+  });
+
+  it("is exposed as a counter that reads 0 while nothing uncaught has happened", async () => {
+    (await import("../src/services/uncaughtErrors.js")).__resetUncaughtErrorsForTests();
+
+    const body = await scrape();
+
+    expect(body).toContain("# TYPE aonarr_uncaught_errors_total counter");
+    expect(body).toMatch(/# HELP aonarr_uncaught_errors_total .+/);
+    expect(sampleValue(body, "aonarr_uncaught_errors_total")).toBe(0);
+  });
+
+  it("counts every recorded error since the process started, including ones from hours ago", async () => {
+    const uncaught = await import("../src/services/uncaughtErrors.js");
+    uncaught.__resetUncaughtErrorsForTests();
+    uncaught.recordUncaughtError("exception", new Error("old"), Date.now() - 5 * 60 * 60 * 1000);
+    uncaught.recordUncaughtError("rejection", new Error("new"));
+
+    expect(sampleValue(await scrape(), "aonarr_uncaught_errors_total")).toBe(2);
+
+    uncaught.recordUncaughtError("exception", new Error("another"));
+    expect(sampleValue(await scrape(), "aonarr_uncaught_errors_total")).toBe(3);
+  });
+});
