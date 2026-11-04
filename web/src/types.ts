@@ -376,6 +376,8 @@ export interface QueueItem {
   mediaItemId: number;
   episodeId: number | null;
   subItemId: number | null;
+  /** The albums a queued discography is for (it has no album of its own). */
+  albums?: { id: number; title: string }[];
   seasonNumber: number | null;
   title: string;
   status: string;
@@ -537,6 +539,8 @@ export interface SearchResult {
   releaseType?: "single" | "season-pack" | "multi-episode" | null;
   /** For a season pack: how many known episodes of its season it covers. */
   episodesCovered?: number | null;
+  /** For an artist's discography: how many of the artist's albums it covers, and how many of those are missing. */
+  discography?: { albumsCovered: number; albumsMissing: number } | null;
   /** The quality's place on the ladder; -1 when it is not on it. */
   qualityRank?: number;
   flags?: string[];

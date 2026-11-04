@@ -258,6 +258,15 @@ CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
 CREATE INDEX IF NOT EXISTS idx_queue_episode_id ON queue(episode_id);
 CREATE INDEX IF NOT EXISTS idx_queue_sub_item_id ON queue(sub_item_id);
 
+-- The albums one queued discography is for (services/discography.ts). Such a row has no sub_item_id of its
+-- own; every other queue row has no entries here. Deleting the queue row or an album removes its link.
+CREATE TABLE IF NOT EXISTS queue_targets (
+  queue_id INTEGER NOT NULL REFERENCES queue(id) ON DELETE CASCADE,
+  sub_item_id INTEGER NOT NULL REFERENCES sub_items(id) ON DELETE CASCADE,
+  PRIMARY KEY (queue_id, sub_item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_queue_targets_sub_item_id ON queue_targets(sub_item_id);
+
 CREATE TABLE IF NOT EXISTS history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,

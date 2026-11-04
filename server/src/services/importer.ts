@@ -12,7 +12,7 @@ import { notifyImported, notifyManualInteractionRequired, notifyRenamed, notifyU
 import { writeEpisodeNfoSidecar, writeNfoSidecar, writeTvShowNfoIfMissing } from "./metadataExport.js";
 import { writeAudioTags } from "./audioTagWriter.js";
 import { notifyQueueChanged } from "./realtime.js";
-import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
+import { isDiscographyTitle, parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityKey, identityModeFor, releaseIdentifiesTarget, type IdentityTarget } from "./releaseIdentity.js";
 import { identityTargetFor } from "./releaseAliases.js";
 import type { ParsedRelease, SceneIndex } from "./releaseParser.js";
@@ -52,6 +52,10 @@ import { convertComicImagesBestEffort } from "./comicImageConvert.js";
 import { recycleFile } from "./recycleBin.js";
 import { MAX_NAME_BYTES, truncateToBytes } from "./pathNames.js";
 import { finishBackgroundJob, incrementBackgroundJobDone, isBackgroundJobRunning, startBackgroundJob } from "./backgroundJobs.js";
+import { discographyAlbumsOf, queueTargetIds } from "./discography.js";
+import { matchAlbumFolders } from "./discographyMatch.js";
+import { addToBlocklist } from "./blocklist.js";
+import { wakeLeaf } from "./searchBackoff.js";
 import type { MediaType } from "../types/index.js";
 
 // Shared across every "single"/"episodic" video library (Movies, TV Shows, Anime) so a just-moved
@@ -2161,8 +2165,11 @@ export async function placeAlbumFiles(params: {
   batchClaims?: Set<string>;
   /** See placeFile: an automatic import of an album in a less preferred format (mp3 over flac) is refused. */
   refuseDowngrade?: boolean;
+  /** The anchor's folder is known to hold this album and no other download's files (a folder of a discography the
+   * caller matched to the album): it is not judged by its name. */
+  ownFolder?: boolean;
 }): Promise<{ destFolder: string; fileCount: number; leftInPlace: number; anchorDest: string | null; sourceFolder: string | null }> {
-  const { itemId, subItemId, anchorFile, quality, releaseTitle, downloadPath, category, onlyAnchor = false, batchClaims, refuseDowngrade } = params;
+  const { itemId, subItemId, anchorFile, quality, releaseTitle, downloadPath, category, onlyAnchor = false, batchClaims, refuseDowngrade, ownFolder = false } = params;
 
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
@@ -2196,10 +2203,11 @@ export async function placeAlbumFiles(params: {
   // Loose tracks there can't be told apart from other albums' "01 - x.flac" by number alone. A
   // hand-picked file's disc folder is in its album's own folder, though, whatever that folder's
   // name carries besides the artist and album ("AM (2013) [2CD]").
-  const sharedSourceDir =
-    onlyAnchor && isDiscFolderFile(anchorFile)
-      ? path.resolve(albumSourceDir) === path.resolve(config.downloadsDir)
-      : !isOwnReleaseFolder(albumSourceDir, { releaseTitle: folderIdentity, downloadPath, category });
+  const sharedSourceDir = ownFolder
+    ? false
+    : onlyAnchor && isDiscFolderFile(anchorFile)
+    ? path.resolve(albumSourceDir) === path.resolve(config.downloadsDir)
+    : !isOwnReleaseFolder(albumSourceDir, { releaseTitle: folderIdentity, downloadPath, category });
   // Music's individual track filenames are always kept as-downloaded (see the per-file loop
   // below) — there's no separate "filename" to bypass independently the way single/episodic have,
   // so for this shape the album FOLDER is the naming toggle's equivalent of a filename: the
@@ -2591,6 +2599,172 @@ export async function placeAlbumFiles(params: {
     await notifyManualInteractionRequired(item.title, reason);
   }
   return { destFolder, fileCount: movedCount, leftInPlace, anchorDest, sourceFolder: sharedSourceDir ? null : albumSourceDir };
+}
+
+/** A disc folder of a multi-disc album ("CD1", "Disc 2"): not an album of its own. */
+const DISC_FOLDER = /^(cd|disc|disk)\s*[-_]?\s*\d+$/i;
+
+/** The folder an audio file's album is in: its own, or the folder above when it is a disc folder. */
+function albumFolderOfFile(file: string, releaseDir: string): string {
+  let dir = path.resolve(path.dirname(file));
+  const root = path.resolve(releaseDir);
+  while (dir !== root && DISC_FOLDER.test(path.basename(dir))) dir = path.dirname(dir);
+  return dir;
+}
+
+/**
+ * The folder that is the whole discography download: the one the client reported, or, with none reported, the
+ * nearest folder above the file that is named for the release. Null when neither can be told (the albums of a
+ * folder shared with other downloads cannot be told apart from theirs).
+ */
+function discographyRootOf(sourceFile: string, downloadPath: string | null | undefined, releaseTitle: string, category: string | null | undefined): string | null {
+  const file = path.resolve(sourceFile);
+  if (downloadPath) {
+    const reported = path.resolve(downloadPath);
+    if (file.startsWith(reported + path.sep) && isDirectory(reported)) return reported;
+    return null;
+  }
+  // No folder reported: the folders above the file, up to the downloads directory. The one named a discography is
+  // the release's; failing that the outermost one named for the release (an album folder is named for the artist too).
+  const downloads = path.resolve(config.downloadsDir);
+  const ancestors: string[] = [];
+  for (let dir = path.dirname(file); dir !== downloads && dir.startsWith(downloads + path.sep); dir = path.dirname(dir)) ancestors.push(dir);
+  const named = ancestors.find((dir) => isDiscographyTitle(path.basename(dir)));
+  if (named) return named;
+  const own = ancestors.filter((dir) => isOwnReleaseFolder(dir, { releaseTitle, category }) && !isSharedDownloadFolder(dir, releaseTitle));
+  return own.length > 0 ? own[own.length - 1] : null;
+}
+
+export interface DiscographyImport {
+  imported: { subItemId: number; title: string; destFolder: string; fileCount: number }[];
+  /** Albums the grab was for that no folder of the release held. */
+  notFound: number[];
+  /** Albums the grab was for whose folder was found and could not be placed, and why. */
+  failed: { subItemId: number; title: string; reason: string }[];
+  /** Albums the grab was for that have their files by now, and were left as they are. */
+  alreadyHad: number[];
+  /** Folders and albums left unplaced, and why. */
+  skipped: { folder: string; reason: string }[];
+  /** Whether audio of the download is still where it was (a folder not imported, a file left behind). */
+  leftBehind: boolean;
+}
+
+/**
+ * Imports a downloaded discography: each of its album folders is told which album it holds
+ * (discographyMatch.ts) and an album the grab was for is placed as any album download is. Folders of albums
+ * that were not wanted (already in the library, or not monitored) stay in the download. With `onlyFolder` just
+ * that album folder is imported (a manual import of one file the admin picked).
+ */
+export async function placeDiscographyFiles(params: {
+  itemId: number;
+  targetSubItemIds: number[];
+  releaseDir: string;
+  quality: string | null;
+  releaseTitle?: string;
+  category?: string | null;
+  refuseDowngrade?: boolean;
+  onlyFolder?: string;
+  /** The admin picked the file, so the folder it is in is the download's own whatever it is called (the downloads
+   * folder itself and the client's category folder never are). */
+  trustFolder?: boolean;
+}): Promise<DiscographyImport> {
+  const { itemId, targetSubItemIds, releaseDir, quality, releaseTitle, category, refuseDowngrade, onlyFolder, trustFolder } = params;
+  const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
+  if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
+  const item = mediaItemFromRow(mediaRow);
+  const extensions = getMediaTypeConfig(item.type).extensions;
+  const ctx: DownloadContext = { releaseTitle, downloadPath: releaseDir, category };
+  // Album folders are taken from a folder that is this download's alone; in a folder shared with other downloads
+  // another album's tracks would be filed as this one's. A torrent's folder is often not named like its release, so
+  // the admin's own choice of a file in it settles that.
+  const categoryFolder = category?.trim().toLowerCase().split(/[\\/]/).filter(Boolean).pop() || null;
+  const sharedByName = trustFolder
+    ? path.resolve(releaseDir) === path.resolve(config.downloadsDir) || (!!categoryFolder && path.basename(releaseDir).toLowerCase() === categoryFolder)
+    : !isOwnReleaseFolder(releaseDir, ctx);
+  if (sharedByName) {
+    throw new ImportSkippedError(`"${releaseDir}" is shared with other downloads, so the albums of "${releaseTitle ?? "the discography"}" cannot be told apart in it — left for a manual import`);
+  }
+
+  const files = withoutSamples(walk(releaseDir, extensions, 6), releaseDir, releaseTitle);
+  const byFolder = new Map<string, string[]>();
+  for (const file of files) {
+    const folder = albumFolderOfFile(file, releaseDir);
+    byFolder.set(folder, [...(byFolder.get(folder) ?? []), file]);
+  }
+  const folders = Array.from(byFolder, ([folder, list]) => ({ path: folder, name: path.basename(folder), files: list.length }));
+  const albumRows = await discographyAlbumsOf(itemId);
+  // An album that gained its files while the discography downloaded is no longer wanted from it (unless the admin
+  // picked its folder): replacing it is a decision for the admin.
+  const albums = albumRows.map((album) => ({
+    id: album.id,
+    title: album.title,
+    releaseDate: album.releaseDate,
+    target: targetSubItemIds.includes(album.id) && (!album.hasFile || !!onlyFolder),
+  }));
+  const hasFileNow = new Set(albumRows.filter((album) => album.hasFile).map((album) => album.id));
+  const matches = matchAlbumFolders(folders, item.title, albums);
+
+  const result: DiscographyImport = {
+    imported: [],
+    notFound: [],
+    failed: [],
+    alreadyHad: onlyFolder ? [] : targetSubItemIds.filter((id) => hasFileNow.has(id)),
+    skipped: [],
+    leftBehind: false,
+  };
+  const placed = new Set<number>();
+  for (const folder of folders) {
+    const match = matches.get(folder.path)!;
+    if (onlyFolder && path.resolve(folder.path) !== path.resolve(onlyFolder)) {
+      result.leftBehind = true;
+      continue;
+    }
+    if (match.kind !== "album") {
+      result.skipped.push({ folder: folder.name, reason: match.reason });
+      result.leftBehind = true;
+      continue;
+    }
+    // An album that was not wanted stays in the download: it may be in the library already, or deliberately not monitored.
+    if (!match.target) {
+      result.leftBehind = true;
+      continue;
+    }
+    const album = albums.find((a) => a.id === match.albumId)!;
+    const anchorFile = [...byFolder.get(folder.path)!].sort()[0];
+    try {
+      const placedAlbum = await placeAlbumFiles({
+        itemId,
+        subItemId: album.id,
+        anchorFile,
+        quality,
+        releaseTitle,
+        downloadPath: releaseDir,
+        category,
+        refuseDowngrade,
+        // The folder was told to hold this album and only it: it is the album's own, whatever it is called.
+        ownFolder: true,
+      });
+      result.imported.push({ subItemId: album.id, title: album.title, destFolder: placedAlbum.destFolder, fileCount: placedAlbum.fileCount });
+      placed.add(album.id);
+      if (placedAlbum.leftInPlace > 0) result.leftBehind = true;
+    } catch (err) {
+      const reason = (err as Error).message;
+      result.skipped.push({ folder: folder.name, reason: `"${album.title}": ${reason}` });
+      result.failed.push({ subItemId: album.id, title: album.title, reason });
+      result.leftBehind = true;
+    }
+  }
+  // The albums the grab was for that no folder held; a manual import of one folder says nothing of the others.
+  if (!onlyFolder) {
+    const matchedTargets = new Set(Array.from(matches.values()).flatMap((m) => (m.kind === "album" && m.target ? [m.albumId] : [])));
+    result.notFound = targetSubItemIds.filter((id) => !matchedTargets.has(id) && !hasFileNow.has(id));
+  }
+  if (result.imported.length === 0 && result.alreadyHad.length === 0) {
+    const why = result.skipped.map((s) => s.reason).join("; ") || "none of its folders is an album that was wanted";
+    throw new ImportSkippedError(`No album of "${releaseTitle ?? "the discography"}" could be imported: ${why}`);
+  }
+  log.info(`[importer] imported ${result.imported.length} album(s) of "${releaseTitle ?? "a discography"}" for "${item.title}"; ${result.skipped.length} folder(s) skipped, ${result.notFound.length} album(s) not in it`);
+  return result;
 }
 
 // Picard's and iTunes' multi-disc naming: an unpadded disc, a separator, the track, then a space ("2-04 Song").
@@ -3097,6 +3271,22 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
   const typeConfig = getMediaTypeConfig(item.type);
   const shape = effectiveShape(item);
 
+  // A discography is for several albums: its queue row has none of its own, and lists them in queue_targets.
+  const discographyTargets =
+    shape === "collection" && typeConfig.multiFilePerChild && !queueItem.subItemId && !queueItem.episodeId ? await queueTargetIds(queueItem.id) : [];
+  if (
+    discographyTargets.length === 0 &&
+    shape === "collection" &&
+    typeConfig.multiFilePerChild &&
+    !queueItem.subItemId &&
+    !queueItem.episodeId &&
+    queueItem.seasonNumber == null &&
+    parseReleaseTitle(queueItem.title).discography
+  ) {
+    // Every album it was grabbed for has since been removed or merged away: there is nothing to file it under.
+    throw new ImportSkippedError(`"${queueItem.title}" was grabbed as a discography, but none of the albums it was for is left; remove it from the queue`);
+  }
+
   let episodeTarget: EpisodeTarget | undefined;
   if (shape === "episodic" && queueItem.episodeId) {
     const epRow = (await db.prepare("SELECT * FROM episodes WHERE id = ?").get(queueItem.episodeId)) as any;
@@ -3261,7 +3451,66 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
   // Set when what was placed may be only part of the download (one episode of a pack, one book of
   // a trilogy, one album of a discography).
   let mayHoldMore = false;
-  if (shape === "collection" && typeConfig.multiFilePerChild && queueItem.subItemId) {
+  if (discographyTargets.length > 0) {
+    const releaseRoot = discographyRootOf(sourceFile, queueItem.downloadPath, queueItem.title, ctx.category);
+    if (!releaseRoot) {
+      throw new ImportSkippedError(`Cannot tell which folder holds the discography "${queueItem.title}" — left for a manual import`);
+    }
+    const done = await placeDiscographyFiles({
+      itemId: item.id,
+      targetSubItemIds: discographyTargets,
+      releaseDir: releaseRoot,
+      quality,
+      releaseTitle: queueItem.title,
+      category: ctx.category,
+      refuseDowngrade: automatic,
+      // A file the admin picked stands for its own album: just that folder is imported, from the folder it is in.
+      ...(manualSourceFile ? { onlyFolder: albumFolderOfFile(sourceFile, releaseRoot), trustFolder: true } : {}),
+    });
+    leftFilesBehind = done.leftBehind;
+    releaseDir = releaseRoot;
+    // The albums this download has settled, imported or not in it, no longer wait on it. An album whose folder was found
+    // and could not be placed keeps its link: the row stays, parked, and holds it from the searches (and from a second
+    // grab of the same release) until the admin has seen why.
+    const settled = [...done.imported.map((album) => album.subItemId), ...done.notFound, ...done.alreadyHad];
+    for (const id of settled) await db.prepare("DELETE FROM queue_targets WHERE queue_id = ? AND sub_item_id = ?").run(queueItem.id, id);
+    if (!manualSourceFile && (done.notFound.length > 0 || done.failed.length > 0)) {
+      // The release was not what it said, or part of it cannot be filed: this release is not taken again, and the albums
+      // it lacks are looked for one by one.
+      await addToBlocklist({
+        mediaItemId: item.id,
+        releaseTitle: queueItem.title,
+        indexerId: queueItem.indexerId ?? null,
+        reason:
+          done.notFound.length > 0
+            ? `Imported without ${done.notFound.length} album(s) it was grabbed for`
+            : `${done.failed.length} album(s) of it could not be filed`,
+        protocol: queueItem.protocol ?? null,
+        size: queueItem.size ?? null,
+        publishDate: queueItem.publishDate ?? null,
+        infoHash: queueItem.infoHash ?? null,
+      });
+      for (const id of done.notFound) await wakeLeaf("sub_items", id);
+    }
+    const waiting = await queueTargetIds(queueItem.id);
+    if (waiting.length > 0) {
+      const reason = done.failed.length > 0
+        ? `Imported ${done.imported.length} album(s) of "${queueItem.title}"; ${done.failed.length} could not be placed (${done.failed.map((f) => `"${f.title}": ${f.reason}`).join("; ")}) — left for a manual import`
+        : `${waiting.length} album(s) of "${queueItem.title}" are still to be imported`;
+      if (!manualSourceFile) throw new ImportSkippedError(reason);
+      // A manual import of one album is done; the row keeps the rest and is parked like any import left for the admin, so
+      // that neither a restart's resume nor the week-old failed-row clean-up takes it.
+      await db
+        .prepare(
+          `UPDATE queue SET import_started_at = NULL, import_skipped_reason = ?, import_resume_state = CASE WHEN import_resume_state = 3 THEN 0 ELSE import_resume_state END, updated_at = ${nowExpr(db)} WHERE id = ?`
+        )
+        .run(reason, queueItem.id);
+      notifyQueueChanged();
+      return;
+    }
+    // The last album of a manual import: the download is whole in the library, apart from whatever folders it still holds.
+    if (manualSourceFile) leftFilesBehind = withoutSamples(walk(releaseRoot, getMediaTypeConfig(item.type).extensions, 6), releaseRoot, queueItem.title).length > 0;
+  } else if (shape === "collection" && typeConfig.multiFilePerChild && queueItem.subItemId) {
     const album = await placeAlbumFiles({
       itemId: item.id,
       subItemId: queueItem.subItemId,
@@ -3375,7 +3624,17 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
 
 /** True when the target of a queue row already has a file on disk that came from this very release
  * (the title recorded on its row): the import finished and only its clean-up was cut off. */
-async function releaseAlreadyImported(queueItem: { title: string; episodeId?: number | null; subItemId?: number | null; mediaItemId: number }, shape: MediaShape): Promise<boolean> {
+async function releaseAlreadyImported(queueItem: { id?: number; title: string; episodeId?: number | null; subItemId?: number | null; mediaItemId: number }, shape: MediaShape): Promise<boolean> {
+  // A discography is imported when each album it was grabbed for has files that came from this very release.
+  if (queueItem.id != null && !queueItem.episodeId && !queueItem.subItemId) {
+    const targets = await queueTargetIds(queueItem.id);
+    if (targets.length > 0) {
+      const rows = (await db
+        .prepare(`SELECT has_file, file_release_title AS t FROM sub_items WHERE id IN (${targets.map(() => "?").join(", ")})`)
+        .all(...targets)) as { has_file: number | boolean | null; t: string | null }[];
+      return rows.length === targets.length && rows.every((r) => !!Number(r.has_file) && r.t === queueItem.title);
+    }
+  }
   const row = (
     queueItem.episodeId
       ? await db.prepare("SELECT has_file, file_path AS p, file_release_title AS t FROM episodes WHERE id = ?").get(queueItem.episodeId)

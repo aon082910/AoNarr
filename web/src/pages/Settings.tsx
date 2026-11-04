@@ -3368,6 +3368,7 @@ export default function Settings() {
                     How AoNarr treats files around an import, after Sonarr and Radarr. Nothing here changes a file that is already in the library.
                   </p>
                   {choice("scanOnAdd", "Scan the disk when a title is added", "1", [["1", "On: link files that are already there (default)"], ["0", "Off"]])}
+                  {choice("discographyGrabs", "Download an artist's discography", "1", [["1", "On: when two or more albums are missing, one discography fills them (default)"], ["0", "Off: albums are searched one by one"]])}
                   {choice("removeFolderOnDelete", "Delete with files also takes the title's folder", "1", [["1", "On: artwork, NFO, subtitles and extras go to the recycle bin (default)"], ["0", "Off: only the files"]])}
                   {choice("deleteEmptyFolders", "Remove folders left empty by deleting one file", "0", [["0", "Off (default)"], ["1", "On"]])}
                   {choice("fileDate", "Date imported files by", "none", [["none", "The download time (default)"], ["localAirDate", "The air date (local time)"], ["utcAirDate", "The air date (UTC)"]])}

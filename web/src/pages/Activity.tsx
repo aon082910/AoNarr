@@ -606,6 +606,11 @@ export default function Activity() {
                   )}
                   <td>
                     {q.title}
+                    {q.albums && q.albums.length > 0 && (
+                      <span className="badge" style={{ marginLeft: 6 }} title={q.albums.map((a) => a.title).join(", ")}>
+                        {q.albums.length} album{q.albums.length === 1 ? "" : "s"}
+                      </span>
+                    )}
                     {q.retryCount > 0 && (
                       <span className="badge" style={{ marginLeft: 6 }} title="Auto-retried after an earlier release failed">
                         retry {q.retryCount}

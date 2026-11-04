@@ -422,6 +422,10 @@ export async function mergeMediaItems(
     ),
     corruptReviewSubItem: db.prepare("UPDATE corrupt_media_review SET row_id = ? WHERE table_name = 'sub_items' AND row_id = ?"),
     subItemRef: new Map(SUB_ITEM_REF_TABLES.map((t) => [t, db.prepare(`UPDATE ${t} SET sub_item_id = ? WHERE sub_item_id = ?`)])),
+    // The albums a queued discography is for follow the album to the keeper's; one the keeper's album already has stays as it is.
+    queueTargetRef: db.prepare(
+      "UPDATE queue_targets SET sub_item_id = ? WHERE sub_item_id = ? AND queue_id NOT IN (SELECT queue_id FROM queue_targets WHERE sub_item_id = ?)"
+    ),
   };
 
   // Recycling moves files (a cross-device move is a full copy), so it runs only after the
@@ -493,6 +497,7 @@ export async function mergeMediaItems(
           for (const table of SUB_ITEM_REF_TABLES) {
             await stmt.subItemRef.get(table)!.run(collision.id, sub.id);
           }
+          await stmt.queueTargetRef.run(collision.id, sub.id, collision.id);
         }
       } else if (!keeper.has_file && loser.has_file) {
         await db

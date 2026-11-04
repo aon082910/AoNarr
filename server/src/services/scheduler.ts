@@ -31,12 +31,25 @@ import { existingFileRecord } from "./fileRelease.js";
 import { editionlessTitle, FORMAT_UPGRADE_STEP, formatUpgradeFloor, nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
 import { freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReason, freeSpaceReserveBytes } from "./freeSpace.js";
 import { recordGrabbed } from "./grabHistory.js";
+import {
+  discographyAlbumsOf,
+  discographyGrabsEnabled,
+  isWantedAlbum,
+  judgeDiscography,
+  MIN_WANTED_FOR_AUTOMATIC_DISCOGRAPHY,
+  MIN_WANTED_SHARE_FOR_AUTOMATIC_DISCOGRAPHY,
+  queueTargetIds,
+  releaseNamesArtist,
+  type DiscographyAlbum,
+  type DiscographyVerdict,
+} from "./discography.js";
 import { compareUsenetAge, comparePeers, largerIsBetterKey, normalizePreferredProtocol, protocolGroup, protocolPreferenceKey } from "./releaseRanking.js";
 import { aliasSeasonsFor, aliasTitlesFor, applyAliasSeason, identityContextFor, seasonEpisodeCounts } from "./releaseAliases.js";
 import { childNumberOf, volumeYearOf } from "./searchQueries.js";
 import { judgeSeasonPack, loadPackEpisodes, packSettings, type PackEpisode } from "./seasonPacks.js";
 import {
   airedFrontierFor,
+  discographyPlanFor,
   episodeNotAired,
   episodePlanFor,
   searchHintsOf,
@@ -308,9 +321,12 @@ export async function isAlreadyQueued(mediaItemId: number, episodeId: number | n
     });
   }
   if (subItemId) {
+    // A queued discography is for every album it was grabbed for (queue_targets), not only a queue row's own sub-item.
     return !!(await db
-      .prepare("SELECT id FROM queue WHERE sub_item_id = ? AND status NOT IN ('failed')")
-      .get(subItemId));
+      .prepare(
+        `SELECT id FROM queue WHERE status NOT IN ('failed') AND (sub_item_id = ? OR id IN (SELECT queue_id FROM queue_targets WHERE sub_item_id = ?)) LIMIT 1`
+      )
+      .get(subItemId, subItemId));
   }
   return !!(await db
     .prepare(
@@ -480,6 +496,10 @@ export interface ChooseOptions {
   /** An album, book or issue that has a file: the format preference of that file (nonVideoMatch.ts). Only a release a
    * format step better than it is taken, so the file is replaced by a better format and never by an equal one. */
   nonVideoUpgradeFrom?: number;
+  /** The artist's discography is wanted (not an album): only a discography release naming the artist (`name`) that
+   * passes judgeDiscography against these albums is taken, and the one adding the most missing albums comes first
+   * among releases of the same format. */
+  discography?: { albums: DiscographyAlbum[]; minWanted: number; minShare?: number };
   /** Human-readable "media title" (plus episode/season where relevant) for this call's log lines
    * only — has no effect on matching/scoring. Omitted = log lines drop the "for ..." suffix. */
   label?: string | null;
@@ -1018,8 +1038,30 @@ export async function chooseBestResult(
   const runtimeContext = await runtimeContextFor(mediaItemId, mediaType);
   const runtimeOf = (parsed: Parameters<typeof releaseRuntimeMinutes>[0]) => (runtimeContext ? releaseRuntimeMinutes(parsed, runtimeContext) : null);
   const namesMainTitleOnly = new Set<SearchResult>();
+  const discographyVerdicts = new Map<SearchResult, DiscographyVerdict>();
   const relevant = packFiltered.filter(({ result, parsed, size }) => {
     if (!tiered) {
+      if (options.discography) {
+        if (!parsed.discography) {
+          log.info(`[scheduler] rejected "${result.title}": it is not a discography`);
+          return false;
+        }
+        if (!name || !releaseNamesArtist(result.title, name.title)) {
+          log.info(`[scheduler] rejected "${result.title}": it is not a discography of "${name?.title ?? "the artist"}"`);
+          return false;
+        }
+        const verdict = judgeDiscography(result.title, options.discography.albums, {
+          minWanted: options.discography.minWanted,
+          minShare: options.discography.minShare,
+          isUnreleased: isNotYetReleased,
+        });
+        if (!verdict.ok) {
+          log.info(`[scheduler] rejected "${result.title}": ${verdict.reason}`);
+          return false;
+        }
+        discographyVerdicts.set(result, verdict);
+        return true;
+      }
       if (!name) return true;
       const match = releaseNameMatch(result.title, name, mediaType);
       if (match === "main") namesMainTitleOnly.add(result);
@@ -1221,6 +1263,9 @@ export async function chooseBestResult(
         : bothTorrents(a.result, b.result)
         ? (b.result.seeders ?? 0) - (a.result.seeders ?? 0)
         : 0) ||
+      // A discography: the one that adds more missing albums. Lidarr compares album count after quality, protocol,
+      // priority and peers, so the admin's own choices come first.
+      (discographyVerdicts.get(b.result)?.wanted.length ?? 0) - (discographyVerdicts.get(a.result)?.wanted.length ?? 0) ||
       publishedAt(b) - publishedAt(a) ||
       (reputationByGroup.get(parseReleaseTitle(b.result.title).releaseGroup) ?? 0.5) -
         (reputationByGroup.get(parseReleaseTitle(a.result.title).releaseGroup) ?? 0.5) ||
@@ -1348,10 +1393,16 @@ export async function grab(
   source: GrabSource = "auto",
   /** `allowCovered`: the admin chose this release by hand, so a queued download that already covers the
    * target does not stop it (the other checks do). */
-  options: { allowCovered?: boolean; refuseSameRelease?: boolean; forced?: boolean } = {}
+  options: { allowCovered?: boolean; refuseSameRelease?: boolean; forced?: boolean; targetSubItemIds?: number[] } = {}
 ): Promise<boolean> {
   return serializeForItem(mediaItem.id, async () => {
     const { result: best, quality } = chosen;
+    // A discography is for several albums at once: it has no album of its own on the queue row, and is
+    // recorded against each of the albums it was grabbed for.
+    const targetSubItemIds = Array.from(new Set(options.targetSubItemIds ?? []));
+    if (targetSubItemIds.length > 0 && (episodeId || subItemId)) {
+      throw new Error("A release for several albums is not also for one of them");
+    }
     // The same release already on its way for this target: checked here, inside the per-item chain, so two
     // clicks that arrive together cannot both pass it before either has been recorded.
     if (options.refuseSameRelease) {
@@ -1363,7 +1414,18 @@ export async function grab(
         .get(mediaItem.id, best.title, episodeId ?? 0, subItemId ?? 0);
       if (same) throw new DuplicateGrabError(best.title);
     }
-    if (!options.allowCovered && (episodeId || subItemId || seasonNumber == null) && (await isAlreadyQueued(mediaItem.id, episodeId, subItemId))) {
+    let targets = targetSubItemIds;
+    if (targets.length > 0) {
+      // An album with a download on its way is not downloaded a second time, whoever picked the release: judged here, inside
+      // the per-item chain, because the albums were chosen before a search and a grab of one of them may have come in since.
+      const open: number[] = [];
+      for (const id of targets) if (!(await isAlreadyQueued(mediaItem.id, null, id))) open.push(id);
+      if (open.length === 0) {
+        log.info(`[scheduler] not grabbing "${best.title}" for "${mediaItem.title}": a queued download already covers every album it is for`);
+        return false;
+      }
+      targets = open;
+    } else if (!options.allowCovered && (episodeId || subItemId || seasonNumber == null) && (await isAlreadyQueued(mediaItem.id, episodeId, subItemId))) {
       log.info(`[scheduler] not grabbing "${best.title}" for "${mediaItem.title}": a queued download already covers it`);
       return false;
     }
@@ -1412,36 +1474,43 @@ export async function grab(
     // queue.size is BIGINT: Postgres rejects NaN or a fraction (from an indexer's odd size field)
     // after the client has already accepted the download, leaving it untracked.
     const size = Number.isFinite(best.size) ? Math.round(best.size) : null;
-    await db
-      .prepare(
-        `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count, match_type, grab_source, protocol, publish_date, info_hash)
+    const grabFacts = { source, quality, client: { id: client.id, name: client.name }, forced: options.forced, releaseGroup: parsedBest.releaseGroup, downloadId };
+    // The row, the albums it is for and the history are written together: the client already has the download, and
+    // a row with some of its albums, or none, would be a download nothing tracks properly.
+    await db.transaction(async () => {
+      const inserted = await db
+        .prepare(
+          `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count, match_type, grab_source, protocol, publish_date, info_hash)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        mediaItem.id,
-        episodeId,
-        subItemId,
-        packSeason,
-        best.title,
-        best.indexerId,
-        client.id,
-        downloadId,
-        size,
-        quality,
-        retryCount,
-        chosen.identity?.matchType ?? null,
-        source,
-        best.protocol,
-        best.publishDate ?? null,
-        best.infoHash ?? null
-      );
-
-    await recordGrabbed(
-      mediaItem.id,
-      { episodeId, subItemId, seasonNumber: packSeason },
-      best,
-      { source, quality, client: { id: client.id, name: client.name }, forced: options.forced, releaseGroup: parsedBest.releaseGroup, downloadId }
-    );
+        )
+        .run(
+          mediaItem.id,
+          episodeId,
+          subItemId,
+          packSeason,
+          best.title,
+          best.indexerId,
+          client.id,
+          downloadId,
+          size,
+          quality,
+          retryCount,
+          chosen.identity?.matchType ?? null,
+          source,
+          best.protocol,
+          best.publishDate ?? null,
+          best.infoHash ?? null
+        );
+      if (targets.length > 0) {
+        const queueId = Number(inserted.lastInsertRowid);
+        for (const id of targets) {
+          await db.prepare("INSERT INTO queue_targets (queue_id, sub_item_id) VALUES (?, ?)").run(queueId, id);
+          await recordGrabbed(mediaItem.id, { episodeId: null, subItemId: id, seasonNumber: null }, best, grabFacts);
+        }
+      } else {
+        await recordGrabbed(mediaItem.id, { episodeId, subItemId, seasonNumber: packSeason }, best, grabFacts);
+      }
+    });
 
     // A manual grab answers at once; waiting for a webhook that never answers held the response (and every other
     // grab for the item) for the notification timeout.
@@ -1980,6 +2049,8 @@ export async function runAutoSearch(signal?: AbortSignal) {
   const candidates: AutoSearchCandidate[] = [];
   /** Each show's wanted episodes, due or not: the season searches below look at the season as a whole. */
   const wantedByShow = new Map<number, { item: MediaItem; episodes: any[] }>();
+  /** The artists with enough albums missing for a discography to be worth looking for. */
+  const discographyArtists: MediaItem[] = [];
   for (const item of monitoredItems) {
     // Cheap to check even though neither ever actually fires mid-discovery today (this map starts
     // empty and nothing populates it until the processing loop below runs) — it's a guard against
@@ -2005,6 +2076,10 @@ export async function runAutoSearch(signal?: AbortSignal) {
       const subItems = (await db
         .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND monitored = 1 AND has_file = 0")
         .all(item.id)) as any[];
+      // An artist with several albums missing is looked for as a discography before its albums are looked for one by one.
+      if (item.type === "artist" && subItems.filter((s) => !isNotYetReleased(s.release_date)).length >= MIN_WANTED_FOR_AUTOMATIC_DISCOGRAPHY) {
+        discographyArtists.push(item);
+      }
       for (const subItem of subItems) {
         // An album or book not yet out has nothing to find (Lidarr and Readarr wait for the release date too).
         // (A comic issue's date is its cover date, often a month ahead of the issue.)
@@ -2275,6 +2350,24 @@ export async function runAutoSearch(signal?: AbortSignal) {
     }
   }
 
+  // Discographies. An artist with two or more albums missing is searched once for a discography before any of
+  // its albums is searched alone; the albums a grabbed one covers are then skipped below (isAlreadyQueued).
+  if (discographyGrabsEnabled()) {
+    for (const item of discographyArtists) {
+      if (signal?.aborted || noClientReachable() || searchedCount >= cap) break;
+      try {
+        const ctx = await getItemContext(item);
+        if (ctx.overQuota) continue;
+        // The slot is taken before the search and given back when no search was made (not due, or nothing to look for).
+        if (!reserveSearchSlot()) break;
+        const made = await searchDiscographyFirst(item, seasonEnv);
+        if (made.searches === 0) searchedCount--;
+      } catch (err) {
+        log.warn(`[scheduler] discography search failed for "${item.title}":`, (err as Error).message);
+      }
+    }
+  }
+
   // The concurrency-3 burst throttle still applies, now across this cycle's whole selected
   // candidate pool rather than one show's episodes at a time — but, per
   // forEachCandidateAcrossItemsSequentially's own comment, never lets two DIFFERENT media items'
@@ -2528,6 +2621,97 @@ async function searchSeasonsFirst(item: MediaItem, episodeIds: number[], ctx: Bu
   return { searches, grabbed };
 }
 
+/** The key an artist's search for a discography has in season_searches, which an artist has no seasons in. */
+export const DISCOGRAPHY_SEARCH_KEY = -1;
+
+/**
+ * One search for an artist's discography, grabbed for the albums it would add. `albums` is the artist's albums as
+ * the release is judged against (an album already on its way is marked unmonitored, so it is covered but not
+ * wanted). Only a release that passes judgeDiscography is taken: the albums it covers are all out, and enough of
+ * them are missing.
+ */
+async function searchAndGrabDiscography(
+  item: MediaItem,
+  albums: DiscographyAlbum[],
+  minWanted: number,
+  ctx: BulkSearchContext
+): Promise<{ result: GrabResult; error?: string }> {
+  if (ctx.clients.length > 0 && ctx.clients.every((c) => ctx.unavailable.has(c.id))) {
+    return { result: "skipped", error: Array.from(ctx.unavailable.values()).join("; ") };
+  }
+  const plan = await discographyPlanFor(item);
+  const blocklisted = await getBlocklistedTitles(item.id);
+  const delayProfile = pickDelayProfile(ctx.delayProfiles, await tagIdsForMediaItem(item.id));
+  const found = await searchAllIndexers(ctx.indexers, plan.query, item.type, false, plan.ids, { ...searchHintsOf(plan, item.id), includeFeeds: !ctx.automatic });
+  const discographies = found.filter((r) => !!parseReleaseTitle(r.title).discography);
+  const usable = ctx.directBudget.usableClients().filter((c) => !ctx.unavailable.has(c.id));
+  const choose = (remaining: SearchResult[], delay: DelayProfile | null) =>
+    chooseBestResult(remaining, [], "", item.qualityProfileId, 0, null, blocklisted, item.type, delay, null, item.id, {
+      clients: usable,
+      name: { title: item.title },
+      indexers: ctx.indexers,
+      label: `${item.title} discography`,
+      discography: { albums, minWanted, minShare: MIN_WANTED_SHARE_FOR_AUTOMATIC_DISCOGRAPHY },
+      userInvoked: !ctx.automatic,
+    });
+  let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
+  try {
+    outcome = await grabBestRelease(
+      discographies,
+      usable,
+      (remaining) => choose(remaining, delayProfile),
+      (client, chosen) => {
+        const verdict = judgeDiscography(chosen.result.title, albums, {
+          minWanted,
+          minShare: MIN_WANTED_SHARE_FOR_AUTOMATIC_DISCOGRAPHY,
+          isUnreleased: (date) => isNotYetReleased(date),
+        });
+        return grab(client, item, null, null, chosen, 0, null, "auto", { targetSubItemIds: verdict.wanted.map((album) => album.id) });
+      },
+      { itemId: item.id, indexers: ctx.indexers }
+    );
+  } catch (err) {
+    if (!noteUnavailableClient(err, ctx.unavailable)) throw err;
+    return { result: "skipped", error: (err as Error).message };
+  }
+  if (!outcome) {
+    return { result: await noGrabVerdict({ searched: found, candidates: discographies, indexers: ctx.indexers, type: item.type, usable, cutoff: "", delayProfile, choose }) };
+  }
+  if (!outcome.grabbed) return { result: "skipped" };
+  ctx.directBudget.consume(outcome.client);
+  return { result: "grabbed" };
+}
+
+/**
+ * The discography search that comes before the searches of single albums: when two or more of an artist's
+ * albums are missing, one search for a discography. A discography that is grabbed is queued against the
+ * albums it covers, so the album searches that follow skip them (isAlreadyQueued). Returns how many
+ * searches were made and how many grabbed. Automatic runs keep to the backoff of searchBackoff.ts.
+ */
+async function searchDiscographyFirst(item: MediaItem, ctx: BulkSearchContext): Promise<{ searches: number; grabbed: number }> {
+  if (item.type !== "artist" || !discographyGrabsEnabled()) return { searches: 0, grabbed: 0 };
+  const albums = await discographyAlbumsOf(item.id);
+  // An album already downloading is covered by the release but is not one it is wanted for.
+  const forJudging: DiscographyAlbum[] = [];
+  let wantedCount = 0;
+  for (const album of albums) {
+    const wanted = isWantedAlbum(album, (date) => isNotYetReleased(date)) && !(await isAlreadyQueued(item.id, null, album.id));
+    if (wanted) wantedCount++;
+    forJudging.push(wanted ? album : { ...album, monitored: false });
+  }
+  if (wantedCount < MIN_WANTED_FOR_AUTOMATIC_DISCOGRAPHY) return { searches: 0, grabbed: 0 };
+  if (ctx.automatic && !(await seasonSearchDue(item.id, DISCOGRAPHY_SEARCH_KEY))) return { searches: 0, grabbed: 0 };
+  if (ctx.automatic && noIndexerAvailable(ctx.indexers, item.type)) return { searches: 0, grabbed: 0 };
+  try {
+    const found = await searchAndGrabDiscography(item, forJudging, MIN_WANTED_FOR_AUTOMATIC_DISCOGRAPHY, ctx);
+    await recordSeasonResult(item.id, DISCOGRAPHY_SEARCH_KEY, found.result, !!ctx.automatic);
+    return { searches: 1, grabbed: found.result === "grabbed" ? 1 : 0 };
+  } catch (err) {
+    log.warn(`[scheduler] discography search failed for "${item.title}":`, (err as Error).message);
+    return { searches: 1, grabbed: 0 };
+  }
+}
+
 async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: BulkSearchContext): Promise<{ grabbed: boolean; error?: string }> {
   const episodeId = t.episodeId ?? null;
   const subItemId = t.subItemId ?? null;
@@ -2742,7 +2926,12 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[], opts: { 
       childSearchesLeft -= seasons.searches;
       searchedCount += seasons.searches;
       grabbedCount += seasons.grabbed;
-      if (seasons.grabbed > 0) {
+      // An artist's missing albums are looked for as a discography first, as a show's episodes are looked for as packs.
+      const discographies = children.length >= 2 ? await searchDiscographyFirst(item, ctx) : { searches: 0, grabbed: 0 };
+      childSearchesLeft -= discographies.searches;
+      searchedCount += discographies.searches;
+      grabbedCount += discographies.grabbed;
+      if (seasons.grabbed > 0 || discographies.grabbed > 0) {
         for (let i = children.length - 1; i >= 0; i--) {
           if (await isAlreadyQueued(item.id, children[i].episodeId ?? null, children[i].subItemId ?? null)) children.splice(i, 1);
         }
@@ -3082,6 +3271,14 @@ export async function retryFailedGrab(
     }
     if (await isRootFolderOverQuota(item.rootFolderId)) {
       await notifyFailed(mediaTitle, `${reason} (not retried: its root folder is at its configured quota or below its minimum free space)`);
+      return;
+    }
+    // A failed discography has no single album to look another release up for: it is blocklisted (above), and the
+    // albums it was for, and the discography search, are woken so the next cycle looks for them again.
+    if (item.type === "artist" && !match.subItemId && !match.episodeId && match.seasonNumber == null && parseReleaseTitle(match.title).discography) {
+      for (const id of await queueTargetIds(match.id)) await wakeLeaf("sub_items", id);
+      await wakeSeason(item.id, DISCOGRAPHY_SEARCH_KEY);
+      await notifyFailed(mediaTitle, `${reason} (the albums it was for are searched again)`);
       return;
     }
     const profile = await getQualityProfile(item.qualityProfileId);

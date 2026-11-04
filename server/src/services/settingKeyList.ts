@@ -10,6 +10,7 @@ export const SETTING_KEY_LIST: readonly string[] = [
   "authRequired",
   "metricsToken",
   "debridCleanup",
+  "discographyGrabs",
   "redownloadFailedInteractive",
   "ntfyServerUrl",
   "ntfyTopic",

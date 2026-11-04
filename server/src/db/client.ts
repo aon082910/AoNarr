@@ -307,14 +307,21 @@ function repairDanglingReference(table: string, correctCreateSql: string) {
   if (!row || !row.sql.includes("_pre_migration")) return;
 
   const cols = (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+  // Foreign keys are off for the swap: with them on, SQLite rewrites other tables' REFERENCES to the renamed table
+  // whatever legacy_alter_table says (queue_targets refers to queue), and dropping it cascade-deletes their rows.
+  db.pragma("foreign_keys = OFF");
   db.pragma("legacy_alter_table = ON");
-  db.transaction(() => {
-    db.exec(`ALTER TABLE ${table} RENAME TO ${table}_repair`);
-    db.exec(correctCreateSql);
-    db.exec(`INSERT INTO ${table} (${cols.join(", ")}) SELECT ${cols.join(", ")} FROM ${table}_repair`);
-    db.exec(`DROP TABLE ${table}_repair`);
-  })();
-  db.pragma("legacy_alter_table = OFF");
+  try {
+    db.transaction(() => {
+      db.exec(`ALTER TABLE ${table} RENAME TO ${table}_repair`);
+      db.exec(correctCreateSql);
+      db.exec(`INSERT INTO ${table} (${cols.join(", ")}) SELECT ${cols.join(", ")} FROM ${table}_repair`);
+      db.exec(`DROP TABLE ${table}_repair`);
+    })();
+  } finally {
+    db.pragma("legacy_alter_table = OFF");
+    db.pragma("foreign_keys = ON");
+  }
 }
 
 const INDEXER_DEFAULT_MEDIA_TYPES = "movie,series,anime,sports,ppv,artist,author,audiobook,comic,manga,rom,course,adult";

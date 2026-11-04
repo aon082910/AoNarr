@@ -151,6 +151,10 @@ one book.
   the log; a ROM library's `.zip`/`.7z` files are imported as-is.
 - **Manual import** — browse the downloads folder from a media item's page and assign any file
   to it (or a specific episode/album/book) yourself, for anything auto-match couldn't resolve.
+- **Discography grabs** — when two or more of an artist's albums are missing, AoNarr also looks for
+  the artist's discography ("Artist - Discography (1973-1995) [FLAC]"). One grab fills every missing
+  album the release covers, and the importer files each album's folder under its own album. It can be
+  turned off in Settings (Media Management).
 - **Calendar** and **Missing** views — upcoming episode/album/book release dates, and everything
   monitored across the library that doesn't have a file yet.
 - **Subtitle search + auto-download** (Bazarr-style) — OpenSubtitles-backed; once a video file is

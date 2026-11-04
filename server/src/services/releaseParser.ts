@@ -106,6 +106,10 @@ export interface ParsedRelease {
    * importer cannot place a BDMV/VIDEO_TS tree, so such a release grades "Unknown" and the grab
    * path rejects it (Radarr's BR-DISK, Sonarr's RawDiskSpecification). */
   rawDisc: boolean;
+  /** A release of an artist's albums as a whole ("Queen - Discography (1973-1995) [FLAC]"): Lidarr's
+   * ParsedAlbumInfo.Discography. `from` and `to` are the years it spans when the name gives them (an open
+   * end, "1990-Present", leaves `to` null); both are null when it names none. Absent for every other release. */
+  discography?: { from: number | null; to: number | null };
 }
 
 // Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03"), groups 4-5 (a repeated season tag,
@@ -906,6 +910,36 @@ function validAirDate(year: number, month: number, day: number): string | null {
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
+// The word for a discography in the languages scene releases are named in.
+// (Boundaries by letter, not \b: that one sees no edge next to a Cyrillic letter.)
+const DISCOGRAPHY_WORD_SOURCE = "(?<![\\p{L}\\p{N}_])(?:discograph(?:y|ie)|discografi[ae]|diskograf(?:ie|ija|iya)|dyskografia|дискографи[яию])(?![\\p{L}\\p{N}_])";
+const DISCOGRAPHY_WORD = new RegExp(DISCOGRAPHY_WORD_SOURCE, "iu");
+// The years it spans: "1973-1995", "1973 - 95", "1973 to 1995", "1990-Present". A lone year names nothing to cover.
+const DISCOGRAPHY_YEARS = /(?<![\d])((?:19|20)\d{2})\s*(?:-|–|—|~|to)\s*((?:19|20)\d{2}|\d{2}|present|now|current)(?![\d])/i;
+
+function detectDiscography(title: string): ParsedRelease["discography"] | null {
+  if (!DISCOGRAPHY_WORD.test(title)) return null;
+  const span = title.match(DISCOGRAPHY_YEARS);
+  if (!span) return { from: null, to: null };
+  const from = Number(span[1]);
+  const end = span[2].toLowerCase();
+  if (/^[a-z]/.test(end)) return { from, to: null };
+  // "1973-95" ends in the start's century.
+  const to = end.length === 2 ? Math.floor(from / 100) * 100 + Number(end) : Number(end);
+  // A span that ends before it starts is no span: the name is misspelled, and "all albums" would be a guess.
+  return to >= from ? { from, to } : null;
+}
+
+/** The release name without its discography word, for comparing the rest of the name. */
+export function withoutDiscographyWord(title: string): string {
+  return title.replace(new RegExp(DISCOGRAPHY_WORD_SOURCE, "giu"), " ");
+}
+
+/** Whether a release name is an artist's discography. */
+export function isDiscographyTitle(title: string): boolean {
+  return DISCOGRAPHY_WORD.test(title);
+}
+
 /** Options for parseReleaseTitle when the name is that of a file already in the library, not a
  * release on offer: a file is never a disc image, whatever its name says ("Movie.1080p.BluRay.AVC.
  * DTS-HD.mkv" is a remux). */
@@ -1210,6 +1244,7 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
   const episodic = seasonNumber !== null || episodeNumbers !== null || isFullSeason || seasonPart || seasonExtra || absoluteEpisode !== null || airDate !== null;
   const rawDisc = !options?.file && detectRawDisc(title, episodic);
   const qualityModifier = detectQualityModifier(tags) ?? (rawDisc && !DISC_DVD_IMAGE.test(title) ? "brdisk" : null);
+  const discography = detectDiscography(title);
 
   return {
     title: isolatedTitle,
@@ -1241,6 +1276,7 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
     seasonExtra,
     hardcodedSubs: HARDCODED_SUBS.test(tags.replace(LEADING_BRACKET_GROUP, " ")),
     rawDisc,
+    ...(discography ? { discography } : {}),
   };
 }
 

@@ -218,6 +218,24 @@ export function subItemPlanFor(item: Pick<MediaItem, "type" | "title">, sub: { t
   return { query, alternateQueries: alternatesFor(query, alternateQueries), ids: {}, hints: subItemHints(item, sub.title), target: null };
 }
 
+/**
+ * The search for an artist's discography ("Queen discography"), run beside the searches of single albums: no
+ * album search finds one, because an album's words are not in its name. The Spanish and Italian word is asked as
+ * well, and the artist's other names. Free text only: a typed music search by artist would list every album.
+ */
+export async function discographyPlanFor(item: MediaItem): Promise<SearchPlan> {
+  const artist = /^various artists$/i.test(item.title.trim()) ? "VA" : cleanSceneTitle(item.title, { ampersand: "drop" });
+  const query = `${artist} discography`;
+  const others = [...looseTitleVariants(item.title, { ampersand: "drop" }), ...(await alternateTitlesFor(item)).map((title) => cleanSceneTitle(title, { ampersand: "drop" }))];
+  return {
+    query,
+    alternateQueries: alternatesFor(query, others.map((title) => `${title} discography`), [`${artist} discografia`]),
+    ids: {},
+    hints: {},
+    target: null,
+  };
+}
+
 /** The fields of a typed music or book search: an album is asked for by artist and album, a book by author and
  * the title before its subtitle and series bracket. Other types have no typed search. */
 function subItemHints(item: Pick<MediaItem, "type" | "title">, subTitle: string): SearchPlan["hints"] {

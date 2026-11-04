@@ -211,6 +211,7 @@ const TABLES_WITHOUT_ID = new Set([
   "sessions",
   "release_group_stats",
   "season_searches",
+  "queue_targets",
   "rss_sync_state",
   "indexer_status",
   "import_list_entries",

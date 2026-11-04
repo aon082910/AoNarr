@@ -2826,6 +2826,7 @@ export default function MediaDetail() {
                         {[
                           r.releaseGroup,
                           r.releaseType === "season-pack" ? `season pack${r.episodesCovered != null ? ` (${r.episodesCovered} episodes)` : ""}` : r.releaseType === "multi-episode" ? "multi-episode" : null,
+                          r.discography ? `discography (${r.discography.albumsCovered} albums, ${r.discography.albumsMissing} missing)` : null,
                           r.languages && r.languages.length > 0 ? r.languages.join(", ") : null,
                         ]
                           .filter(Boolean)

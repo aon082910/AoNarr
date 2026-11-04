@@ -10,7 +10,8 @@ import { isJobRunning, listJobs } from "../services/jobRegistry.js";
 import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 import { addToBlocklist } from "../services/blocklist.js";
 import { notifyQueueChanged, registerQueueStreamClient, unregisterQueueStreamClient } from "../services/realtime.js";
-import { loadDelayProfiles, markQueueImportFailed, markQueueImportStarted, pickDelayProfile, queueClientNote, tagIdsForMediaItem } from "../services/scheduler.js";
+import { DISCOGRAPHY_SEARCH_KEY, loadDelayProfiles, markQueueImportFailed, markQueueImportStarted, pickDelayProfile, queueClientNote, tagIdsForMediaItem } from "../services/scheduler.js";
+import { queueTargetIds } from "../services/discography.js";
 import { delayMinutesFor } from "../services/delayHold.js";
 import { loadPending, PENDING_MAX_AGE_DAYS, removePending } from "../services/pendingStore.js";
 import { parseReleaseTitle } from "../services/releaseParser.js";
@@ -32,9 +33,27 @@ activityRouter.get(
     // id breaks added_at ties (one-second resolution, so a bulk search adds many rows per second):
     // Postgres orders tied rows differently from one page request to the next.
     const rows = await db.prepare("SELECT * FROM queue ORDER BY added_at DESC, id DESC LIMIT ? OFFSET ?").all(limit, offset);
+    // The albums a queued discography is for, by queue row.
+    const ids = rows.map((row) => Number((row as { id: number }).id));
+    const albumsByQueue = new Map<number, { id: number; title: string }[]>();
+    if (ids.length > 0) {
+      const links = (await db
+        .prepare(
+          `SELECT qt.queue_id, s.id, s.title FROM queue_targets qt JOIN sub_items s ON s.id = qt.sub_item_id WHERE qt.queue_id IN (${ids.map(() => "?").join(", ")}) ORDER BY s.release_date, s.id`
+        )
+        .all(...ids)) as { queue_id: number; id: number; title: string }[];
+      for (const link of links) albumsByQueue.set(Number(link.queue_id), [...(albumsByQueue.get(Number(link.queue_id)) ?? []), { id: Number(link.id), title: link.title }]);
+    }
     // clientNote: what the download client says beyond the progress (paused, waiting its turn, or a warning
     // such as a full download folder), when it says anything.
-    res.json({ items: rows.map((row) => ({ ...queueItemFromRow(row), clientNote: queueClientNote(Number((row as { id: number }).id)) })), total: Number(total) });
+    res.json({
+      items: rows.map((row) => {
+        const queueId = Number((row as { id: number }).id);
+        const albums = albumsByQueue.get(queueId);
+        return { ...queueItemFromRow(row), clientNote: queueClientNote(queueId), ...(albums ? { albums } : {}) };
+      }),
+      total: Number(total),
+    });
   })
 );
 
@@ -214,6 +233,8 @@ activityRouter.delete(
     if (pollerMayOwnQueueRow(queueRow)) throw new HttpError(409, POLLER_BUSY_MESSAGE);
 
     let rowChanged = false;
+    // A discography's albums, read while the row is there to be read: deleting the row deletes the list.
+    const discographyTargets = await queueTargetIds(Number(queueRow.id));
     const ran = await withQueueImportLock(Number(queueRow.id), async () => {
       // The row goes first, and only if the poller hasn't moved it since it was read: a row the
       // poller has just marked completed is being imported inline, and once the row is gone the
@@ -241,6 +262,10 @@ activityRouter.delete(
           // Only this target: the rest of the show keeps its own wait.
           if (queueRow.episode_id) await wakeLeaf("episodes", Number(queueRow.episode_id));
           else if (queueRow.sub_item_id) await wakeLeaf("sub_items", Number(queueRow.sub_item_id));
+          else if (discographyTargets.length > 0) {
+            for (const id of discographyTargets) await wakeLeaf("sub_items", id);
+            await wakeSeason(Number(queueRow.media_item_id), DISCOGRAPHY_SEARCH_KEY);
+          }
           else if (queueRow.season_number != null) await wakeSeason(Number(queueRow.media_item_id), Number(queueRow.season_number));
           else await wakeLeaf("media_items", Number(queueRow.media_item_id));
         }

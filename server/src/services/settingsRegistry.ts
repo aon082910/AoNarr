@@ -69,6 +69,7 @@ const RULES: Readonly<Record<string, Rule>> = {
   importStrategy: { oneOf: ["move", "copy", "hardlink", "symlink", "auto"] },
   redownloadFailedInteractive: { oneOf: ["1", "0"] },
   debridCleanup: { oneOf: ["1", "0"] },
+  discographyGrabs: { oneOf: ["1", "0"] },
   defaultMetadataProfileId: { wholeNumber: true, min: 1 },
   sizeLimitMode: { oneOf: ["absolute", "perMinute"] },
   tlsRejectUnauthorized: { oneOf: ["1", "0", "local"] },
