@@ -9,7 +9,8 @@ import { getSetting } from "./settingsStore.js";
  * - "never" (the default here; Sonarr's own is "always"): every import goes ahead, as AoNarr always did.
  * - "always": the file waits for every recent episode it covers.
  * - "bulkSeasonReleases": only a bulk release waits, that is four or more episodes of the season dated the same day as
- *   the file's first episode (a whole season dropped at once), whose titles a provider fills in late.
+ *   the file's first episode (a whole season dropped at once), whose titles a provider fills in late. Episodes with no air
+ *   date do not count towards it, and a file whose first episode has none is not a bulk release.
  */
 
 export type EpisodeTitleRequired = "always" | "bulkSeasonReleases" | "never";
@@ -80,9 +81,12 @@ export function episodeTitleHoldReason(params: {
 
   if (mode === "bulkSeasonReleases") {
     const firstDay = airDay(episodes[0]);
-    const allOnTheSameDay = firstDay !== null && episodes.every((e) => airDay(e) === null || airDay(e) === firstDay);
-    // Four or more episodes of the season on the first one's day (or with no day at all) make it a bulk release.
-    const sharingTheDay = seasonEpisodes.filter((e) => airDay(e) === null || airDay(e) === firstDay).length;
+    // A file whose first episode has no air date is not told apart from a lone episode: it is not a bulk release.
+    if (firstDay === null) return null;
+    const allOnTheSameDay = episodes.every((e) => airDay(e) === null || airDay(e) === firstDay);
+    // Four or more episodes of the season dated the very day of the file's first one make it a bulk release. Episodes
+    // with no date do not count towards it (Sonarr's rule counts episodes with the same air date; written from memory).
+    const sharingTheDay = seasonEpisodes.filter((e) => airDay(e) === firstDay).length;
     if (allOnTheSameDay && sharingTheDay < 4) return null;
   }
 
