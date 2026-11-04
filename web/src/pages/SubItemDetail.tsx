@@ -9,6 +9,7 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaInfo, SearchResult, Track } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
+import { formatIsoDate } from "../utils/dateFormat.js";
 import {
   SearchIcon,
   DownloadIcon,
@@ -497,7 +498,7 @@ export default function SubItemDetail() {
         </span>
         <span className="pill">
           <CalendarIcon />
-          {subItem.releaseDate ?? "Unknown release date"}
+          {subItem.releaseDate ? formatIsoDate(subItem.releaseDate) : "Unknown release date"}
         </span>
         <span className={`badge ${subItem.hasFile ? "ok" : ""}`}>{subItem.hasFile ? "Downloaded" : "Missing"}</span>
         {subItem.quality && (

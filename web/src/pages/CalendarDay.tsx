@@ -5,6 +5,7 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { describeCalendarEntry } from "../utils/calendarDescriptions.js";
 import { ArrowLeftIcon, ArrowRightIcon, TrashIcon } from "../components/ActionIcons.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
+import { formatLongDate } from "../utils/dateFormat.js";
 
 interface CalendarEntry {
   mediaItemId: number;
@@ -46,10 +47,7 @@ export default function CalendarDay() {
     };
   }, [date]);
 
-  const parsed = new Date(`${date}T00:00:00`);
-  const formatted = Number.isNaN(parsed.getTime())
-    ? date
-    : parsed.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const formatted = formatLongDate(date) || date;
 
   function labelFor(type: string): string {
     return mediaTypes.find((t) => t.key === type)?.label ?? type;

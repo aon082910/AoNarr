@@ -6,7 +6,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { XIcon } from "../components/ActionIcons.js";
 import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
-import { formatServerTimestamp } from "../utils/format.js";
+import { formatDateTime } from "../utils/dateFormat.js";
 
 interface HistoryRow {
   id: number;
@@ -210,7 +210,7 @@ function HistoryTable({ rows }: { rows: HistoryRow[] }) {
                   <Link to={`/media/${r.mediaItemId}`}>{r.mediaTitle}</Link>
                 </td>
                 <td>{eventDetail(r)}</td>
-                <td>{formatServerTimestamp(r.createdAt)}</td>
+                <td>{formatDateTime(r.createdAt)}</td>
               </tr>
         ))}
       </tbody>

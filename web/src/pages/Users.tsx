@@ -6,7 +6,8 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { Invite, RequestStats, Session, User } from "../types.js";
-import { formatBytes, formatServerTimestamp } from "../utils/format.js";
+import { formatBytes } from "../utils/format.js";
+import { formatDateTime } from "../utils/dateFormat.js";
 import { XIcon, TrashIcon } from "../components/ActionIcons.js";
 import { PlusCircleIcon } from "../components/NavIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
@@ -377,7 +378,7 @@ function InvitesTable({ invites, onRevoke }: { invites: Invite[]; onRevoke: (id:
           <tr key={i.id}>
             <td>{i.allowedTypes.length === 0 ? "no library access" : `${i.allowedTypes.length} librar${i.allowedTypes.length === 1 ? "y" : "ies"}`}</td>
             <td>{i.role === "admin" ? "Admin" : "Household user"}</td>
-            <td>{formatServerTimestamp(i.createdAt)}</td>
+            <td>{formatDateTime(i.createdAt)}</td>
             <td>
               {i.usedAt ? (
                 <span className="badge ok">Used</span>
@@ -424,8 +425,8 @@ function SessionsTable({ sessions, onRevoke }: { sessions: Session[]; onRevoke: 
         {sorted.map((s) => (
           <tr key={s.token}>
             <td>{s.username}</td>
-            <td>{s.lastUsedAt ? formatServerTimestamp(s.lastUsedAt) : "-"}</td>
-            <td>{formatServerTimestamp(s.createdAt)}</td>
+            <td>{s.lastUsedAt ? formatDateTime(s.lastUsedAt) : "-"}</td>
+            <td>{formatDateTime(s.createdAt)}</td>
             <td title={s.userAgent ?? undefined} style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.userAgent ?? "unknown"}</td>
             <td>
               <button type="button" className="icon-button danger" onClick={() => onRevoke(s.token)} title="Revoke" aria-label="Revoke">

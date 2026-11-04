@@ -7,7 +7,7 @@ import type { QualityProfile, RootFolder, Tag } from "../types.js";
 import { PlusCircleIcon, RotateCcwIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
-import { formatServerTimestamp } from "../utils/format.js";
+import { formatDateTime } from "../utils/dateFormat.js";
 import { notify } from "../utils/notify.js";
 
 interface ImportList {
@@ -603,7 +603,7 @@ export default function ImportLists() {
                     <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>N/A</span>
                   )}
                 </td>
-                <td>{l.last_synced_at ? formatServerTimestamp(l.last_synced_at) : "Never"}</td>
+                <td>{l.last_synced_at ? formatDateTime(l.last_synced_at) : "Never"}</td>
                 <td>
                   {l.last_error ? (
                     <span style={{ color: isPartialSyncWarning(l) ? "#e0b03c" : "var(--danger)" }}>

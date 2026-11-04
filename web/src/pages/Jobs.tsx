@@ -5,6 +5,7 @@ import type { JobRun, JobStatus } from "../types.js";
 import { ZapIcon } from "../components/NavIcons.js";
 import { CheckIcon, XIcon } from "../components/ActionIcons.js";
 import { notify } from "../utils/notify.js";
+import { formatDateTime } from "../utils/dateFormat.js";
 
 function formatDuration(ms: number | null): string {
   if (ms === null) return "-";
@@ -194,8 +195,8 @@ function JobsTable({
                   </span>
                 )}
               </td>
-              <td>{j.lastRunAt ? new Date(j.lastRunAt).toLocaleString() : "Never"}</td>
-              <td>{j.nextRunAt ? new Date(j.nextRunAt).toLocaleString() : "-"}</td>
+              <td>{j.lastRunAt ? formatDateTime(j.lastRunAt) : "Never"}</td>
+              <td>{j.nextRunAt ? formatDateTime(j.nextRunAt) : "-"}</td>
               <td>
                 {j.lastStatus && (
                   <span className={`badge ${j.lastStatus === "success" ? "ok" : j.lastStatus === "error" ? "danger" : ""}`}>
@@ -236,7 +237,7 @@ function JobsTable({
                       <tbody>
                         {runs.map((run) => (
                           <tr key={run.id}>
-                            <td>{new Date(run.startedAt).toLocaleString()}</td>
+                            <td>{formatDateTime(run.startedAt)}</td>
                             <td>
                               <span className={`badge ${run.status === "success" ? "ok" : run.status === "error" ? "danger" : ""}`}>{LAST_STATUS_LABELS[run.status] ?? run.status}</span>
                             </td>

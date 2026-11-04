@@ -6,6 +6,7 @@ import { PlusCircleIcon, ShareIcon, CalendarIcon } from "../components/NavIcons.
 import { TrashIcon, ChevronLeftIcon, ChevronRightIcon, ArrowRightIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
+import { formatIsoDate, getDisplayPreferences, weekStartsOn } from "../utils/dateFormat.js";
 
 interface CalendarEntry {
   mediaItemId: number;
@@ -41,13 +42,14 @@ function startOfMonth(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 }
 
-function gridBounds(monthDate: Date): { gridStart: Date; gridEnd: Date } {
+/** The weeks that cover the month, starting on `weekStart` (0 = Sunday ... 6 = Saturday): the range the page asks the server for as well as the grid it draws. */
+function gridBounds(monthDate: Date, weekStart: number): { gridStart: Date; gridEnd: Date } {
   const monthStart = startOfMonth(monthDate);
   const monthEnd = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0);
   const gridStart = new Date(monthStart);
-  gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+  gridStart.setDate(gridStart.getDate() - ((gridStart.getDay() - weekStart + 7) % 7));
   const gridEnd = new Date(monthEnd);
-  gridEnd.setDate(gridEnd.getDate() + (6 - gridEnd.getDay()));
+  gridEnd.setDate(gridEnd.getDate() + (6 - ((gridEnd.getDay() - weekStart + 7) % 7)));
   return { gridStart, gridEnd };
 }
 
@@ -55,6 +57,8 @@ const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export default function Calendar() {
   const navigate = useNavigate();
+  const weekStart = weekStartsOn();
+  const weekdayLabels = [...WEEKDAY_LABELS.slice(weekStart), ...WEEKDAY_LABELS.slice(0, weekStart)];
   const [mode, setMode] = useState<"month" | "agenda">("month");
   const [viewMonth, setViewMonth] = useState<Date>(() => startOfMonth(new Date()));
   const [entries, setEntries] = useState<CalendarEntry[] | null>(null);
@@ -75,7 +79,7 @@ export default function Calendar() {
     const seq = ++loadSeq.current;
     let start: string, end: string;
     if (mode === "month") {
-      const { gridStart, gridEnd } = gridBounds(viewMonth);
+      const { gridStart, gridEnd } = gridBounds(viewMonth, weekStart);
       start = toIsoDate(gridStart);
       end = toIsoDate(gridEnd);
     } else {
@@ -98,7 +102,7 @@ export default function Calendar() {
     );
   }
 
-  useEffect(load, [mode, viewMonth, daysBack, daysForward]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(load, [mode, viewMonth, daysBack, daysForward, weekStart]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function showSubscribeUrl() {
     const result = await api.get<{ token: string }>("/settings/calendar-token");
@@ -155,7 +159,7 @@ export default function Calendar() {
   }
   const today = toIsoDate(new Date());
 
-  const { gridStart, gridEnd } = gridBounds(viewMonth);
+  const { gridStart, gridEnd } = gridBounds(viewMonth, weekStart);
   const gridDays: Date[] = [];
   for (let d = new Date(gridStart); d <= gridEnd; d.setDate(d.getDate() + 1)) gridDays.push(new Date(d));
 
@@ -247,7 +251,7 @@ export default function Calendar() {
       {mode === "month" && (
         <>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 4 }}>
-            {WEEKDAY_LABELS.map((w) => (
+            {weekdayLabels.map((w) => (
               <div key={w} style={{ textAlign: "center", color: "var(--muted)", fontSize: "0.8rem", fontWeight: 600 }}>
                 {w}
               </div>
@@ -310,7 +314,7 @@ export default function Calendar() {
           {selectedDay && (
             <div className="form-panel" style={{ marginTop: 16 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <h2 style={{ marginTop: 0 }}>{selectedDay}</h2>
+                <h2 style={{ marginTop: 0 }}>{formatIsoDate(selectedDay)}</h2>
                 <button type="button" className="icon-button" onClick={() => navigate(`/calendar/${selectedDay}`)} title="Open day page" aria-label="Open day page">
                   <ArrowRightIcon />
                 </button>
@@ -365,8 +369,8 @@ export default function Calendar() {
             .map((day) => (
               <div key={day} style={{ marginBottom: 20 }}>
                 <h2 style={{ color: day === today ? "var(--accent)" : undefined }}>
-                  {day}
-                  {day === today ? " (today)" : ""}
+                  {formatIsoDate(day)}
+                  {day === today && !getDisplayPreferences().relativeDates ? " (today)" : ""}
                 </h2>
                 <table>
                   <thead>

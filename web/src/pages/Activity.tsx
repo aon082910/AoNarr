@@ -9,7 +9,7 @@ import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.
 import type { QueueItem, Quality, Indexer, DownloadClient } from "../types.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
-import { formatServerTimestamp } from "../utils/format.js";
+import { formatDateTime } from "../utils/dateFormat.js";
 
 interface ImportCandidate {
   path: string;
@@ -712,7 +712,7 @@ export default function Activity() {
                       {d.title}
                       <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
                         {d.indexerName ?? "indexer removed"}
-                        {d.protocol ? ` · ${d.protocol}` : ""} · {formatServerTimestamp(d.createdAt)}
+                        {d.protocol ? ` · ${d.protocol}` : ""} · {formatDateTime(d.createdAt)}
                       </div>
                     </td>
                     <td>{d.mediaTitle ?? "-"}</td>
@@ -927,7 +927,7 @@ export default function Activity() {
           <tbody>
             {visibleHistory.map((t, idx) => (
               <tr key={idx}>
-                <td>{formatServerTimestamp(t.timestamp)}</td>
+                <td>{formatDateTime(t.timestamp)}</td>
                 <td>
                   <span
                     className={`badge ${

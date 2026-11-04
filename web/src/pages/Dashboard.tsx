@@ -5,7 +5,8 @@ import { useAuth } from "../context/AuthContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useCustomizableLayout } from "../hooks/useCustomizableLayout.js";
 import type { MediaItem } from "../types.js";
-import { formatBytes, formatServerTimestamp } from "../utils/format.js";
+import { formatBytes } from "../utils/format.js";
+import { formatDateTime, formatIsoDate } from "../utils/dateFormat.js";
 import { SlidersIcon } from "../components/NavIcons.js";
 import { ArrowUpIcon, ArrowDownIcon, ArrowRightIcon, ChevronsDownIcon, ChevronsUpIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
@@ -249,7 +250,7 @@ export default function Dashboard() {
                   <tr key={idx} onClick={() => navigate(`/media/${entry.mediaItemId}`)} style={{ cursor: "pointer" }}>
                     <td>{entry.label}</td>
                     <td>{labelFor(entry.type)}</td>
-                    <td>{new Date(entry.watchedAt).toLocaleString()}</td>
+                    <td>{formatDateTime(entry.watchedAt)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -282,7 +283,7 @@ export default function Dashboard() {
                     </td>
                     <td>{labelFor(entry.type)}</td>
                     <td>{RECENT_EVENT_LABELS[entry.eventType] ?? entry.eventType}</td>
-                    <td>{formatServerTimestamp(entry.timestamp)}</td>
+                    <td>{formatDateTime(entry.timestamp)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -316,7 +317,7 @@ export default function Dashboard() {
                           onClick={() => entry.kind !== "event" && navigate(`/media/${entry.mediaItemId}`)}
                           style={{ cursor: entry.kind === "event" ? "default" : "pointer" }}
                         >
-                          <td>{entry.date}</td>
+                          <td>{formatIsoDate(entry.date)}</td>
                           <td>
                             {entry.mediaTitle} — {entry.label}
                           </td>

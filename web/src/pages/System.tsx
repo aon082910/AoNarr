@@ -6,6 +6,7 @@ import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { formatBytes } from "../utils/format.js";
+import { formatDate, formatDateTime, formatIsoDateTime } from "../utils/dateFormat.js";
 import { RotateCcwIcon, DownloadIcon, InboxIcon } from "../components/NavIcons.js";
 import { TrashIcon, FolderIcon, ArrowRightIcon } from "../components/ActionIcons.js";
 import { notify } from "../utils/notify.js";
@@ -713,13 +714,13 @@ export default function System() {
             <th>Build</th>
             <td>
               {status.build?.imageTag ? `image "${status.build.imageTag}"` : "local build"}
-              {status.build?.buildTime ? `, built ${status.build.buildTime}` : ""}
+              {status.build?.buildTime ? `, built ${formatIsoDateTime(status.build.buildTime)}` : ""}
               {status.build?.commit ? `, commit ${status.build.commit.slice(0, 7)}` : ""}
             </td>
           </tr>
           <tr>
             <th>Started</th>
-            <td>{status.build?.startedAt ?? "unknown"}{status.build?.docker ? " (in Docker)" : ""}</td>
+            <td>{status.build?.startedAt ? formatIsoDateTime(status.build.startedAt) : "unknown"}{status.build?.docker ? " (in Docker)" : ""}</td>
           </tr>
           <tr>
             <th>Database</th>
@@ -800,9 +801,9 @@ export default function System() {
           <p style={{ marginTop: 10 }}>
             {updateCheck.source === "docker-hub" && (
               <>
-                Running: image "{updateCheck.imageTag}" built {updateCheck.currentBuildTime ?? "at an unknown time"}
+                Running: image "{updateCheck.imageTag}" built {updateCheck.currentBuildTime ? formatIsoDateTime(updateCheck.currentBuildTime) : "at an unknown time"}
                 <br />
-                Docker Hub: pushed {updateCheck.latestPushedAt ?? "at an unknown time"}
+                Docker Hub: pushed {updateCheck.latestPushedAt ? formatIsoDateTime(updateCheck.latestPushedAt) : "at an unknown time"}
                 <br />
               </>
             )}
@@ -874,7 +875,7 @@ export default function System() {
           )}
           {health.checkedAt && (
             <p style={{ color: "var(--muted)", fontSize: "0.8rem", margin: "0 0 8px" }}>
-              Checked {new Date(health.checkedAt).toLocaleString()} (the checks run every 30 minutes and are reused for ten minutes between page loads; Refresh runs them now).
+              Checked {formatDateTime(health.checkedAt)} (the checks run every 30 minutes and are reused for ten minutes between page loads; Refresh runs them now).
             </p>
           )}
 
@@ -977,7 +978,7 @@ export default function System() {
                     <td>{q.mediaTitle}</td>
                     <td>{q.title}</td>
                     <td>{q.status}</td>
-                    <td>{q.addedAt}</td>
+                    <td>{formatIsoDateTime(q.addedAt)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1308,7 +1309,7 @@ export default function System() {
                     </span>
                   )}
                 </td>
-                <td>{new Date(b.createdAt).toLocaleString()}</td>
+                <td>{formatDateTime(b.createdAt)}</td>
                 <td>{formatBytes(b.sizeBytes)}</td>
                 <td>
                   <button
@@ -1407,7 +1408,7 @@ export default function System() {
                     <tr key={`${c.mediaItemId}-${c.filePath}`}>
                       <td>{c.title}</td>
                       <td>{mediaTypes.find((t) => t.key === c.type)?.label ?? c.type}</td>
-                      <td>{new Date(c.scheduledFor).toLocaleDateString()}</td>
+                      <td>{formatDate(c.scheduledFor)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1571,7 +1572,7 @@ export default function System() {
                           {i.year ? ` (${i.year})` : ""}
                         </td>
                         <td>{mediaTypes.find((t) => t.key === i.type)?.label ?? i.type}</td>
-                        <td>{i.addedAt}</td>
+                        <td>{formatIsoDateTime(i.addedAt)}</td>
                         <td>
                           <button type="button" className="icon-button danger" onClick={() => deleteUnmonitoredNoFile(i.id)} title="Delete" aria-label="Delete">
                             <TrashIcon />
@@ -1868,7 +1869,7 @@ export default function System() {
                 <tr key={f.name}>
                   <td>{f.name}</td>
                   <td>{formatBytes(f.sizeBytes)}</td>
-                  <td>{new Date(f.modifiedAt).toLocaleString()}</td>
+                  <td>{formatDateTime(f.modifiedAt)}</td>
                   <td>
                     <button type="button" className="icon-button" onClick={() => downloadFile(`/system/log-files/${f.name}`, f.name)} title="Download" aria-label="Download">
                       <DownloadIcon />

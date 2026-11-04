@@ -8,7 +8,7 @@ import { XIcon } from "../components/ActionIcons.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
-import { formatServerTimestamp } from "../utils/format.js";
+import { formatDateTime } from "../utils/dateFormat.js";
 
 interface ReviewItem {
   id: number;
@@ -146,7 +146,7 @@ export default function ImportReview() {
                   <td>{item.year ?? "-"}</td>
                   <td>{labelFor(item.type)}</td>
                   <td>{item.source === "watchlist" ? "Watchlist Import" : item.source}</td>
-                  <td>{formatServerTimestamp(item.createdAt)}</td>
+                  <td>{formatDateTime(item.createdAt)}</td>
                   <td style={{ display: "flex", gap: 6 }}>
                     <button type="button" className="icon-button" onClick={() => setMatching(item)} title="Match..." aria-label="Match">
                       <SearchIcon />

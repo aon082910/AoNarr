@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
-import { formatServerTimestamp } from "../utils/format.js";
+import { formatDateTime } from "../utils/dateFormat.js";
 
 interface AuditEntry {
   id: number;
@@ -118,7 +118,7 @@ export default function AuditLog() {
             <tbody>
               {sorted.map((e) => (
                 <tr key={e.id}>
-                  <td>{formatServerTimestamp(e.createdAt)}</td>
+                  <td>{formatDateTime(e.createdAt)}</td>
                   <td>{e.username}</td>
                   <td>{EVENT_LABELS[e.eventType] ?? e.eventType}</td>
                   <td>{e.detail ?? "-"}</td>
