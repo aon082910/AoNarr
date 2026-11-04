@@ -5,7 +5,8 @@ import { nowExpr } from "../db/asyncDb.js";
 import { downloadClientFromRow, mediaItemFromRow, queueItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter, removeQueueItemDownload, withQueueImportLock } from "../services/downloadClient.js";
-import { importQueueItem, listDownloadedFileCandidates } from "../services/importer.js";
+import { importQueueItem, listDownloadedFileCandidates, previewQueueManualImport, withImportStrategy } from "../services/importer.js";
+import { importModeOf } from "./import.js";
 import { isJobRunning, listJobs } from "../services/jobRegistry.js";
 import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 import { addToBlocklist } from "../services/blocklist.js";
@@ -447,7 +448,22 @@ activityRouter.post(
     if (!sourceFile || typeof sourceFile !== "string") throw new HttpError(400, "sourceFile is required");
     const overrideQuality = typeof req.body?.quality === "string" && req.body.quality ? req.body.quality : undefined;
     const queueId = Number(req.params.id);
-    await runAdminImport(queueId, () => importQueueItem(queueId, sourceFile, overrideQuality), true);
+    // `mode`: "move", "copy", "hardlink" or "symlink" for this import alone, as on the other manual import; without it the
+    // import strategy setting decides. An unknown mode is a 400, not a silent move.
+    const mode = importModeOf(req.body?.mode);
+    if (req.body?.preview === true) {
+      // What would be placed where, and the warnings, without moving anything or taking the row's import lock.
+      const queueRow = Number.isInteger(queueId) ? await db.prepare("SELECT id FROM queue WHERE id = ?").get(queueId) : undefined;
+      if (!queueRow) throw new HttpError(404, "Queue item not found");
+      try {
+        const preview = await withImportStrategy(mode, () => previewQueueManualImport(queueId, sourceFile, overrideQuality));
+        res.json({ preview: true, ...preview });
+      } catch (err) {
+        throw new HttpError(422, (err as Error).message);
+      }
+      return;
+    }
+    await runAdminImport(queueId, () => withImportStrategy(mode, () => importQueueItem(queueId, sourceFile, overrideQuality)), true);
     res.json({ ok: true });
   })
 );
