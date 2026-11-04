@@ -5,6 +5,7 @@ import { downloadClientFromRow, qualityProfileFromRow } from "../db/mappers.js";
 import { getBuildInfo } from "../services/buildInfo.js";
 import { getHealthReport } from "../services/healthReport.js";
 import { getSetting } from "../services/settingsStore.js";
+import { withAppUrlBase } from "../services/urlBase.js";
 import { statfsAsync } from "../services/fsAsync.js";
 import { callNative } from "./native.js";
 import { typeFilter } from "./apps.js";
@@ -153,7 +154,8 @@ export function registerSystemRoutes(r: StarrRoutes): void {
       databaseVersion: build.databaseVersion ?? "",
       authentication: getSetting("authRequired") === "0" ? "none" : "forms",
       migrationVersion: 0,
-      urlBase: `/${app.key}`,
+      // A tool's URL base for this app: /sonarr, or /aonarr/sonarr when AoNarr is served under URL_BASE.
+      urlBase: withAppUrlBase(`/${app.key}`),
       runtimeVersion: process.versions.node,
       runtimeName: "node",
       startTime: build.startedAt,

@@ -17,6 +17,9 @@ services:
       # Only for OTHER sites' pages that call the API from a browser (e.g. a dashboard widget);
       # the web UI never needs it. Comma-separated origins, merged with Settings → Allowed CORS origins.
       # - AONARR_CORS_ALLOWED_ORIGINS=https://dash.example.com
+      # Serving AoNarr under a sub-path of a reverse proxy (https://host/aonarr/)? Set the same value here and on
+      # aonarr-web below. The proxy must forward the whole path, /aonarr included.
+      # - URL_BASE=/aonarr
     volumes:
       - ./data/config:/config
       # Point these at your actual Unraid shares, e.g. /mnt/user/media and /mnt/user/downloads.
@@ -32,5 +35,7 @@ services:
     restart: unless-stopped
     depends_on:
       - aonarr-server
+    # environment:
+    #   - URL_BASE=/aonarr
     ports:
       - "9876:9876"

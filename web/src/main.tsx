@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import App from "./App.js";
 import ApiKeyGate from "./components/ApiKeyGate.js";
+import { URL_BASE, withBase } from "./utils/urlBase.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
 import SharePage from "./pages/SharePage.js";
 import InviteAcceptPage from "./pages/InviteAcceptPage.js";
@@ -13,7 +14,7 @@ import "./designs/index.css";
 // to land after the bundled stylesheet in the DOM regardless of where Vite's build injects that
 // stylesheet's own <link>/<style> tag — CSS ties resolve by source order, so this is what actually
 // lets an admin's custom theme (Settings -> General) override the built-in one.
-fetch("/api/theme.css")
+fetch(withBase("/api/theme.css"))
   .then((r) => r.text())
   .then((css) => {
     if (!css.trim()) return;
@@ -27,7 +28,7 @@ fetch("/api/theme.css")
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <BrowserRouter>
+      <BrowserRouter basename={URL_BASE || undefined}>
         <Routes>
           <Route path="/share/:token" element={<SharePage />} />
           <Route path="/invite/:token" element={<InviteAcceptPage />} />
@@ -47,6 +48,6 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch((err) => console.warn("Service worker registration failed:", err));
+    navigator.serviceWorker.register(withBase("/sw.js")).catch((err) => console.warn("Service worker registration failed:", err));
   });
 }

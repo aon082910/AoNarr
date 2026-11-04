@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, downloadFile } from "../api/client.js";
+import { linkOnOrigin } from "../utils/urlBase.js";
 import GroupPicker from "../components/GroupPicker.js";
 import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
@@ -1833,7 +1834,7 @@ export default function MediaDetail() {
                   aria-label="Share"
                   onClick={async () => {
                     const result = await api.post<{ token: string }>(`/media/${item.id}/share`, {});
-                    const url = `${externalUrl || window.location.origin}/share/${result.token}`;
+                    const url = linkOnOrigin(externalUrl || window.location.origin, `/share/${result.token}`);
                     try {
                       await navigator.clipboard.writeText(url);
                       notify.success(`Share link copied to clipboard:\n${url}`);

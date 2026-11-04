@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, downloadFile, getApiKey, setApiKey } from "../api/client.js";
+import { absoluteUrl } from "../utils/urlBase.js";
 import FolderPicker from "../components/FolderPicker.js";
 import NamingSetupModal from "../components/NamingSetupModal.js";
 import SettingsProviderTiles, { type SettingsProviderDef } from "../components/SettingsProviderTiles.js";
@@ -1221,7 +1222,7 @@ export default function Settings() {
 
   async function showWebhookUrl() {
     const result = await api.get<{ token: string }>("/settings/media-server-webhook-token");
-    setWebhookUrl(`${window.location.origin}/api/webhooks/media-server?token=${result.token}`);
+    setWebhookUrl(absoluteUrl(`/api/webhooks/media-server?token=${result.token}`));
   }
 
   async function regenerateWebhookToken() {
@@ -1234,12 +1235,12 @@ export default function Settings() {
     )
       return;
     const result = await api.post<{ token: string }>("/settings/media-server-webhook-token/regenerate", {});
-    setWebhookUrl(`${window.location.origin}/api/webhooks/media-server?token=${result.token}`);
+    setWebhookUrl(absoluteUrl(`/api/webhooks/media-server?token=${result.token}`));
   }
 
   async function showOverseerrWebhookUrl() {
     const result = await api.get<{ token: string }>("/settings/overseerr-webhook-token");
-    setOverseerrWebhookUrl(`${window.location.origin}/api/webhooks/overseerr?token=${result.token}`);
+    setOverseerrWebhookUrl(absoluteUrl(`/api/webhooks/overseerr?token=${result.token}`));
   }
 
   async function regenerateOverseerrWebhookToken() {
@@ -1252,7 +1253,7 @@ export default function Settings() {
     )
       return;
     const result = await api.post<{ token: string }>("/settings/overseerr-webhook-token/regenerate", {});
-    setOverseerrWebhookUrl(`${window.location.origin}/api/webhooks/overseerr?token=${result.token}`);
+    setOverseerrWebhookUrl(absoluteUrl(`/api/webhooks/overseerr?token=${result.token}`));
   }
 
   async function startPlexSignIn() {
@@ -1443,7 +1444,7 @@ export default function Settings() {
 
   async function showOpdsUrl() {
     const result = await api.get<{ token: string }>("/settings/opds-token");
-    setOpdsUrl(`${window.location.origin}/api/opds?token=${result.token}`);
+    setOpdsUrl(absoluteUrl(`/api/opds?token=${result.token}`));
   }
 
   async function regenerateOpdsToken() {
@@ -1456,7 +1457,7 @@ export default function Settings() {
     )
       return;
     const result = await api.post<{ token: string }>("/settings/opds-token/regenerate", {});
-    setOpdsUrl(`${window.location.origin}/api/opds?token=${result.token}`);
+    setOpdsUrl(absoluteUrl(`/api/opds?token=${result.token}`));
   }
 
   async function startTotpSetup() {
@@ -1992,7 +1993,7 @@ export default function Settings() {
           already does, so it can do anything that key can do.
         </p>
         <label htmlFor="settings-endpoint-url-5">Endpoint URL</label>
-        <input id="settings-endpoint-url-5" value={`${window.location.origin}/api/mcp`} readOnly onFocus={(e) => e.target.select()} />
+        <input id="settings-endpoint-url-5" value={absoluteUrl("/api/mcp")} readOnly onFocus={(e) => e.target.select()} />
         <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
           Connect with an <code>X-Api-Key</code> header set to the API key above (Streamable HTTP
           transport).
@@ -2653,7 +2654,7 @@ export default function Settings() {
                   up to an hour to propagate everywhere the bot is added).
                 </p>
                 <label htmlFor="settings-interactions-endpoint-url-paste-into-dis-33">Interactions Endpoint URL (paste into Discord's application settings)</label>
-                <input id="settings-interactions-endpoint-url-paste-into-dis-33" value={`${window.location.origin}/api/discord/interactions`} readOnly onFocus={(e) => e.target.select()} />
+                <input id="settings-interactions-endpoint-url-paste-into-dis-33" value={absoluteUrl("/api/discord/interactions")} readOnly onFocus={(e) => e.target.select()} />
                 <label htmlFor="settings-bot-token-34">Bot token</label>
                 <input id="settings-bot-token-34"
                   type="password"

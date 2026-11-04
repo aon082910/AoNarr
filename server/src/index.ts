@@ -16,6 +16,7 @@ import { resetInterruptedRestores } from "./services/recycleBin.js";
 import { waitForQueueImports } from "./services/downloadClient.js";
 import { backfillMissingAlbumTracks } from "./services/libraryScan.js";
 import { repairUnrankedCutoffs } from "./services/quality.js";
+import { appUrlBase, appUrlBaseIsInvalid } from "./services/urlBase.js";
 
 // Without these, an unhandled rejection or a synchronous throw outside Express's own request
 // cycle (a background job, a stray unawaited promise, an event-emitter callback) crashes the
@@ -59,6 +60,9 @@ const ALBUM_BACKFILL_DELAY_MS = 30 * 1000;
 
 const onListening = () => {
   log.info(`AoNarr server listening on ${config.bindAddress ?? "all interfaces"}, port ${config.port}`);
+  // The bundled images refuse to start on an unusable URL_BASE; a bare Node run does not, so say it is being ignored.
+  if (appUrlBaseIsInvalid(process.env.URL_BASE)) log.warn(`[startup] URL_BASE="${process.env.URL_BASE}" is not a usable path (letters, digits and . _ ~ - between slashes) and is ignored`);
+  else if (appUrlBase()) log.info(`[startup] URL base ${appUrlBase()}: links the server hands out (OPDS, IPTV, OpenAPI, Starr) include it`);
   // fetch() must really go through the dispatcher that carries the proxy, bypass and certificate settings.
   setTimeout(() => void verifyOutboundDispatcher(), 3000).unref();
   // A restored database that got this far works: the swap-back that waited on two failed starts is no longer needed.

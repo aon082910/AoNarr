@@ -1,5 +1,6 @@
 import type { StarrApp } from "./apps.js";
 import { STARR_ROUTE_DOCS } from "./routeDocs.js";
+import { withAppUrlBase } from "../services/urlBase.js";
 
 /**
  * The OpenAPI document of one virtual app, built from the routes it registered (so a route cannot exist without an entry),
@@ -30,7 +31,7 @@ export function starrOpenApi(app: StarrApp) {
         `The part of ${app.appName}'s API that AoNarr answers (the endpoints Prowlarr, Overseerr, Bazarr, Homepage, Unpackerr and similar tools use). ` +
         `Set the tool's URL base to /${app.key} and its API key to AoNarr's. The key may be sent as X-Api-Key, as the apikey query parameter or as a Bearer token.`,
     },
-    servers: [{ url: `/${app.key}` }],
+    servers: [{ url: withAppUrlBase(`/${app.key}`) }],
     components: {
       securitySchemes: {
         ApiKeyHeader: { type: "apiKey", in: "header", name: "X-Api-Key" },

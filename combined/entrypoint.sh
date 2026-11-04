@@ -25,6 +25,10 @@ if [ "$(stat -c '%u:%g' /config)" != "${PUID}:${PGID}" ]; then
   chown -R "${PUID}:${PGID}" /config
 fi
 
+# URL_BASE (optional, for example /aonarr) serves the UI and the API under that sub-path; unset changes nothing.
+# It rewrites nginx's config and the web root for this start, and refuses to start on a value that is not a path.
+/usr/local/bin/aonarr-url-base /etc/nginx/conf.d/aonarr.conf /usr/share/nginx/html
+
 gosu "${USER_NAME}:${GROUP_NAME}" node dist/index.js &
 NODE_PID=$!
 

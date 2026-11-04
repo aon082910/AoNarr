@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useParams } from "react-router-dom";
 import { setSessionToken, UI_REQUEST_HEADERS } from "../api/client.js";
+import { withBase } from "../utils/urlBase.js";
 
 interface InvitePreview {
   valid: true;
@@ -21,7 +22,7 @@ export default function InviteAcceptPage() {
   const [done, setDone] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/invite/${token}`)
+    fetch(withBase(`/api/invite/${token}`))
       .then(async (res) => {
         const body = await res.json();
         if (!res.ok) throw new Error(body.error ?? "This invite link isn't valid");
@@ -44,7 +45,7 @@ export default function InviteAcceptPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/invite/${token}`, {
+      const res = await fetch(withBase(`/api/invite/${token}`), {
         method: "POST",
         headers: { ...UI_REQUEST_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim(), password }),
@@ -53,7 +54,7 @@ export default function InviteAcceptPage() {
       if (!res.ok) throw new Error(body.error ?? "Couldn't create your account");
       setSessionToken(body.token);
       setDone(true);
-      window.location.href = "/";
+      window.location.href = withBase("/");
     } catch (err) {
       setError((err as Error).message);
     } finally {

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { api, useAvatarUrl } from "./api/client.js";
+import { withBase } from "./utils/urlBase.js";
 import Dashboard from "./pages/Dashboard.js";
 import Onboarding, { shouldShowOnboarding } from "./pages/Onboarding.js";
 import { useAuth } from "./context/AuthContext.js";
@@ -438,7 +439,7 @@ export default function App() {
           >
             <div className="brand" style={{ justifyContent: "space-between" }}>
               <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <img src="/icon.svg" alt="" width={28} height={28} />
+                <img src={withBase("/icon.svg")} alt="" width={28} height={28} />
                 <span className="nav-label">AoNarr</span>
               </span>
               <button
@@ -495,7 +496,7 @@ export default function App() {
       {navPosition === "top" && (
         <header className="topbar">
           <span className="brand">
-            <img src="/icon.svg" alt="" width={24} height={24} />
+            <img src={withBase("/icon.svg")} alt="" width={24} height={24} />
             AoNarr
           </span>
           <NavLink to="/" end>

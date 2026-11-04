@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
+import { absoluteUrl } from "../utils/urlBase.js";
 import Modal from "../components/Modal.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -61,7 +62,7 @@ export default function Users() {
       notify.error((err as Error).message);
       return;
     }
-    setNewInviteUrl(`${window.location.origin}/invite/${created.token}`);
+    setNewInviteUrl(absoluteUrl(`/invite/${created.token}`));
     setInviteAllowedTypes([]);
     setInviteMaxContentRating("");
     setInviteRole("user");

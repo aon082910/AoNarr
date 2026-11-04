@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { reviveAppUrls, stripAppUrls, withBase } from "../utils/urlBase.js";
 
-const BASE = "/api";
+// withBase() puts the URL base (utils/urlBase.ts) in front when AoNarr is served under a sub-path.
+const BASE = withBase("/api");
 const KEY_STORAGE = "aonarr_api_key";
 const TOKEN_STORAGE = "aonarr_session_token";
 
@@ -91,17 +93,17 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   // A 2xx can still carry an empty body (e.g. a bare res.status(201).send()), which res.json()
   // would reject on after the server already committed the change.
   const text = await res.text();
-  return (text ? JSON.parse(text) : undefined) as T;
+  return (text ? JSON.parse(text, reviveAppUrls) : undefined) as T;
 }
 
 export const api = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>(path, signal ? { signal } : undefined),
   post: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
+    request<T>(path, { method: "POST", body: body ? JSON.stringify(body, stripAppUrls) : undefined }),
   patch: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
+    request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body, stripAppUrls) : undefined }),
   put: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined }),
+    request<T>(path, { method: "PUT", body: body ? JSON.stringify(body, stripAppUrls) : undefined }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
