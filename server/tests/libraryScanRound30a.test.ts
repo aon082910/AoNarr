@@ -4,6 +4,10 @@ import path from "node:path";
 import os from "node:os";
 import { setupTestDb } from "./helpers/testDb.js";
 
+// The slot-wait tests move fake timers through up to 46 minutes, one poll after another, and each turn of the refresh
+// is a database round trip: against Postgres on a slow runner that outlasts the 20 s default.
+vi.setConfig({ testTimeout: 120_000 });
+
 // Round 30a: a scheduled full refresh waits for the type's refresh slot instead of skipping the type; the cheap
 // new-children pass shares that slot; an album folder that held no audio is not walked again until it changes; the
 // folder walk reads each folder off the main thread and skips one that does not answer; a full scan records when it

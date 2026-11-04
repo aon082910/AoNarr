@@ -83,7 +83,12 @@ describe("the System page's run-now buttons go through the job registry (RB7)", 
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ran: true });
-    const runs = await jobs.listJobRuns("autoArchival");
+    // The run's row is written without the registry waiting for it (a database round trip against Postgres): look for it for a moment.
+    let runs = await jobs.listJobRuns("autoArchival");
+    for (let i = 0; i < 80 && runs.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      runs = await jobs.listJobRuns("autoArchival");
+    }
     expect(runs).toHaveLength(1);
   });
 
