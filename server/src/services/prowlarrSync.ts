@@ -38,7 +38,7 @@ export const SYNC_ID_KEYS = ["prowlarrId", "jackettId"] as const;
 /** Sync bookkeeping that must survive an edit like the ids do: the Prowlarr enable flag seen on the
  * last sync, so only a change made in Prowlarr is mirrored, and the synced row a copy was once
  * disabled as a duplicate of (see disableUnsyncedDuplicates). */
-const SYNC_STATE_KEYS = ["prowlarrEnabled", "duplicateOf", "syncedMediaTypes"] as const;
+const SYNC_STATE_KEYS = ["prowlarrEnabled", "duplicateOf", "syncedMediaTypes", "starrApps", "starrFields"] as const;
 
 export function parseIndexerConfig(config: unknown): Record<string, unknown> {
   if (config && typeof config === "object" && !Array.isArray(config)) return { ...(config as Record<string, unknown>) };

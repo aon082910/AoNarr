@@ -1906,6 +1906,11 @@ export default function Settings() {
           Required by every request to this instance's API. The web UI already stores it after you
           logged in with it.
         </p>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+          Tools that talk to Sonarr, Radarr, Lidarr or Readarr (Prowlarr, Overseerr, Jellyseerr, Bazarr, Homepage,
+          Unpackerr) can use this instance as one: give the tool this address with the URL base <code>/sonarr</code>,{" "}
+          <code>/radarr</code>, <code>/lidarr</code> or <code>/readarr</code> and this API key. Send the key as a header where the tool offers it: a key in the URL is written to your reverse proxy's log.
+        </p>
         <button type="button" className="danger" onClick={regenerateApiKey}>
           Regenerate
         </button>

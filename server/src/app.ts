@@ -69,6 +69,7 @@ import { backgroundJobsRouter } from "./routes/backgroundJobs.js";
 import { importReviewRouter } from "./routes/importReview.js";
 import { mediaServerImportRouter } from "./routes/mediaServerImport.js";
 import { starrImportRouter } from "./routes/starrImport.js";
+import { mountStarrApps } from "./starr/router.js";
 import { openApiSpec } from "./openapi.js";
 import { contentRatingsRouter } from "./routes/contentRatingsRoute.js";
 import { changelogRouter } from "./routes/changelog.js";
@@ -467,6 +468,8 @@ export async function createApp(): Promise<Express> {
   app.use("/api/import-review", importReviewRouter);
   app.use("/api/media-server-import", mediaServerImportRouter);
   app.use("/api/starr-import", starrImportRouter);
+  // A Sonarr, Radarr, Lidarr and Readarr as far as Prowlarr, Overseerr, Bazarr, Homepage and Unpackerr go (src/starr).
+  mountStarrApps(app);
 
   app.use(errorHandler);
 

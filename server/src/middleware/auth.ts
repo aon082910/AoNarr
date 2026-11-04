@@ -165,8 +165,19 @@ const REMOTE_ARTWORK_RELAY_PATH = /^\/remote-instances\/\d{1,9}\/local-artwork\/
  * only; the SSE streams, which can't send headers, take a stream ticket (see mintStreamTicket).
  */
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
+  return authenticate(req, res, next, true);
+}
+
+/** requireAuth without the list of open /api paths: the Starr-compatible surface has paths of its own
+ * (a Starr app's /health answers with the app's health, so it must not be open), and only /ping is. */
+export async function requireAuthStrict(req: Request, res: Response, next: NextFunction) {
+  return authenticate(req, res, next, false);
+}
+
+async function authenticate(req: Request, res: Response, next: NextFunction, openPaths: boolean) {
   if (
-    req.path === "/health" ||
+    openPaths &&
+    (req.path === "/health" ||
     req.path === "/auth/login" ||
     req.path === "/auth/login/totp" ||
     req.path === "/auth/setup" ||
@@ -183,7 +194,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     req.path.startsWith("/opds") ||
     req.path.startsWith("/media/local-artwork/") ||
     (req.method === "GET" && REMOTE_ARTWORK_RELAY_PATH.test(req.path)) ||
-    req.path.startsWith("/invite/")
+    req.path.startsWith("/invite/"))
   ) {
     next();
     return;

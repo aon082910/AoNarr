@@ -501,6 +501,20 @@ one book.
   library against what the configured media server actually reports having, flagging anything
   AoNarr thinks exists that the media server doesn't see — a stale path, a permissions issue, or a
   file moved/deleted outside AoNarr's own pipeline.
+- **Sonarr, Radarr, Lidarr and Readarr API** — the tools that talk to a Starr app can use AoNarr as one.
+  Give a tool AoNarr's address with the URL base `/sonarr`, `/radarr`, `/lidarr` or `/readarr` and the
+  instance API key (sent as `X-Api-Key`, the `apikey` query parameter or a Bearer token). Each mount lists
+  only its own library types and answers what Prowlarr (indexers pushed to it become AoNarr indexers),
+  Overseerr and Jellyseerr (lookup, add with the seasons asked for, search), Bazarr (series, episodes,
+  files), Homepage and Homarr (status, queue, calendar, wanted) and Unpackerr (queue, commands) ask for:
+  `/ping`, `system/status`, `health`, `rootfolder`, `tag`, `qualityprofile`, `indexer`, `queue`, `history`,
+  `calendar`, `wanted/missing`, `wanted/cutoff`, `series`, `episode`, `episodefile`, `movie`, `moviefile`,
+  the Lidarr and Readarr equivalents and `command` (searches, refresh, rescan and RSS sync; the scan of finished
+  downloads runs the queue check and takes no path). Its OpenAPI document is at `<mount>/api/<v3 or v1>/openapi.json`.
+  Where a tool can send the key as a header, do: a key in the URL ends up in a reverse proxy's log (the bundled
+  nginx leaves it out for these paths). An indexer AoNarr already has at the address Prowlarr pushes is not taken
+  over; Prowlarr is told to remove it first. Not built: release push (autobrr), quality profile and custom format
+  writes (Recyclarr), adding artists and authors by lookup.
 
 ## Architecture
 
