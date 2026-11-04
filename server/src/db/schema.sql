@@ -1017,3 +1017,20 @@ CREATE TABLE IF NOT EXISTS indexer_status (
   backoff_reason TEXT,
   backoff_set_at TEXT
 );
+
+-- A notification connection (Sonarr/Radarr's Settings > Connect): one named destination of one kind, each with its
+-- own events and tags, so two Discord channels can get different events. config is JSON; every secret field in it
+-- (webhook URLs, tokens, passwords, header values) is encrypted at rest (services/notificationConnections.ts).
+-- events: a comma list of event keys, NULL = the defaults (every event except the bulk ones, services/notifications.ts).
+-- tag_ids: JSON list, NULL = every title; else only titles carrying one of the tags.
+CREATE TABLE IF NOT EXISTS notification_connections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  config TEXT NOT NULL DEFAULT '{}',
+  events TEXT,
+  tag_ids TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

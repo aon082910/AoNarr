@@ -286,10 +286,10 @@ async function importListIssues(): Promise<HealthIssue[]> {
   }));
 }
 
-/** Sonarr's NotificationStatusCheck: a provider whose last sends all failed. */
+/** Sonarr's NotificationStatusCheck: a connection whose last sends all failed. Each connection is reported on its own, by name. */
 async function notificationIssues(): Promise<HealthIssue[]> {
   return failingNotificationProviders().map((f) => ({
-    source: `notification:${f.provider}`,
+    source: `notification:${f.connectionId}`,
     severity: "warning" as const,
     message: `Notifications to ${f.provider} have failed ${f.failures} times in a row since ${f.since.slice(0, 16).replace("T", " ")} UTC (last error: ${f.lastError || "unknown"}).`,
     transient: true,

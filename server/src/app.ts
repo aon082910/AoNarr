@@ -3,6 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { db, initDb } from "./db/index.js";
 import { loadSettingsCache, getSetting } from "./services/settingsStore.js";
+import { migrateNotificationConnections } from "./services/notificationConnections.js";
 import { ensureBluray720pQuality, loadQualityCaches } from "./services/quality.js";
 import { backfillEpisodicAndCollectionHasFile } from "./services/libraryScan.js";
 import { backfillCleanTitles } from "./services/releaseAliases.js";
@@ -27,6 +28,7 @@ import { searchRouter } from "./routes/search.js";
 import { activityRouter } from "./routes/activity.js";
 import { subtitlesRouter } from "./routes/subtitles.js";
 import { settingsRouter } from "./routes/settings.js";
+import { notificationConnectionsRouter } from "./routes/notificationConnections.js";
 import { metadataRouter } from "./routes/metadata.js";
 import { wantedRouter } from "./routes/wanted.js";
 import { importRouter } from "./routes/import.js";
@@ -290,6 +292,8 @@ function skipsPreflight(req: express.Request): boolean {
 export async function createApp(): Promise<Express> {
   await initDb();
   await loadSettingsCache();
+  // The old one-set-of-settings-per-provider notifications become connections, once.
+  await migrateNotificationConnections().catch((err) => log.error("[startup] could not move the notification settings to connections:", (err as Error).message));
   await loadIndexerStatuses().catch((err) => log.warn("[startup] could not load the indexer failure state:", (err as Error).message));
   await loadClientStatuses().catch((err) => log.warn("[startup] could not load the download client failure state:", (err as Error).message));
   await reencryptLegacyCredentials();
@@ -407,7 +411,7 @@ export async function createApp(): Promise<Express> {
   app.use("/api/media", mediaRouter);
   // A saved change to what the health checks read drops the kept report (see middleware/healthStale.ts).
   app.use(
-    ["/api/indexers", "/api/download-clients", "/api/root-folders", "/api/import-lists", "/api/remote-path-mappings", "/api/settings"],
+    ["/api/indexers", "/api/download-clients", "/api/root-folders", "/api/import-lists", "/api/remote-path-mappings", "/api/settings", "/api/notifications"],
     healthStaleOnChange
   );
   app.use("/api/indexers", indexersRouter);
@@ -421,6 +425,7 @@ export async function createApp(): Promise<Express> {
   app.use("/api/subtitles", subtitlesRouter);
   app.use("/api/settings/calendar-token", calendarTokenRouter);
   app.use("/api/settings", settingsRouter);
+  app.use("/api/notifications/connections", notificationConnectionsRouter);
   app.use("/api/metadata", metadataRouter);
   app.use("/api/wanted", wantedRouter);
   app.use("/api/import", importRouter);

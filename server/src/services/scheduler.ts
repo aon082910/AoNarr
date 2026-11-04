@@ -1546,12 +1546,19 @@ export async function grab(
 
     // A manual grab answers at once; waiting for a webhook that never answers held the response (and every other
     // grab for the item) for the notification timeout.
+    // What the Sonarr/Radarr-shaped webhook body and the connections' tag filters need to know about this grab.
+    const grabContext = {
+      mediaItemId: mediaItem.id,
+      episodeIds: episodeId ? [episodeId] : undefined,
+      release: { title: best.title, indexer: best.indexerName, size, quality, releaseGroup: parsedBest.releaseGroup, protocol: best.protocol },
+      downloadClient: { name: client.name, type: client.type, downloadId },
+    };
     if (source === "interactive") {
       void Promise.resolve()
-        .then(() => notifyGrabbed(mediaItem.title, best.title))
+        .then(() => notifyGrabbed(mediaItem.title, best.title, grabContext))
         .catch((e) => log.warn("[scheduler] notification failed:", e.message));
     } else {
-      await notifyGrabbed(mediaItem.title, best.title);
+      await notifyGrabbed(mediaItem.title, best.title, grabContext);
     }
     notifyQueueChanged();
     log.info(`[scheduler] grabbed "${best.title}" for "${mediaItem.title}"`);
@@ -3160,7 +3167,7 @@ export async function checkVideoChannels(): Promise<void> {
             JSON.stringify({ title: child.title, source: sourceUrl })
           );
           budget.consume(ytClient);
-          notifyGrabbed(channel.title, child.title).catch(() => {});
+          notifyGrabbed(channel.title, child.title, { mediaItemId: channel.id }).catch(() => {});
           notifyQueueChanged();
         } catch (err) {
           log.warn(`[scheduler] failed to auto-download new video "${child.title}":`, (err as Error).message);
@@ -3245,7 +3252,7 @@ export async function checkPodcastFeeds(): Promise<void> {
             JSON.stringify({ title: child.title, source: child.externalId })
           );
           budget.consume(httpClient);
-          notifyGrabbed(podcast.title, child.title).catch(() => {});
+          notifyGrabbed(podcast.title, child.title, { mediaItemId: podcast.id }).catch(() => {});
           notifyQueueChanged();
         } catch (err) {
           log.warn(`[scheduler] failed to auto-download new podcast episode "${child.title}":`, (err as Error).message);
@@ -3290,6 +3297,12 @@ export async function retryFailedGrab(
   const recordFailure = releaseAtFault && !opts.failureRecorded;
   const mediaRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(match.mediaItemId)) as any;
   const mediaTitle = mediaRow?.title ?? match.title;
+  const notifyContext = {
+    mediaItemId: match.mediaItemId,
+    episodeIds: match.episodeId ? [match.episodeId] : undefined,
+    release: { title: match.title, size: match.size, quality: match.quality, protocol: match.protocol },
+    downloadClient: { downloadId: match.downloadId },
+  };
 
   if (recordFailure || (releaseAtFault && !(await getBlocklistedTitles(match.mediaItemId)).has(match.title))) {
     await addToBlocklist({
@@ -3318,7 +3331,7 @@ export async function retryFailedGrab(
     (match.grabSource === "interactive" && getSetting("redownloadFailedInteractive") === "0") ||
     (releaseAtFault && match.retryCount >= maxAutoRetries())
   ) {
-    await notifyFailed(mediaTitle, reason);
+    await notifyFailed(mediaTitle, reason, notifyContext);
     return;
   }
 
@@ -3330,11 +3343,11 @@ export async function retryFailedGrab(
       ? ((await db.prepare("SELECT type FROM download_clients WHERE id = ?").get(match.downloadClientId)) as { type: string } | undefined)
       : undefined;
     if (clientRow?.type === "ytdlp") {
-      await notifyFailed(mediaTitle, reason);
+      await notifyFailed(mediaTitle, reason, notifyContext);
       return;
     }
     if (await isRootFolderOverQuota(item.rootFolderId)) {
-      await notifyFailed(mediaTitle, `${reason} (not retried: its root folder is at its configured quota or below its minimum free space)`);
+      await notifyFailed(mediaTitle, `${reason} (not retried: its root folder is at its configured quota or below its minimum free space)`, notifyContext);
       return;
     }
     // A failed discography has no single album to look another release up for: it is blocklisted (above), and the
@@ -3342,7 +3355,7 @@ export async function retryFailedGrab(
     if (item.type === "artist" && !match.subItemId && !match.episodeId && match.seasonNumber == null && parseReleaseTitle(match.title).discography) {
       for (const id of await queueTargetIds(match.id)) await wakeLeaf("sub_items", id);
       await wakeSeason(item.id, DISCOGRAPHY_SEARCH_KEY);
-      await notifyFailed(mediaTitle, `${reason} (the albums it was for are searched again)`);
+      await notifyFailed(mediaTitle, `${reason} (the albums it was for are searched again)`, notifyContext);
       return;
     }
     const profile = await getQualityProfile(item.qualityProfileId);
@@ -3366,7 +3379,7 @@ export async function retryFailedGrab(
       const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(match.subItemId)) as any;
       if (!sub) throw new Error("sub-item no longer exists");
       if (directSourceFor(item, sub)) {
-        await notifyFailed(mediaTitle, reason);
+        await notifyFailed(mediaTitle, reason, notifyContext);
         return;
       }
       plan = subItemPlanFor(item, sub);
@@ -3397,12 +3410,12 @@ export async function retryFailedGrab(
         ? await existingFileQuality(item, match.episodeId, match.subItemId)
         : await seasonFileQuality(item.id, seasonPack, seasonEpisodes, profile?.qualityGroups);
     if (onDisk !== undefined && !usesQualityTiers(item.type)) {
-      await notifyFailed(mediaTitle, `${reason} (not retried: it already has a file)`);
+      await notifyFailed(mediaTitle, `${reason} (not retried: it already has a file)`, notifyContext);
       return;
     }
     if (onDisk !== undefined && meetsCutoff(onDisk, profile?.cutoff ?? "", profile?.qualityGroups)) {
       log.info(`[scheduler] retry grabbed nothing for "${mediaTitle}": it already meets the profile's cutoff (${profile!.cutoff})`);
-      await notifyFailed(mediaTitle, `${reason} (not retried: it already meets the profile's cutoff (${profile!.cutoff}))`);
+      await notifyFailed(mediaTitle, `${reason} (not retried: it already meets the profile's cutoff (${profile!.cutoff}))`, notifyContext);
       return;
     }
 
@@ -3451,7 +3464,7 @@ export async function retryFailedGrab(
       const why = whyNothingGrabbed(results, clients, clients, onDisk, undefined, await tagIdsForMediaItem(item.id));
       log.info(`[scheduler] retry found nothing to grab for "${mediaTitle}" (${why}) — notifying instead`);
       const detail = why === "No matching results" ? "no other releases found" : why.charAt(0).toLowerCase() + why.slice(1);
-      await notifyFailed(mediaTitle, `${reason} (retried, ${detail})`);
+      await notifyFailed(mediaTitle, `${reason} (retried, ${detail})`, notifyContext);
       return;
     }
 
@@ -3467,7 +3480,7 @@ export async function retryFailedGrab(
     );
   } catch (err) {
     log.warn(`[scheduler] retry failed for "${mediaTitle}":`, (err as Error).message);
-    await notifyFailed(mediaTitle, reason);
+    await notifyFailed(mediaTitle, reason, notifyContext);
   }
 }
 
@@ -3543,7 +3556,7 @@ function trackClientNote(match: QueueItem, status: PolledStatus): void {
   clientNotes.set(match.id, note);
   if (warning && !note.notified && Date.now() - note.since >= CLIENT_WARNING_NOTIFY_MS) {
     note.notified = true;
-    notifyManualInteractionRequired(match.title, `${warning} (for over a day)`).catch((e) => log.warn("[scheduler] notification failed:", e.message));
+    notifyManualInteractionRequired(match.title, `${warning} (for over a day)`, { mediaItemId: match.mediaItemId }).catch((e) => log.warn("[scheduler] notification failed:", e.message));
   }
 }
 
@@ -3632,7 +3645,7 @@ async function importCompletedDownload(
         const mediaRow = (await db.prepare("SELECT title FROM media_items WHERE id = ?").get(match.mediaItemId)) as
           | { title: string }
           | undefined;
-        notifyManualInteractionRequired(mediaRow?.title ?? match.title, reason).catch((e) =>
+        notifyManualInteractionRequired(mediaRow?.title ?? match.title, reason, { mediaItemId: match.mediaItemId }).catch((e) =>
           log.warn("[scheduler] notification failed:", e.message)
         );
         return;
@@ -3792,7 +3805,7 @@ async function retryTransientParkedImports(ctx: PollContext = INLINE_POLL): Prom
     if (Date.now() < entry.nextAt) continue;
     if (entry.attempts >= PARKED_RETRY_DELAYS_MS.length) {
       entry.nextAt = Number.POSITIVE_INFINITY;
-      notifyManualInteractionRequired(match.title, `${match.importSkippedReason} (automatic retries used up; import it by hand)`).catch((e) =>
+      notifyManualInteractionRequired(match.title, `${match.importSkippedReason} (automatic retries used up; import it by hand)`, { mediaItemId: match.mediaItemId }).catch((e) =>
         log.warn("[scheduler] notification failed:", e.message)
       );
       continue;
@@ -4306,7 +4319,7 @@ async function expireBlackholeReleases(rows: QueueItem[]): Promise<void> {
     notifyQueueChanged();
     const reason = `Nothing named like this release appeared in the downloads folder within ${blackholeTimeoutHours()}h of the watch-folder drop`;
     await db.prepare("INSERT INTO history (media_item_id, event_type, data) VALUES (?, 'failed', ?)").run(q.mediaItemId, JSON.stringify({ title: q.title, reason, ...queueHistoryFields(q) }));
-    await notifyFailed(q.title, reason);
+    await notifyFailed(q.title, reason, { mediaItemId: q.mediaItemId, episodeIds: q.episodeId ? [q.episodeId] : undefined, release: { title: q.title, size: q.size, quality: q.quality, protocol: q.protocol } });
     log.info(`[scheduler] expired blackhole release "${q.title}": ${reason}`);
   }
 }
@@ -4372,7 +4385,7 @@ export async function checkHealthAndNotify(): Promise<void> {
   const summary = issues.map((i) => i.message).join("; ");
   setSetting("lastHealthIssueSources", JSON.stringify(sources));
   setSetting("lastHealthIssueSummary", summary);
-  if (summary) await notifyHealthIssue(summary);
+  if (summary) await notifyHealthIssue(summary, { health: { level: issues.some((i) => i.severity === "error") ? "error" : "warning", types: sources } });
   else if (lastSummary || lastSources.length > 0) await notifyHealthRestored(lastSummary || lastSources.join(", "));
 }
 
