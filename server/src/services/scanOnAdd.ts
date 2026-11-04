@@ -87,7 +87,11 @@ function startBatch(): void {
   pending.clear();
   scanning++;
   void runBatch(ids)
-    .catch((err) => log.warn("[scanOnAdd] a scan after adds failed:", (err as Error).message))
+    .catch((err) => {
+      log.warn("[scanOnAdd] a scan after adds failed:", (err as Error).message);
+      // A batch that failed before its per-type loop (the import, the lookup of its rows) would leave its ids queued for ever.
+      for (const id of ids) queued.delete(id);
+    })
     .finally(() => {
       scanning--;
     });

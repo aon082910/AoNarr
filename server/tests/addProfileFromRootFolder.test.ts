@@ -152,7 +152,7 @@ describe("import lists start from the root folder's profile and monitor choice",
   it("an artist from a list takes the artist folder's default profile and its monitor choice", async () => {
     await setFolderDefault("artist", "default_quality_profile_id", folderProfile);
     await setFolderDefault("artist", "default_monitor", "none");
-    const list = await makeList({ type: "lastfm", url: "someone" });
+    const list = await makeList({ type: "lastfm", url: "someone", monitor: "inherit" });
     // Last.fm lists are read through the Last.fm API; the sync only needs one named artist.
     setSetting("lastfmApiKey", "key");
     vi.stubGlobal(
@@ -170,7 +170,7 @@ describe("import lists start from the root folder's profile and monitor choice",
 
   it("the folder's monitor choice applies when the list keeps the default, and a list that names one wins", async () => {
     await setFolderDefault("series", "default_monitor", "none");
-    const quiet = await makeList({ name: "Quiet" });
+    const quiet = await makeList({ name: "Quiet", monitor: "inherit" });
     traktListReturns([{ show: { title: "Quiet Show", year: 2024, ids: { tmdb: 8105, trakt: 5 } } }]);
     await syncImportList(quiet);
     expect(Number(((await db.prepare("SELECT monitored FROM media_items WHERE title = 'Quiet Show'").get()) as any).monitored)).toBe(0);
@@ -179,6 +179,32 @@ describe("import lists start from the root folder's profile and monitor choice",
     traktListReturns([{ show: { title: "Loud Show", year: 2024, ids: { tmdb: 8106, trakt: 6 } } }]);
     await syncImportList(loud);
     expect(Number(((await db.prepare("SELECT monitored FROM media_items WHERE title = 'Loud Show'").get()) as any).monitored)).toBe(1);
+  });
+
+  it("a list set to All keeps All when the folder's default is none; only 'inherit' defers to the folder", async () => {
+    await setFolderDefault("series", "default_monitor", "none");
+    const monitoredOf = async (title: string) => Number(((await db.prepare("SELECT monitored FROM media_items WHERE title = ?").get(title)) as any).monitored);
+
+    const all = await makeList({ name: "All list", monitor: "all" });
+    traktListReturns([{ show: { title: "All Show", year: 2024, ids: { tmdb: 8111, trakt: 11 } } }]);
+    await syncImportList(all);
+    expect(await monitoredOf("All Show")).toBe(1);
+
+    const inherit = await makeList({ name: "Inherit list", monitor: "inherit" });
+    traktListReturns([{ show: { title: "Inherit Show", year: 2024, ids: { tmdb: 8112, trakt: 12 } } }]);
+    await syncImportList(inherit);
+    expect(await monitoredOf("Inherit Show")).toBe(0);
+
+    const none = await makeList({ name: "None list", monitor: "none" });
+    traktListReturns([{ show: { title: "None Show", year: 2024, ids: { tmdb: 8113, trakt: 13 } } }]);
+    await syncImportList(none);
+    expect(await monitoredOf("None Show")).toBe(0);
+
+    // With a folder default of "future" an inheriting list follows it, and an All list still adds everything.
+    await setFolderDefault("series", "default_monitor", "future");
+    traktListReturns([{ show: { title: "Future Inherit Show", year: 2024, ids: { tmdb: 8114, trakt: 14 } } }]);
+    await syncImportList(inherit);
+    expect(await monitoredOf("Future Inherit Show")).toBe(1);
   });
 });
 

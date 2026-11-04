@@ -14,6 +14,7 @@ import { migrateScreenscraperArtwork } from "./services/metadata.js";
 import { resetInterruptedRestores } from "./services/recycleBin.js";
 import { waitForQueueImports } from "./services/downloadClient.js";
 import { backfillMissingAlbumTracks } from "./services/libraryScan.js";
+import { repairUnrankedCutoffs } from "./services/quality.js";
 
 // Without these, an unhandled rejection or a synchronous throw outside Express's own request
 // cycle (a background job, a stray unawaited promise, an event-emitter callback) crashes the
@@ -44,6 +45,8 @@ const app = await createApp();
 await resetInterruptedRestores().catch((err) => log.warn("[startup] recycle-bin restore reset failed:", err.message));
 await migrateCredentialedMediaServerPosters().catch((err) => log.warn("[startup] media-server poster migration failed:", err.message));
 await migrateScreenscraperArtwork().catch((err) => log.warn("[startup] ScreenScraper artwork migration failed:", err.message));
+// A profile cutoff that is not on the quality ladder would make every file under it an upgrade candidate.
+await repairUnrankedCutoffs().catch((err) => log.warn("[startup] quality cutoff repair failed:", err.message));
 
 /** Runs after the app is already serving traffic (see the `listen` callback below), delayed
  * further still so the first couple of minutes after a restart or update — when an admin is most

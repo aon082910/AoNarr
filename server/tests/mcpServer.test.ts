@@ -171,3 +171,25 @@ describe("MCP errors from the API", () => {
     expect(await grabError()).toBe("AoNarr API POST /api/search/5/grab failed (HTTP 502): Bad Gateway");
   });
 });
+
+describe("MCP delete_media", () => {
+  it("returns the warnings the delete answered with", async () => {
+    stubApi({ deleted: true, warnings: ["The storage did not answer; remove the folder /media/Show by hand."] });
+    const c = await connect();
+
+    const result: any = await c.callTool({ name: "delete_media", arguments: { id: 7, deleteFiles: true } });
+
+    expect(result.isError).toBeFalsy();
+    const body = JSON.parse(result.content[0].text);
+    expect(body).toEqual({ deleted: true, id: 7, warnings: ["The storage did not answer; remove the folder /media/Show by hand."] });
+  });
+
+  it("answers without warnings when the delete had none", async () => {
+    stubApi(null);
+    const c = await connect();
+
+    const result: any = await c.callTool({ name: "delete_media", arguments: { id: 7 } });
+
+    expect(JSON.parse(result.content[0].text)).toEqual({ deleted: true, id: 7 });
+  });
+});

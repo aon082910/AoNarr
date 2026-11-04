@@ -328,6 +328,9 @@ export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearch
  * TMDB (/external_ids of the movie or show) first, then TheTVDB (the series' remote ids). Null when no provider
  * answers (no key, an unknown id, a network error), so a caller can leave the title as it is.
  */
+/** How long one provider may take to answer an IMDb id lookup. */
+const IMDB_LOOKUP_TIMEOUT_MS = 10_000;
+
 export async function fetchImdbIdFor(type: MediaType, externalIds: Record<string, string>): Promise<string | null> {
   const isImdb = (v: unknown): v is string => typeof v === "string" && /^tt\d+$/.test(v);
   if (isImdb(externalIds.imdb)) return externalIds.imdb;
@@ -338,7 +341,7 @@ export async function fetchImdbIdFor(type: MediaType, externalIds: Record<string
   const tmdbKey = getSetting("tmdbApiKey");
   if (externalIds.tmdb && tmdbKey) {
     try {
-      const res = await fetch(`https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${encodeURIComponent(externalIds.tmdb)}/external_ids?api_key=${tmdbKey}`);
+      const res = await fetchWithTimeout(`https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${encodeURIComponent(externalIds.tmdb)}/external_ids?api_key=${tmdbKey}`, {}, IMDB_LOOKUP_TIMEOUT_MS);
       if (res.ok) {
         const body: any = await res.json();
         if (isImdb(body?.imdb_id)) return body.imdb_id;
@@ -349,7 +352,7 @@ export async function fetchImdbIdFor(type: MediaType, externalIds: Record<string
   }
   if (isShow && externalIds.tvdb) {
     try {
-      const body = await tvdbFetch(`/v4/series/${encodeURIComponent(externalIds.tvdb)}/extended`);
+      const body = await tvdbFetch(`/v4/series/${encodeURIComponent(externalIds.tvdb)}/extended`, {}, IMDB_LOOKUP_TIMEOUT_MS);
       const remote = (body?.data?.remoteIds ?? []).find((r: any) => /imdb/i.test(String(r?.sourceName ?? "")));
       if (isImdb(remote?.id)) return remote.id;
     } catch {
@@ -637,14 +640,23 @@ export async function fetchSeriesSeasonsFor(externalIds: Record<string, string>)
 
 let tvdbToken: string | null = null;
 
-async function getTvdbToken(forceRefresh = false): Promise<string> {
+/** A fetch with a timeout when one is given, else the plain one (the TVDB callers that always had none keep that). */
+function fetchMaybeTimed(url: string, options: RequestInit, timeoutMs?: number): Promise<Response> {
+  return timeoutMs ? fetchWithTimeout(url, options, timeoutMs) : fetch(url, options);
+}
+
+async function getTvdbToken(forceRefresh = false, timeoutMs?: number): Promise<string> {
   if (tvdbToken && !forceRefresh) return tvdbToken;
   const key = requireSetting("tvdbApiKey", "TVDB API key");
-  const res = await fetch("https://api4.thetvdb.com/v4/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ apikey: key }),
-  });
+  const res = await fetchMaybeTimed(
+    "https://api4.thetvdb.com/v4/login",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apikey: key }),
+    },
+    timeoutMs
+  );
   if (!res.ok) throw new Error(`TVDB login failed: HTTP ${res.status}`);
   const body: any = await res.json();
   if (!body.data?.token) throw new Error("TVDB login did not return a token");
@@ -652,15 +664,15 @@ async function getTvdbToken(forceRefresh = false): Promise<string> {
   return tvdbToken as string;
 }
 
-async function tvdbFetch(path: string, params: Record<string, string> = {}): Promise<any> {
+async function tvdbFetch(path: string, params: Record<string, string> = {}, timeoutMs?: number): Promise<any> {
   const url = new URL(`https://api4.thetvdb.com${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
-  let token = await getTvdbToken();
-  let res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+  let token = await getTvdbToken(false, timeoutMs);
+  let res = await fetchMaybeTimed(url.toString(), { headers: { Authorization: `Bearer ${token}` } }, timeoutMs);
   if (res.status === 401) {
-    token = await getTvdbToken(true);
-    res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+    token = await getTvdbToken(true, timeoutMs);
+    res = await fetchMaybeTimed(url.toString(), { headers: { Authorization: `Bearer ${token}` } }, timeoutMs);
   }
   if (!res.ok) throw new Error(`TVDB request failed: HTTP ${res.status}`);
   return res.json();

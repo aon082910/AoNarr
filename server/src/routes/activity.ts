@@ -23,11 +23,14 @@ import { wakeLeaf, wakeSeason } from "../services/searchBackoff.js";
 import { queueHistoryFields } from "../services/queueHistory.js";
 import { getRssDecision, listRssDecisions, updateRssDecision } from "../services/rssDecisions.js";
 import { judgeMappedRelease } from "../services/rssSync.js";
-import { storeAliases } from "../services/releaseAliases.js";
+import { cleanTitle, storeAliases } from "../services/releaseAliases.js";
 import { resetSearchBackoff } from "../services/searchBackoff.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const activityRouter = Router();
+
+/** The fewest letters a release name needs to be taught as a title's alias from the RSS decisions list. */
+const ALIAS_MIN_LETTERS = 3;
 activityRouter.use(requireAdmin);
 
 /** Ids per IN list: far below SQLite's variable limit, so the number of queries stays one for any realistic number of rows. */
@@ -231,6 +234,22 @@ activityRouter.post(
 
     const parsed = parseReleaseTitle(found.release.title);
     if (parsed.rejected || !parsed.title) throw new HttpError(400, "The release name has no title to teach");
+    // The name comes from an indexer's release, so it is checked before it is taught: a name of one short word, or
+    // one that another title of the library already goes by, would make later releases of that title match this one.
+    const aliasKey = cleanTitle(parsed.title);
+    if ([...aliasKey].length < ALIAS_MIN_LETTERS) {
+      throw new HttpError(409, `The release name "${parsed.title}" is shorter than ${ALIAS_MIN_LETTERS} letters, so it is too generic to teach as a name for "${item.title}"`);
+    }
+    const sameName = (await db
+      .prepare(
+        `SELECT m.id, m.title FROM media_item_titles t JOIN media_items m ON m.id = t.media_item_id WHERE t.clean_title = ? AND t.media_item_id <> ? LIMIT 1`
+      )
+      .get(aliasKey, item.id)) as { id: number; title: string } | undefined;
+    const otherTitles = sameName ? [] : ((await db.prepare("SELECT id, title FROM media_items WHERE id <> ?").all(item.id)) as { id: number; title: string }[]);
+    const clash = sameName ?? otherTitles.find((o) => cleanTitle(o.title) === aliasKey);
+    if (clash) {
+      throw new HttpError(409, `The release name "${parsed.title}" is already the name of "${clash.title}" (item ${clash.id}), so it cannot also be taught as a name for "${item.title}"`);
+    }
     const added = await storeAliases(item.id, [parsed.title], "user");
     if (added > 0) {
       await resetSearchBackoff(item.id);
@@ -240,7 +259,7 @@ activityRouter.post(
     const judged = await judgeMappedRelease(found.release, { mediaItemId: item.id, episodeId, subItemId });
     await updateRssDecision(found.row.id, judged);
     const updated = await getRssDecision(found.row.id);
-    res.json({ ...updated!.row, aliasAdded: added > 0 });
+    res.json({ ...updated!.row, aliasAdded: added > 0, alias: parsed.title });
   })
 );
 

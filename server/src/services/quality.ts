@@ -87,6 +87,53 @@ async function addBluray720pTier(): Promise<void> {
   setSetting("bluray720pTierAdded", "1");
 }
 
+/**
+ * Startup repair for quality profiles whose cutoff is not a quality on the ladder (a renamed or deleted tier, a
+ * typo, a value stored before a rename). Such a cutoff reads as "never reached", which makes every monitored file
+ * under the profile an upgrade candidate. The cutoff is set to the profile's best allowed quality (the highest
+ * rank among its allowed qualities and the members of its groups) and a warning names the profile, the old and
+ * the new value. A profile with no ranked allowed quality is left alone, so the Health warning stays for the
+ * admin. A profile with a ranked cutoff (even one it does not allow) or no cutoff is never touched, which also
+ * makes the repair idempotent. Returns the number of profiles changed.
+ */
+export async function repairUnrankedCutoffs(): Promise<number> {
+  const ladder = new Map(((await db.prepare("SELECT name, rank FROM qualities").all()) as { name: string; rank: number }[]).map((r) => [r.name, Number(r.rank)]));
+  if (ladder.size === 0) return 0;
+  const rows = (await db.prepare("SELECT id, name, cutoff, allowed_qualities, quality_groups FROM quality_profiles").all()) as {
+    id: number;
+    name: string;
+    cutoff: string | null;
+    allowed_qualities: string | null;
+    quality_groups: string | null;
+  }[];
+  let repaired = 0;
+  for (const row of rows) {
+    const cutoff = (row.cutoff ?? "").trim();
+    if (!cutoff || ladder.has(cutoff)) continue;
+    let allowed: string[] = [];
+    try {
+      const parsed = JSON.parse(row.allowed_qualities ?? "[]");
+      if (Array.isArray(parsed)) allowed = parsed.filter((q): q is string => typeof q === "string");
+    } catch {
+      // an unreadable list gives nothing to repair from
+    }
+    const candidates = new Set(allowed);
+    for (const group of parseQualityGroups(row.quality_groups)) {
+      if (group.some((q) => allowed.includes(q))) for (const q of group) candidates.add(q);
+    }
+    let best: string | null = null;
+    for (const q of candidates) {
+      const rank = ladder.get(q);
+      if (rank !== undefined && (best === null || rank > (ladder.get(best) as number))) best = q;
+    }
+    if (best === null) continue;
+    await db.prepare("UPDATE quality_profiles SET cutoff = ? WHERE id = ?").run(best, row.id);
+    log.warn(`[quality] profile "${row.name}" (id ${row.id}): its cutoff "${cutoff}" is not a quality on the ladder, so it was set to the best quality the profile allows, "${best}"`);
+    repaired++;
+  }
+  return repaired;
+}
+
 interface SizeBounds {
   minSizeMb: number | null;
   maxSizeMb: number | null;

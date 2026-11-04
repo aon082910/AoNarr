@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { IMPORT_LIST_MEDIA_TYPES, LIST_CLEAN_LEVELS, syncImportList, type ImportListRow } from "../services/importLists.js";
+import { IMPORT_LIST_MEDIA_TYPES, LIST_CLEAN_LEVELS, LIST_MONITOR_INHERIT, syncImportList, type ImportListRow } from "../services/importLists.js";
 import { isMonitorMode, isNewItemMode } from "../services/monitorModes.js";
 import { checkedTagIdsColumn } from "../services/tagScope.js";
 
@@ -12,7 +12,7 @@ const MINIMUM_AVAILABILITIES = ["announced", "inCinemas", "released"];
 async function listOptionsInput(b: any, listType: ImportListRow["type"]): Promise<Record<string, string | number | null>> {
   const out: Record<string, string | number | null> = {};
   if (b.monitor !== undefined) {
-    if (!isMonitorMode(b.monitor)) throw new HttpError(400, `Unknown monitor choice "${b.monitor}"`);
+    if (b.monitor !== LIST_MONITOR_INHERIT && !isMonitorMode(b.monitor)) throw new HttpError(400, `Unknown monitor choice "${b.monitor}"`);
     out.monitor = b.monitor;
   }
   if (b.monitorNewItems !== undefined) {
@@ -96,6 +96,8 @@ importListsRouter.post(
     }
     const listRootFolderId = await rootFolderIdInput(rootFolderId, type);
     const options = await listOptionsInput(req.body ?? {}, type);
+    // A new list that names no Monitor choice leaves it to its root folder (the column default "all" stays for the lists that already exist).
+    if (options.monitor === undefined) options.monitor = LIST_MONITOR_INHERIT;
 
     const result = await db
       .prepare(

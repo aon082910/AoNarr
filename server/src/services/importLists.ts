@@ -39,7 +39,7 @@ export interface ImportListRow {
   min_rating: number | null;
   min_votes: number | null;
   exclude_genres: string | null; // JSON array of lowercased genre names
-  /** What the list monitors of what it adds: all, none, or a mode for a series' episodes or an artist's albums. */
+  /** What the list monitors of what it adds: all, none, or a mode for a series' episodes or an artist's albums; "inherit" uses the root folder's choice. */
   monitor: string;
   /** "Monitor New Items" the added titles start with (all, none, new); null leaves the title's own default. */
   monitor_new_items: string | null;
@@ -205,9 +205,16 @@ async function finishListAdd(list: ImportListRow, itemId: number | bigint | null
   await finishWantedAdd(itemId, source);
 }
 
-/** The Monitor choice an item a list just added starts with: the list's own, else its root folder's default, else all. */
+/**
+ * The Monitor value that means "use the root folder's choice". A list created through the API without a
+ * Monitor value gets this one. The column default is still "all", so a list that existed before this value
+ * was introduced keeps "all" and so keeps its earlier behavior; "all" always means all.
+ */
+export const LIST_MONITOR_INHERIT = "inherit";
+
+/** The Monitor choice an item a list just added starts with: the list's own, else (for "inherit") its root folder's default, else all. */
 async function listMonitorMode(list: ImportListRow, itemId: number | bigint): Promise<string> {
-  if (list.monitor && list.monitor !== "all") return list.monitor;
+  if (list.monitor && list.monitor !== LIST_MONITOR_INHERIT) return list.monitor;
   const row = (await db.prepare("SELECT type, root_folder_id FROM media_items WHERE id = ?").get(Number(itemId))) as { type: string; root_folder_id: number | null } | undefined;
   if (!row) return "all";
   return resolveAddMonitorMode(null, row.root_folder_id, row.type);
@@ -859,10 +866,34 @@ async function addMissingImdbIds(items: { id: number; type: string; external_ids
     lookups++;
     const imdb = await fetchImdbIdFor(item.type as any, ids).catch(() => null);
     if (!imdb) continue;
-    const merged = JSON.stringify({ ...ids, imdb });
-    await db.prepare("UPDATE media_items SET external_ids = ? WHERE id = ?").run(merged, item.id);
-    item.external_ids = merged;
+    const merged = await storeImdbId(item.id, item.external_ids, ids, imdb);
+    if (merged) item.external_ids = merged;
   }
+}
+
+/**
+ * Writes the imdb id into a title's external ids without losing an id a refresh or a merge added while the lookup
+ * ran: the update only applies when the stored value is still the one that was read, else the row is read again and
+ * merged once more. Returns the stored JSON, or null when the title already has an imdb id by now or kept changing.
+ */
+async function storeImdbId(itemId: number, readValue: string | null, readIds: Record<string, string>, imdb: string): Promise<string | null> {
+  let expected = readValue;
+  let current = readIds;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const merged = JSON.stringify({ ...current, imdb });
+    const result = await db.prepare("UPDATE media_items SET external_ids = ? WHERE id = ? AND external_ids IS NOT DISTINCT FROM ?").run(merged, itemId, expected);
+    if (Number(result.changes) > 0) return merged;
+    const row = (await db.prepare("SELECT external_ids FROM media_items WHERE id = ?").get(itemId)) as { external_ids: string | null } | undefined;
+    if (!row) return null;
+    try {
+      current = JSON.parse(row.external_ids ?? "{}") ?? {};
+    } catch {
+      return null;
+    }
+    if (current.imdb) return null;
+    expected = row.external_ids;
+  }
+  return null;
 }
 
 /** A clean-up that would take more than this share of the titles a list added is refused: more likely the list came back short than that it changed that much. */
