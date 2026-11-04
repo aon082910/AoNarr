@@ -92,6 +92,8 @@ export async function applyEpisodeMonitorMode(mediaItemId: number | bigint | nul
     episode_number: number;
     air_date: string | null;
   }[];
+  // No episodes came in (the provider failed or listed none): the choice waits for the first list that does.
+  if (rows.length === 0) return rememberPendingMonitor(mediaItemId, mode);
   const keep = episodesToMonitor(
     rows.map((r) => ({ seasonNumber: Number(r.season_number), episodeNumber: Number(r.episode_number), airDate: r.air_date })),
     mode
@@ -110,12 +112,56 @@ export async function applySubItemMonitorMode(mediaItemId: number | bigint | nul
     id: number;
     release_date: string | null;
   }[];
+  // No albums or books came in (the provider failed or listed none): the choice waits for the first list that does.
+  if (rows.length === 0) return rememberPendingMonitor(mediaItemId, mode);
   const keep = subItemsToMonitor(rows.map((r) => ({ key: String(r.id), releaseDate: r.release_date })), mode);
   await db.transaction(async () => {
     for (const r of rows) {
       if (!keep.has(String(r.id))) await db.prepare("UPDATE sub_items SET monitored = 0 WHERE id = ?").run(r.id);
     }
   });
+}
+
+/**
+ * Keeps an add's Monitor choice on an item that has no episodes, albums or books yet, so the first
+ * successful fetch applies it (finishFirstChildren). Without it the choice was lost with the failed
+ * fetch and the first refresh monitored the whole back catalogue.
+ */
+export async function rememberPendingMonitor(mediaItemId: number | bigint | null | undefined, mode: string | null | undefined): Promise<void> {
+  if (mediaItemId == null || !mode || mode === "all") return;
+  await db.prepare("UPDATE media_items SET pending_monitor = ? WHERE id = ? AND children_synced_at IS NULL").run(mode, Number(mediaItemId));
+}
+
+/**
+ * Whether the item's episodes, albums or books have been fetched before: it has some, or an earlier
+ * fetch put some in (children_synced_at). Only then do a refresh's "Monitor New Items" rules apply;
+ * the first list an item gets is the Add's and is monitored by the Add's own choice.
+ */
+export async function childrenSyncedBefore(mediaItemId: number | bigint, haveChildren: boolean): Promise<boolean> {
+  if (haveChildren) return true;
+  const row = (await db.prepare("SELECT children_synced_at FROM media_items WHERE id = ?").get(Number(mediaItemId))) as { children_synced_at: string | null } | undefined;
+  return !!row?.children_synced_at;
+}
+
+/**
+ * Called once children were inserted: records the first successful fetch and, when this was the first
+ * list, applies the Monitor choice the add could not (a failed child fetch at add time), then forgets it.
+ */
+export async function finishFirstChildren(mediaItemId: number | bigint, kind: "episodes" | "subItems", wasFirst: boolean): Promise<void> {
+  const id = Number(mediaItemId);
+  const row = (await db.prepare("SELECT children_synced_at, pending_monitor FROM media_items WHERE id = ?").get(id)) as
+    | { children_synced_at: string | null; pending_monitor: string | null }
+    | undefined;
+  if (!row) return;
+  if (wasFirst && row.pending_monitor) {
+    if (kind === "episodes") await applyEpisodeMonitorMode(id, row.pending_monitor);
+    else await applySubItemMonitorMode(id, row.pending_monitor);
+  }
+  if (!row.children_synced_at || row.pending_monitor) {
+    await db
+      .prepare("UPDATE media_items SET children_synced_at = COALESCE(children_synced_at, ?), pending_monitor = NULL WHERE id = ?")
+      .run(new Date().toISOString(), id);
+  }
 }
 
 /** The item's "Monitor New Items" choice; null (never set) keeps the behavior from before the choice existed. */

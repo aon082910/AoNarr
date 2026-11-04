@@ -93,6 +93,8 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS series_type TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS library_folder TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS monitor_new_items TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS children_synced_at TEXT`,
+  `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS pending_monitor TEXT`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS metadata_profile_id INTEGER REFERENCES metadata_profiles(id) ON DELETE SET NULL`,
   `ALTER TABLE media_items ADD COLUMN IF NOT EXISTS source_list_id INTEGER REFERENCES import_lists(id) ON DELETE SET NULL`,
   `ALTER TABLE import_lists ADD COLUMN IF NOT EXISTS monitor TEXT NOT NULL DEFAULT 'all'`,

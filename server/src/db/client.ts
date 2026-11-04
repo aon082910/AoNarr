@@ -210,6 +210,10 @@ ensureColumn("queue", "info_hash", "info_hash TEXT");
 // Round 26: monitoring, profiles, lists and tags.
 // What a refresh does with an item the provider lists after the first sync: NULL (the behavior before this existed), all, none or new.
 ensureColumn("media_items", "monitor_new_items", "monitor_new_items TEXT");
+// Round 30c: the first successful fetch of an item's episodes, albums or books, and the Monitor choice of an add whose child fetch
+// failed, which that first fetch applies (without them a failed first fetch made the first refresh monitor the whole back catalogue).
+ensureColumn("media_items", "children_synced_at", "children_synced_at TEXT");
+ensureColumn("media_items", "pending_monitor", "pending_monitor TEXT");
 ensureColumn("media_items", "metadata_profile_id", "metadata_profile_id INTEGER REFERENCES metadata_profiles(id) ON DELETE SET NULL");
 // The import list that added the item, which the list's clean-up pass works on.
 ensureColumn("media_items", "source_list_id", "source_list_id INTEGER REFERENCES import_lists(id) ON DELETE SET NULL");

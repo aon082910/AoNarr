@@ -24,7 +24,7 @@ import {
   type MetadataEpisode,
   type MetadataSearchResult,
 } from "./metadata.js";
-import { monitorNewItemsOf, newSubItemMonitored } from "./monitorModes.js";
+import { childrenSyncedBefore, finishFirstChildren, monitorNewItemsOf, newSubItemMonitored } from "./monitorModes.js";
 import { resolveMetadataProfile } from "./metadataProfiles.js";
 import { log } from "./logger.js";
 import { startBackgroundJob, updateBackgroundJob, incrementBackgroundJobDone, finishBackgroundJob, isBackgroundJobRunning } from "./backgroundJobs.js";
@@ -2487,7 +2487,10 @@ export async function mergeEpisodesIntoItem(
   // The item's own "Monitor New Items" choice, for episodes listed after the first sync: none monitors
   // none, all monitors every new regular episode, new only what is upcoming or just aired. Unset keeps
   // the earlier behavior. The first list of an item is the Add's, so the choice does not apply to it.
-  const newItemMode = tracksRegularEpisodes ? await monitorNewItemsOf(mediaItemId) : null;
+  // A first fetch that failed or listed nothing leaves the item without episodes, so the next one is still its first list
+  // (children_synced_at also remembers a fetch whose episodes were all removed since).
+  const syncedBefore = await childrenSyncedBefore(mediaItemId, tracksRegularEpisodes);
+  const newItemMode = syncedBefore ? await monitorNewItemsOf(mediaItemId) : null;
   // "None" is about new seasons, as in Sonarr: an episode that is upcoming or just aired in a season the show already
   // tracks is still wanted, or a show set to none would stop downloading its own airing season.
   const trackedSeasons = new Set(existing.map((e) => Number(e.season_number)));
@@ -2495,9 +2498,10 @@ export async function mergeEpisodesIntoItem(
   const monitorNew =
     newItemMode === "none"
       ? (ep: MetadataEpisode) => trackedSeasons.has(ep.seasonNumber) && recentOnly(ep)
-      : newEpisodeMonitor(episodes, existing, monitored, newItemMode === "all" ? false : newItemMode === "new" ? true : onlyRecentOnceTracked && tracksRegularEpisodes);
+      : newEpisodeMonitor(episodes, existing, monitored, newItemMode === "all" ? false : newItemMode === "new" ? true : onlyRecentOnceTracked && syncedBefore);
   let added = 0;
   let monitoredAdded = 0;
+  let regularAdded = 0;
   for (const ep of filtered) {
     const row = existingByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`);
     if (!row) {
@@ -2517,6 +2521,7 @@ export async function mergeEpisodesIntoItem(
         )
         .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, epMonitored ? 1 : 0);
       added++;
+      if (ep.seasonNumber !== 0) regularAdded++;
       if (epMonitored) monitoredAdded++;
       continue;
     }
@@ -2529,6 +2534,8 @@ export async function mergeEpisodesIntoItem(
         .run(isPlaceholderTitle && ep.title ? ep.title : row.title, airDate ?? null, ep.overview, row.id);
     }
   }
+  // The first list that put regular episodes in: record it, and apply the Monitor choice an add could not.
+  if (regularAdded > 0) await finishFirstChildren(mediaItemId, "episodes", !syncedBefore);
   if (onlyRecentOnceTracked && added > 0) {
     log.info(`[libraryScan] media item ${mediaItemId}: added ${added} episode(s) from its provider, ${monitoredAdded} of them monitored`);
   }
@@ -2602,7 +2609,8 @@ async function syncMissingChildren(
       release_date: string | null;
     }[];
     const known = new Set(existing.map((s) => s.title));
-    const monitorMode = existing.length > 0 ? await monitorNewItemsOf(mediaItemId) : null;
+    const syncedBefore = await childrenSyncedBefore(mediaItemId, existing.length > 0);
+    const monitorMode = syncedBefore ? await monitorNewItemsOf(mediaItemId) : null;
     const latestKnown = latestReleaseDate(existing);
     let added = 0;
     for (const album of result.albums) {
@@ -2623,6 +2631,8 @@ async function syncMissingChildren(
         );
       added++;
     }
+    // The first list that put albums or books in: record it, and apply the Monitor choice an add could not.
+    if (added > 0) await finishFirstChildren(mediaItemId, "subItems", !syncedBefore);
     return added;
   }
 
@@ -2636,7 +2646,8 @@ async function syncMissingChildren(
       release_date: string | null;
     }[];
     const known = new Set(existing.map((s) => s.title));
-    const monitorMode = existing.length > 0 ? await monitorNewItemsOf(mediaItemId) : null;
+    const syncedBefore = await childrenSyncedBefore(mediaItemId, existing.length > 0);
+    const monitorMode = syncedBefore ? await monitorNewItemsOf(mediaItemId) : null;
     const latestKnown = latestReleaseDate(existing);
     let added = 0;
     for (const child of result.children) {
@@ -2649,6 +2660,8 @@ async function syncMissingChildren(
         .run(mediaItemId, child.title, child.releaseDate, child.externalId ?? null, result.provider, newSubItemMonitored(monitorMode, child.releaseDate, latestKnown) ? 1 : 0);
       added++;
     }
+    // The first list that put albums or books in: record it, and apply the Monitor choice an add could not.
+    if (added > 0) await finishFirstChildren(mediaItemId, "subItems", !syncedBefore);
     return added;
   }
 
