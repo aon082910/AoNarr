@@ -27,13 +27,14 @@ let status: typeof import("../src/services/notificationStatus.js");
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
 let deleteSetting: (typeof import("../src/services/settingsStore.js"))["deleteSetting"];
 let getSetting: (typeof import("../src/services/settingsStore.js"))["getSetting"];
+let getAllSettings: (typeof import("../src/services/settingsStore.js"))["getAllSettings"];
 
 beforeAll(async () => {
   ({ app, apiKey, db } = await setupTestDb());
   notifications = await import("../src/services/notifications.js");
   connections = await import("../src/services/notificationConnections.js");
   status = await import("../src/services/notificationStatus.js");
-  ({ setSetting, deleteSetting, getSetting } = await import("../src/services/settingsStore.js"));
+  ({ setSetting, deleteSetting, getSetting, getAllSettings } = await import("../src/services/settingsStore.js"));
 });
 
 const OLD_KEYS = [
@@ -221,12 +222,145 @@ describe("the move from the old settings to connections", () => {
     expect(script).toMatchObject({ kind: "customScript", enabled: false, config: { path: "/scripts/off.sh" } });
   });
 
-  it("leaves the old settings where they are", async () => {
+  it("blanks the credentials of a provider it made a connection from and leaves the rest of its settings where they are", async () => {
     setSetting("discordWebhookUrl", "https://discord.example/w");
     setSetting("discordEvents", "grabbed");
+    setSetting("ntfyServerUrl", "https://ntfy.example");
+    setSetting("ntfyTopic", "topic");
+    setSetting("ntfyToken", "ntfy-tok");
+    setSetting("smtpHost", "smtp.example");
+    setSetting("smtpTo", "to@example.com");
+    setSetting("smtpFrom", "from@example.com");
+    setSetting("smtpUsername", "mailer");
+    setSetting("smtpPassword", "mail-pass");
+    setSetting("smtpEvents", "failed");
     await migrateAgain();
-    expect(getSetting("discordWebhookUrl")).toBe("https://discord.example/w");
+
+    expect(getSetting("discordWebhookUrl")).toBe("");
+    expect(getSetting("ntfyToken")).toBe("");
+    expect(getSetting("smtpPassword")).toBe("");
+    // The event lists and the settings that are no credential stay.
     expect(getSetting("discordEvents")).toBe("grabbed");
+    expect(getSetting("smtpEvents")).toBe("failed");
+    expect(getSetting("ntfyServerUrl")).toBe("https://ntfy.example");
+    expect(getSetting("ntfyTopic")).toBe("topic");
+    expect(getSetting("smtpHost")).toBe("smtp.example");
+    expect(getSetting("smtpUsername")).toBe("mailer");
+    // The connections hold what was blanked.
+    const byKind = new Map((await connections.listNotificationConnections()).map((c) => [c.kind, c]));
+    expect(byKind.get("discord")!.config.webhookUrl).toBe("https://discord.example/w");
+    expect(byKind.get("email")!.config.password).toBe("mail-pass");
+    expect(byKind.get("ntfy")!.config.token).toBe("ntfy-tok");
+  });
+
+  // The old keys are what GET /api/settings returns in plain text; a copy left there outlives the connection it became.
+  it("leaves no credential of a moved provider in GET /api/settings, in the settings cache or in the database", async () => {
+    const secrets: Record<string, string> = {
+      discordWebhookUrl: "https://discord.example/api/webhooks/1/secret-discord",
+      slackWebhookUrl: "https://hooks.slack.example/services/T/B/secret-slack",
+      genericWebhookUrl: "https://hook.example/secret-generic",
+      telegramBotToken: "secret-telegram-token",
+      pushoverApiToken: "secret-pushover-api",
+      pushoverUserKey: "secret-pushover-user",
+      ntfyToken: "secret-ntfy-token",
+      gotifyToken: "secret-gotify-token",
+      matrixAccessToken: "secret-matrix-token",
+      twilioAuthToken: "secret-twilio-token",
+      smtpPassword: "secret-smtp-password",
+    };
+    for (const [key, value] of Object.entries(secrets)) setSetting(key, value);
+    setSetting("telegramChatId", "chat-9");
+    setSetting("pushoverEvents", "grabbed");
+    setSetting("ntfyServerUrl", "https://ntfy.example");
+    setSetting("ntfyTopic", "topic");
+    setSetting("gotifyServerUrl", "https://gotify.example");
+    setSetting("matrixHomeserverUrl", "https://matrix.example");
+    setSetting("matrixRoomId", "!r:example");
+    setSetting("twilioAccountSid", "AC1");
+    setSetting("twilioFromNumber", "+1555000");
+    setSetting("twilioToNumber", "+1555111");
+    setSetting("smtpHost", "smtp.example");
+    setSetting("smtpTo", "to@example.com");
+    setSetting("smtpFrom", "from@example.com");
+    setSetting("customScriptEnabled", "1");
+    setSetting("customScriptPath", "/scripts/on.sh");
+    expect(await migrateAgain()).toBe(11);
+
+    const text = JSON.stringify((await api.get("/api/settings")).body);
+    for (const secret of Object.values(secrets)) expect(text, secret).not.toContain(secret);
+    const all = JSON.stringify(getAllSettings());
+    for (const secret of Object.values(secrets)) expect(all, secret).not.toContain(secret);
+    // What the cache says is what the database holds (the write lands in the background).
+    for (const key of Object.keys(secrets)) {
+      await vi.waitFor(async () => expect(((await db.prepare("SELECT value FROM settings WHERE key = ?").get(key)) as { value: string }).value, key).toBe(""));
+    }
+    // What is no credential is still readable.
+    expect(getSetting("telegramChatId")).toBe("chat-9");
+    expect(getSetting("pushoverEvents")).toBe("grabbed");
+    expect(getSetting("customScriptPath")).toBe("/scripts/on.sh");
+  });
+
+  it("deleting a connection afterwards leaves nothing behind in the settings", async () => {
+    setSetting("discordWebhookUrl", "https://discord.example/api/webhooks/1/leaked-url");
+    await migrateAgain();
+    const [discord] = await connections.listNotificationConnections();
+
+    expect((await api.del(`/api/notifications/connections/${discord.id}`)).status).toBe(204);
+
+    expect(JSON.stringify((await api.get("/api/settings")).body)).not.toContain("leaked-url");
+  });
+
+  it("keeps the SMTP settings of an install that has them only for Send to Kindle (no smtpTo, so no Email connection)", async () => {
+    setSetting("smtpHost", "smtp.kindle.example");
+    setSetting("smtpFrom", "aonarr@example.com");
+    setSetting("smtpUsername", "mailer");
+    setSetting("smtpPassword", "kindle-smtp-pass");
+    setSetting("discordWebhookUrl", "https://discord.example/w");
+
+    expect(await migrateAgain()).toBe(1);
+
+    expect((await connections.listNotificationConnections()).map((c) => c.kind)).toEqual(["discord"]);
+    expect(getSetting("smtpPassword")).toBe("kindle-smtp-pass");
+    expect(getSetting("smtpHost")).toBe("smtp.kindle.example");
+    expect(getSetting("discordWebhookUrl")).toBe("");
+    expect(await connections.kindleSmtpConfig("reader@kindle.example")).toMatchObject({ host: "smtp.kindle.example", username: "mailer", password: "kindle-smtp-pass", to: "reader@kindle.example" });
+  });
+
+  it("keeps the credentials of a provider that was only half set up (no connection was made from them)", async () => {
+    setSetting("telegramBotToken", "tg-token"); // no chat id
+    setSetting("pushoverApiToken", "po-api"); // no user key
+    expect(await migrateAgain()).toBe(0);
+    expect(getSetting("telegramBotToken")).toBe("tg-token");
+    expect(getSetting("pushoverApiToken")).toBe("po-api");
+  });
+
+  it("running it again, even with the marker lost, changes no setting", async () => {
+    setSetting("discordWebhookUrl", "https://discord.example/w");
+    setSetting("smtpHost", "smtp.example");
+    setSetting("smtpTo", "to@example.com");
+    setSetting("smtpFrom", "from@example.com");
+    setSetting("smtpPassword", "mail-pass");
+    await migrateAgain();
+    const after = JSON.stringify(Object.entries(getAllSettings()).sort());
+
+    expect(await connections.migrateNotificationConnections()).toBe(0);
+    setSetting("notificationConnectionsMigrated", "");
+    expect(await connections.migrateNotificationConnections()).toBe(0);
+
+    expect(JSON.stringify(Object.entries(getAllSettings()).sort())).toBe(after);
+    expect((await connections.listNotificationConnections()).map((c) => c.kind).sort()).toEqual(["discord", "email"]);
+  });
+
+  it("finishes the blanking when a run was cut off after the connections were made but before their old keys were blanked", async () => {
+    await make("discord", { webhookUrl: "https://discord.example/w" });
+    setSetting("discordWebhookUrl", "https://discord.example/w");
+    setSetting("notificationConnectionsMigrated", "");
+
+    expect(await connections.migrateNotificationConnections()).toBe(0);
+
+    expect(getSetting("discordWebhookUrl")).toBe("");
+    expect(getSetting("notificationConnectionsMigrated")).toBe("1");
+    expect((await connections.listNotificationConnections()).length).toBe(1);
   });
 
   it("run twice adds nothing, even when the marker did not survive", async () => {
@@ -442,6 +576,62 @@ describe("/api/notifications/connections", () => {
     expect((await api.get("/api/notifications/connections")).body).toEqual([]);
   });
 
+  describe("the audit log", () => {
+    const auditRows = async (eventType: string) =>
+      (await db.prepare("SELECT detail FROM audit_log WHERE event_type = ? ORDER BY id").all(eventType)) as { detail: string }[];
+
+    beforeEach(async () => {
+      await db.prepare("DELETE FROM audit_log WHERE event_type LIKE 'notification_connection_%'").run();
+    });
+
+    it("records an edit with the names of the fields it changed and never a value", async () => {
+      const created = (await api.post("/api/notifications/connections", { name: "Runner", kind: "customScript", config: { path: "/scripts/old-secret-name.sh" } })).body;
+      expect((await api.put(`/api/notifications/connections/${created.id}`, { config: { path: "/scripts/new-secret-name.sh" } })).status).toBe(200);
+
+      await vi.waitFor(async () => expect(await auditRows("notification_connection_updated")).toHaveLength(1));
+      const [row] = await auditRows("notification_connection_updated");
+      expect(row.detail).toBe("Runner (customScript): config.path");
+      expect(row.detail).not.toContain("secret-name");
+    });
+
+    it("lists every field a single edit changed, and a secret kept as the mask is not one of them", async () => {
+      const tag = Number((await db.prepare("INSERT INTO tags (name) VALUES ('audit-tag')").run()).lastInsertRowid);
+      const created = (await api.post("/api/notifications/connections", { name: "Chat", kind: "telegram", config: { botToken: "audit-token-1", chatId: "1" } })).body;
+
+      await api.put(`/api/notifications/connections/${created.id}`, {
+        name: "Family chat",
+        config: { botToken: "********", chatId: "2" },
+        events: ["failed"],
+        tagIds: [tag],
+        enabled: false,
+      });
+
+      await vi.waitFor(async () => expect(await auditRows("notification_connection_updated")).toHaveLength(1));
+      const [row] = await auditRows("notification_connection_updated");
+      expect(row.detail).toBe("Family chat (telegram): name, events, tags, enabled, config.chatId");
+      expect(row.detail).not.toContain("audit-token-1");
+    });
+
+    it("names a changed secret field but not its value", async () => {
+      const created = (await api.post("/api/notifications/connections", { name: "Hook", kind: "discord", config: { webhookUrl: "https://discord.example/api/webhooks/1/audit-secret-a" } })).body;
+      await api.put(`/api/notifications/connections/${created.id}`, { config: { webhookUrl: "https://discord.example/api/webhooks/1/audit-secret-b" } });
+
+      await vi.waitFor(async () => expect(await auditRows("notification_connection_updated")).toHaveLength(1));
+      const [row] = await auditRows("notification_connection_updated");
+      expect(row.detail).toBe("Hook (discord): config.webhookUrl");
+    });
+
+    it("an edit that changes nothing is not an audit event, and add and remove still are", async () => {
+      const created = (await api.post("/api/notifications/connections", { name: "Hook", kind: "discord", config: { webhookUrl: "https://discord.example/w" } })).body;
+      await api.put(`/api/notifications/connections/${created.id}`, { name: "Hook", config: { webhookUrl: "********" }, enabled: true });
+      await api.del(`/api/notifications/connections/${created.id}`);
+
+      await vi.waitFor(async () => expect(await auditRows("notification_connection_removed")).toHaveLength(1));
+      expect(await auditRows("notification_connection_added")).toEqual([{ detail: "Hook (discord)" }]);
+      expect(await auditRows("notification_connection_updated")).toEqual([]);
+    });
+  });
+
   it("an event list saved empty stays empty (no events), not 'the defaults'", async () => {
     const created = (await api.post("/api/notifications/connections", { name: "Quiet", kind: "discord", config: { webhookUrl: "https://discord.example/w" }, events: [] })).body;
     expect(created.events).toEqual([]);
@@ -652,6 +842,69 @@ describe("failing connections (Health)", () => {
     await api.put(`/api/notifications/connections/${conn.id}`, { config: { webhookUrl: "https://discord.example/fixed" } });
 
     expect(notifications.failingNotificationProviders(1)).toEqual([]);
+  });
+
+  describe("a send that is still out when its connection changes", () => {
+    /** A fetch that answers only when the test says so, so a connection can be changed while its send is in flight. */
+    function heldFetch() {
+      const waiting: ((answer: { ok: boolean; status: number }) => void)[] = [];
+      const fetchMock = vi.fn(() => new Promise<{ ok: boolean; status: number }>((resolve) => waiting.push(resolve)));
+      vi.stubGlobal("fetch", fetchMock);
+      return { fetchMock, answer: (status: number) => waiting.splice(0).forEach((resolve) => resolve({ ok: status < 400, status })) };
+    }
+
+    it("a deleted connection does not come back into Health when its send fails afterwards", async () => {
+      const gone = await make("discord", { webhookUrl: "https://discord.example/gone" }, { name: "Gone" });
+      const stays = await make("slack", { webhookUrl: "https://slack.example/stays" }, { name: "Stays" });
+      const held = heldFetch();
+
+      const pending = notifications.notifyGrabbed("X", "Y");
+      await vi.waitFor(() => expect(held.fetchMock).toHaveBeenCalledTimes(2));
+      expect((await api.del(`/api/notifications/connections/${gone.id}`)).status).toBe(204);
+      held.answer(500);
+      await pending;
+
+      // The one that is still there is reported (so the failure path works); the deleted one is not.
+      expect(notifications.failingNotificationProviders(1).map((f) => f.connectionId)).toEqual([stays.id]);
+    });
+
+    it("a connection switched off meanwhile does not come back into Health either", async () => {
+      const off = await make("discord", { webhookUrl: "https://discord.example/off" }, { name: "Off" });
+      const held = heldFetch();
+
+      const pending = notifications.notifyGrabbed("X", "Y");
+      await vi.waitFor(() => expect(held.fetchMock).toHaveBeenCalledTimes(1));
+      await api.put(`/api/notifications/connections/${off.id}`, { enabled: false });
+      held.answer(500);
+      await pending;
+
+      expect(notifications.failingNotificationProviders(1)).toEqual([]);
+    });
+
+    it("a connection whose address was fixed meanwhile does not get the old address's failure", async () => {
+      const conn = await make("discord", { webhookUrl: "https://discord.example/bad" });
+      const held = heldFetch();
+
+      const pending = notifications.notifyGrabbed("X", "Y");
+      await vi.waitFor(() => expect(held.fetchMock).toHaveBeenCalledTimes(1));
+      await api.put(`/api/notifications/connections/${conn.id}`, { config: { webhookUrl: "https://discord.example/fixed" } });
+      held.answer(500);
+      await pending;
+
+      expect(notifications.failingNotificationProviders(1)).toEqual([]);
+    });
+
+    it("a send that starts after the connection is switched back on is reported as usual", async () => {
+      const conn = await make("discord", { webhookUrl: "https://discord.example/x" });
+      await api.put(`/api/notifications/connections/${conn.id}`, { enabled: false });
+      await api.put(`/api/notifications/connections/${conn.id}`, { enabled: true });
+      stubFetch(500);
+
+      await notifications.notifyGrabbed("X", "Y");
+      await notifications.notifyGrabbed("X", "Y");
+
+      expect(notifications.failingNotificationProviders().map((f) => f.connectionId)).toEqual([conn.id]);
+    });
   });
 
   it("shows up in the health report as its own issue, named, and goes away with the connection", async () => {
@@ -983,6 +1236,54 @@ describe("the webhook kind", () => {
         deleteSetting("externalUrl");
       }
     });
+
+    it("puts the URL base after the external URL in applicationUrl, like every other link the server hands out", async () => {
+      setSetting("externalUrl", "https://aonarr.example.com/");
+      process.env.URL_BASE = "/aonarr";
+      try {
+        expect((await sent(() => notifications.notifyUpdateAvailable("x"))).applicationUrl).toBe("https://aonarr.example.com/aonarr");
+
+        // An External URL that already ends with the base (typed before the base existed) is not given it twice.
+        setSetting("externalUrl", "https://media.example.com/aonarr");
+        expect((await sent(() => notifications.notifyUpdateAvailable("x"))).applicationUrl).toBe("https://media.example.com/aonarr");
+
+        // No External URL: nothing, not a bare path that is no address.
+        deleteSetting("externalUrl");
+        expect((await sent(() => notifications.notifyUpdateAvailable("x"))).applicationUrl).toBe("");
+      } finally {
+        delete process.env.URL_BASE;
+        deleteSetting("externalUrl");
+      }
+    });
+
+    describe("a title's folder", () => {
+      const movie = (path: string) => ({ media: { id: 91, type: "movie", title: "Blade Runner 2049", year: 2017, path } });
+
+      it("is the path itself when it is a folder named like a file (Blade.Runner.2049, Mr.Robot)", async () => {
+        const body = await sent(() => notifications.notifyAdded("Blade Runner 2049", "movie", movie("/movies/Blade.Runner.2049")));
+        expect(body.movie.folderPath).toBe("/movies/Blade.Runner.2049");
+
+        const show = await sent(() => notifications.notifyAdded("Mr. Robot", "series", { media: { id: 92, type: "series", title: "Mr. Robot", path: "/tv/Mr.Robot" } }));
+        expect(show.series.path).toBe("/tv/Mr.Robot");
+      });
+
+      it("is the parent folder when the path is the title's one file, in any case", async () => {
+        expect((await sent(() => notifications.notifyAdded("Blade Runner 2049", "movie", movie("/movies/Blade.Runner.2049/Blade.Runner.2049.mkv")))).movie.folderPath).toBe("/movies/Blade.Runner.2049");
+        expect((await sent(() => notifications.notifyAdded("Blade Runner 2049", "movie", movie("/movies/Blade.Runner.2049/Blade.Runner.2049.MP4")))).movie.folderPath).toBe("/movies/Blade.Runner.2049");
+      });
+
+      it("keeps a file's path relative to the dotted folder, not to its parent", async () => {
+        const media = { id: 92, type: "series", title: "Mr. Robot", path: "/tv/Mr.Robot" };
+        const body = await sent(() => notifications.notifyImported("Mr. Robot", "ep.mkv", undefined, { media, file: { path: "/tv/Mr.Robot/Season 01/ep.mkv" } }));
+        expect(body.episodeFile.relativePath).toBe("Season 01/ep.mkv");
+      });
+
+      it("uses every library's extensions for a title whose type this version does not know", async () => {
+        const unknown = (path: string) => ({ media: { id: 93, type: "hologram", title: "Odd", path } });
+        expect((await sent(() => notifications.notifyAdded("Odd", "hologram", unknown("/x/Odd.Title")))).media.path).toBe("/x/Odd.Title");
+        expect((await sent(() => notifications.notifyAdded("Odd", "hologram", unknown("/x/Odd.Title/Odd.Title.mkv")))).media.path).toBe("/x/Odd.Title");
+      });
+    });
   });
 });
 
@@ -1059,5 +1360,93 @@ describe("web push subscriptions", () => {
 
     await notifications.notifyGrabbed("X", "Y");
     expect(sendPush).toHaveBeenCalledWith("Grabbed", "X\nY");
+  });
+
+  it("two browsers subscribing together make one web push connection, not one each", async () => {
+    const subscribe = (endpoint: string) => api.post("/api/push/subscribe", { endpoint, keys: { p256dh: "k", auth: "a" } });
+
+    const answers = await Promise.all([subscribe("https://push.example/a"), subscribe("https://push.example/b"), subscribe("https://push.example/c")]);
+
+    expect(answers.map((r) => r.status)).toEqual([201, 201, 201]);
+    expect((await connections.listNotificationConnections()).filter((c) => c.kind === "webPush")).toHaveLength(1);
+    // So every event is pushed once to each browser, not once per duplicate connection.
+    await notifications.notifyGrabbed("X", "Y");
+    expect(sendPush).toHaveBeenCalledTimes(1);
+  });
+
+  it("ensureWebPushConnection called twice at once shares one check, and a later call after that finds the connection", async () => {
+    await Promise.all([connections.ensureWebPushConnection(), connections.ensureWebPushConnection()]);
+    expect((await connections.listNotificationConnections()).filter((c) => c.kind === "webPush")).toHaveLength(1);
+
+    await connections.ensureWebPushConnection();
+    expect((await connections.listNotificationConnections()).filter((c) => c.kind === "webPush")).toHaveLength(1);
+
+    // Deleted, the next subscription makes one again.
+    await db.prepare("DELETE FROM notification_connections").run();
+    await connections.ensureWebPushConnection();
+    expect((await connections.listNotificationConnections()).filter((c) => c.kind === "webPush")).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the mail server Send to Kindle uses
+// ---------------------------------------------------------------------------
+
+describe("the mail server for Send to Kindle", () => {
+  const KINDLE = "reader@kindle.example";
+
+  it("is the Email connection when there is one, whatever the old SMTP settings say", async () => {
+    setSetting("smtpHost", "old.smtp.example");
+    setSetting("smtpFrom", "old@example.com");
+    await make("email", { host: "smtp.example", from: "a@b.c", to: "d@e.f", port: 465, secure: true, username: "u", password: "p" });
+
+    expect(await connections.kindleSmtpConfig(KINDLE)).toEqual({ host: "smtp.example", port: 465, secure: true, username: "u", password: "p", from: "a@b.c", to: KINDLE });
+  });
+
+  it("prefers an Email connection that is on to one that is off, and still uses one that is off when it is the only one", async () => {
+    await make("email", { host: "off.example", from: "a@b.c", to: "d@e.f" }, { enabled: false });
+    expect((await connections.kindleSmtpConfig(KINDLE))!.host).toBe("off.example");
+    await make("email", { host: "on.example", from: "a@b.c", to: "d@e.f" });
+    expect((await connections.kindleSmtpConfig(KINDLE))!.host).toBe("on.example");
+  });
+
+  it("falls back to the old SMTP settings only when there is no Email connection and the old host is set", async () => {
+    // Neither: not set up.
+    expect(await connections.kindleSmtpConfig(KINDLE)).toBeNull();
+
+    // An old host with no sender address cannot send.
+    setSetting("smtpHost", "smtp.kindle.example");
+    expect(await connections.kindleSmtpConfig(KINDLE)).toBeNull();
+
+    // An old sender address with no host cannot either.
+    deleteSetting("smtpHost");
+    setSetting("smtpFrom", "aonarr@example.com");
+    expect(await connections.kindleSmtpConfig(KINDLE)).toBeNull();
+
+    // Host and sender: the install that has SMTP only for Kindle.
+    setSetting("smtpHost", "smtp.kindle.example");
+    setSetting("smtpPort", "465");
+    setSetting("smtpSecure", "1");
+    expect(await connections.kindleSmtpConfig(KINDLE)).toEqual({ host: "smtp.kindle.example", port: 465, secure: true, username: undefined, password: undefined, from: "aonarr@example.com", to: KINDLE });
+
+    // The first Email connection takes over from then on.
+    await make("email", { host: "smtp.example", from: "a@b.c", to: "d@e.f" });
+    expect((await connections.kindleSmtpConfig(KINDLE))!.host).toBe("smtp.example");
+  });
+
+  it("an Email connection moved from the old settings and then deleted leaves no password behind for the fallback to use", async () => {
+    setSetting("smtpHost", "smtp.example");
+    setSetting("smtpTo", "to@example.com");
+    setSetting("smtpFrom", "from@example.com");
+    setSetting("smtpUsername", "mailer");
+    setSetting("smtpPassword", "mail-pass");
+    await migrateAgain();
+    const [email] = await connections.listNotificationConnections();
+    await connections.deleteNotificationConnection(email.id);
+
+    const fallback = await connections.kindleSmtpConfig(KINDLE);
+
+    expect(fallback?.password).toBeUndefined();
+    expect(JSON.stringify(getAllSettings())).not.toContain("mail-pass");
   });
 });

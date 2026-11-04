@@ -4,6 +4,7 @@ import Modal from "./Modal.js";
 import { PencilIcon, TrashIcon } from "./ActionIcons.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 import { notify } from "../utils/notify.js";
+import { isPushSubscribed } from "../utils/push.js";
 import type { Tag } from "../types.js";
 
 /** What a secret that is set shows as; sent back unchanged on an edit, it keeps the stored value. */
@@ -85,6 +86,8 @@ export default function NotificationConnections() {
   const [editor, setEditor] = useState<Editor | null>(null);
   const [testing, setTesting] = useState<number | null>(null);
   const [results, setResults] = useState<Record<number, { ok: boolean; error?: string }>>({});
+  // Whether this browser has a push subscription: it only receives event notifications through a Web push connection.
+  const [browserSubscribed, setBrowserSubscribed] = useState(false);
 
   const load = useCallback(() => {
     api
@@ -95,6 +98,7 @@ export default function NotificationConnections() {
   useEffect(() => {
     load();
     api.get<Tag[]>("/tags").then(setTags).catch(() => undefined);
+    isPushSubscribed().then(setBrowserSubscribed).catch(() => undefined);
   }, [load]);
 
   async function test(conn: Connection) {
@@ -142,6 +146,12 @@ export default function NotificationConnections() {
         A connection is one place AoNarr sends its notifications: a Discord channel, a webhook, an email address. Add as many as you like, each with its own events
         and, if you want, tags (it then hears only of titles that carry one of them).
       </p>
+      {browserSubscribed && !connections.some((c) => c.kind === "webPush" && c.enabled) && (
+        <p role="status" style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 0 }}>
+          This browser has push notifications turned on, but no Web push connection is switched on, so nothing is sent to it. Add a Web push connection (or enable the
+          one you have).
+        </p>
+      )}
       <div className="toolbar" style={{ marginBottom: 8 }}>
         <button type="button" onClick={() => setEditor({ step: "pick" })}>
           + Add connection

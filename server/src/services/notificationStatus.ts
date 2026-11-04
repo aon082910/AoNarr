@@ -18,11 +18,25 @@ interface ConnectionFailure {
 const failing = new Map<number, ConnectionFailure>();
 const FAILURE_REPORT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-export function recordNotificationOutcome(conn: { id: number; kind: string; label: string }, ok: boolean, error?: string): void {
+/**
+ * A send that was still in flight when its connection was deleted, switched off or fixed finishes after
+ * forgetNotificationFailures() has run, and must not put the failure back. Each forget takes the next number; a send
+ * notes the count when it starts, and a failure it reports later is dropped when its connection was forgotten since.
+ */
+let forgets = 0;
+const forgottenAt = new Map<number, number>();
+
+/** What a send passes back to recordNotificationOutcome so the outcome can be matched against later forgets. */
+export function notificationSendStarted(): number {
+  return forgets;
+}
+
+export function recordNotificationOutcome(conn: { id: number; kind: string; label: string }, ok: boolean, error?: string, startedAt?: number): void {
   if (ok) {
     failing.delete(conn.id);
     return;
   }
+  if (startedAt !== undefined && (forgottenAt.get(conn.id) ?? 0) > startedAt) return;
   const known = failing.get(conn.id);
   // The message can carry the target URL, which can carry a token: only its description (describeTarget) is ever in it.
   failing.set(conn.id, {
@@ -38,6 +52,7 @@ export function recordNotificationOutcome(conn: { id: number; kind: string; labe
 /** A connection was deleted or switched off: whatever it had failed is no longer Health's business. */
 export function forgetNotificationFailures(connectionId: number): void {
   failing.delete(connectionId);
+  forgottenAt.set(connectionId, ++forgets);
 }
 
 /** The connections whose last sends all failed (at least `threshold` in a row), for Health. `provider` is the label to show. */
@@ -53,4 +68,5 @@ export function failingNotificationProviders(
 /** Test-only: forget the failures. */
 export function __resetNotificationFailuresForTests(): void {
   failing.clear();
+  forgottenAt.clear();
 }

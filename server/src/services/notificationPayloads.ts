@@ -1,5 +1,7 @@
 import path from "node:path";
 import { getSetting } from "./settingsStore.js";
+import { MEDIA_TYPES } from "./mediaTypes.js";
+import { appUrl } from "./urlBase.js";
 import { parseExternalIds, slugOf } from "../starr/shapes.js";
 
 /**
@@ -61,9 +63,20 @@ function numeric(value: string | undefined): number | undefined {
   return value !== undefined && Number.isFinite(n) ? n : undefined;
 }
 
+/** Every extension any library type holds, for a title whose type this version does not know. */
+const ALL_MEDIA_EXTENSIONS: ReadonlySet<string> = new Set(Object.values(MEDIA_TYPES).flatMap((config) => config.extensions.map((e) => e.toLowerCase())));
+
+/**
+ * A title's own folder. Its path is the folder, or the one file of a single-file title (a movie, a book), and a folder
+ * can be named like a file (`Blade.Runner.2049`, `Mr.Robot`): only an extension its type's files really have makes the
+ * path a file.
+ */
 function folderOf(media: NotifyMedia): string | undefined {
   if (!media.path) return undefined;
-  return /\.[A-Za-z0-9]{2,5}$/.test(media.path) ? path.dirname(media.path) : media.path;
+  const extension = path.extname(media.path).toLowerCase();
+  const own = MEDIA_TYPES[media.type]?.extensions;
+  const isFile = own ? own.includes(extension) : ALL_MEDIA_EXTENSIONS.has(extension);
+  return isFile ? path.dirname(media.path) : media.path;
 }
 
 /** Sonarr's `series` object, Radarr's `movie` object, or a plain `media` object for a library they have no word for. */
@@ -144,7 +157,10 @@ export function buildStarrPayload(content: PayloadContent, ctx: ResolvedNotifyCo
   const p = content.payload;
   const event = String(p.event ?? "");
   const media = ctx.media;
-  const base = { instanceName: "AoNarr", applicationUrl: (getSetting("externalUrl") ?? "").replace(/\/+$/, "") };
+  // Where AoNarr is reached from outside, with the URL base like every other link the server hands out; nothing when the
+  // External URL is not set (a root-relative "/aonarr" would not be an address).
+  const external = (getSetting("externalUrl") ?? "").replace(/\/+$/, "");
+  const base = { instanceName: "AoNarr", applicationUrl: external ? appUrl(external, "") : "" };
   const client = {
     downloadClient: ctx.downloadClient?.name,
     downloadClientType: ctx.downloadClient?.type,

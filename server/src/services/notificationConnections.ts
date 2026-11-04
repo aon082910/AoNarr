@@ -594,6 +594,24 @@ export async function updateNotificationConnection(id: number, input: Connection
   return updated;
 }
 
+/**
+ * The names of the fields an edit changed (`name`, `events`, `tags`, `enabled`, and `config.<field>` for a kind's own
+ * fields), for the audit log. Names only: a webhook URL, a token or a script path never goes into a log line, but that
+ * the script path changed does.
+ */
+export function changedConnectionFields(before: NotificationConnection, after: NotificationConnection): string[] {
+  const changed: string[] = [];
+  if (before.name !== after.name) changed.push("name");
+  if (before.events !== after.events) changed.push("events");
+  const tagKey = (c: NotificationConnection) => [...c.tagIds].sort((a, b) => a - b).join(",");
+  if (tagKey(before) !== tagKey(after)) changed.push("tags");
+  if (before.enabled !== after.enabled) changed.push("enabled");
+  for (const field of kindSpec(after.kind)?.fields ?? []) {
+    if (JSON.stringify(before.config[field.key] ?? null) !== JSON.stringify(after.config[field.key] ?? null)) changed.push(`config.${field.key}`);
+  }
+  return changed;
+}
+
 export async function deleteNotificationConnection(id: number): Promise<boolean> {
   const result = await db.prepare("DELETE FROM notification_connections WHERE id = ?").run(id);
   forgetNotificationFailures(id);
@@ -635,14 +653,24 @@ export async function kindleSmtpConfig(to: string): Promise<SmtpConfig | null> {
   };
 }
 
+/** The check-and-create ensureWebPushConnection is running, so a second caller joins it. */
+let webPushEnsure: Promise<void> | null = null;
+
 /**
  * A browser just turned on push notifications. Before connections, web push went out for every event whenever a
  * browser was subscribed; with them it needs a connection, so the first subscription makes one (with the default
  * events) and the notifications the browser was told to expect still arrive.
  */
-export async function ensureWebPushConnection(): Promise<void> {
-  const existing = (await listNotificationConnections()).some((c) => c.kind === "webPush");
-  if (!existing) await createNotificationConnection({ name: "Web push", kind: "webPush" });
+export function ensureWebPushConnection(): Promise<void> {
+  // Two browsers subscribing together must not both find none and both make one (every event would then be pushed twice
+  // to each browser): the second caller waits for the first one's check-and-create instead of running its own.
+  webPushEnsure ??= (async () => {
+    const existing = (await listNotificationConnections()).some((c) => c.kind === "webPush");
+    if (!existing) await createNotificationConnection({ name: "Web push", kind: "webPush" });
+  })().finally(() => {
+    webPushEnsure = null;
+  });
+  return webPushEnsure;
 }
 
 // --- the move from the old settings ------------------------------------------------------------------------------
@@ -654,6 +682,8 @@ interface LegacyProvider {
   name: string;
   /** The old `<provider>Events` setting. */
   eventsKey: string;
+  /** The old settings that hold a credential (the ones the connection stores encrypted), blanked once they are a connection. */
+  secretKeys: string[];
   /** The config the old settings hold, or null when the provider was not set up (the old fan-out sent nothing). */
   config: () => Record<string, unknown> | null;
   enabled?: () => boolean;
@@ -662,37 +692,42 @@ interface LegacyProvider {
 const setting = (key: string): string => getSetting(key) ?? "";
 
 const LEGACY_PROVIDERS: LegacyProvider[] = [
-  { kind: "discord", name: "Discord", eventsKey: "discordEvents", config: () => (setting("discordWebhookUrl") ? { webhookUrl: setting("discordWebhookUrl") } : null) },
-  { kind: "slack", name: "Slack", eventsKey: "slackEvents", config: () => (setting("slackWebhookUrl") ? { webhookUrl: setting("slackWebhookUrl") } : null) },
-  { kind: "webhook", name: "Webhook", eventsKey: "genericEvents", config: () => (setting("genericWebhookUrl") ? { url: setting("genericWebhookUrl"), method: "POST", payloadStyle: "aonarr", headers: [] } : null) },
+  { kind: "discord", name: "Discord", eventsKey: "discordEvents", secretKeys: ["discordWebhookUrl"], config: () => (setting("discordWebhookUrl") ? { webhookUrl: setting("discordWebhookUrl") } : null) },
+  { kind: "slack", name: "Slack", eventsKey: "slackEvents", secretKeys: ["slackWebhookUrl"], config: () => (setting("slackWebhookUrl") ? { webhookUrl: setting("slackWebhookUrl") } : null) },
+  { kind: "webhook", name: "Webhook", eventsKey: "genericEvents", secretKeys: ["genericWebhookUrl"], config: () => (setting("genericWebhookUrl") ? { url: setting("genericWebhookUrl"), method: "POST", payloadStyle: "aonarr", headers: [] } : null) },
   {
     kind: "telegram",
     name: "Telegram",
     eventsKey: "telegramEvents",
+    secretKeys: ["telegramBotToken"],
     config: () => (setting("telegramBotToken") && setting("telegramChatId") ? { botToken: setting("telegramBotToken"), chatId: setting("telegramChatId") } : null),
   },
   {
     kind: "pushover",
     name: "Pushover",
     eventsKey: "pushoverEvents",
+    secretKeys: ["pushoverApiToken", "pushoverUserKey"],
     config: () => (setting("pushoverApiToken") && setting("pushoverUserKey") ? { apiToken: setting("pushoverApiToken"), userKey: setting("pushoverUserKey") } : null),
   },
   {
     kind: "ntfy",
     name: "ntfy",
     eventsKey: "ntfyEvents",
+    secretKeys: ["ntfyToken"],
     config: () => (setting("ntfyServerUrl") && setting("ntfyTopic") ? { serverUrl: setting("ntfyServerUrl"), topic: setting("ntfyTopic"), token: setting("ntfyToken") } : null),
   },
   {
     kind: "gotify",
     name: "Gotify",
     eventsKey: "gotifyEvents",
+    secretKeys: ["gotifyToken"],
     config: () => (setting("gotifyServerUrl") && setting("gotifyToken") ? { serverUrl: setting("gotifyServerUrl"), token: setting("gotifyToken") } : null),
   },
   {
     kind: "matrix",
     name: "Matrix",
     eventsKey: "matrixEvents",
+    secretKeys: ["matrixAccessToken"],
     config: () =>
       setting("matrixHomeserverUrl") && setting("matrixAccessToken") && setting("matrixRoomId")
         ? { homeserverUrl: setting("matrixHomeserverUrl"), accessToken: setting("matrixAccessToken"), roomId: setting("matrixRoomId") }
@@ -702,6 +737,7 @@ const LEGACY_PROVIDERS: LegacyProvider[] = [
     kind: "twilio",
     name: "SMS (Twilio)",
     eventsKey: "twilioEvents",
+    secretKeys: ["twilioAuthToken"],
     config: () =>
       setting("twilioAccountSid") && setting("twilioAuthToken") && setting("twilioFromNumber") && setting("twilioToNumber")
         ? { accountSid: setting("twilioAccountSid"), authToken: setting("twilioAuthToken"), fromNumber: setting("twilioFromNumber"), toNumber: setting("twilioToNumber") }
@@ -711,6 +747,7 @@ const LEGACY_PROVIDERS: LegacyProvider[] = [
     kind: "email",
     name: "Email",
     eventsKey: "smtpEvents",
+    secretKeys: ["smtpPassword"],
     config: () =>
       setting("smtpHost") && setting("smtpTo") && setting("smtpFrom")
         ? {
@@ -730,16 +767,41 @@ const LEGACY_PROVIDERS: LegacyProvider[] = [
     kind: "customScript",
     name: "Custom Script",
     eventsKey: "customScriptEvents",
+    secretKeys: [],
     config: () => (setting("customScriptPath") ? { path: setting("customScriptPath") } : null),
     enabled: () => getSetting("customScriptEnabled") === "1",
   },
 ];
 
 /**
+ * Blanks the credentials of every provider that now has a connection. The connection holds them encrypted and masks them
+ * in its own API, but `GET /api/settings` returns every setting in plain text, so a copy left behind would stay readable
+ * (and in every settings dump and backup) after the connection is deleted, say because a webhook URL leaked. The
+ * non-secret settings (the `<provider>Events` lists, hosts, topics) stay. A provider with no connection keeps its keys:
+ * an install with SMTP set only for Send to Kindle has no `smtpTo`, so no Email connection, and the Kindle sender still
+ * reads the `smtp*` keys. Written through setSetting so the cache and the database agree; a key that is already empty
+ * is not written again, so a second run changes nothing.
+ */
+async function blankMigratedSecrets(): Promise<void> {
+  const rows = (await db.prepare("SELECT DISTINCT kind FROM notification_connections").all()) as { kind: string }[];
+  const kinds = new Set(rows.map((r) => r.kind));
+  for (const provider of LEGACY_PROVIDERS) {
+    // config() is null for a provider that was never set up in full, whose keys no connection was made from.
+    if (!kinds.has(provider.kind) || !provider.config()) continue;
+    for (const key of provider.secretKeys) {
+      if (getSetting(key)) setSetting(key, "");
+    }
+  }
+}
+
+/**
  * Turns the one-fixed-set-of-settings-per-provider layout into connections: one connection for each provider that was
- * set up, with its values and its event list (never saved stays null: the same defaults as before). The old settings
- * are left where they are, so a rollback to an older version still finds them, but nothing sends from them any more.
- * Runs once (the marker), and never adds to connections that already exist.
+ * set up, with its values and its event list (never saved stays null: the same defaults as before). The credentials in
+ * the old settings are then blanked (blankMigratedSecrets); the rest of them stay. That costs a rollback: an image from
+ * before connections existed would find its providers without their webhook URLs and tokens, and they would have to be
+ * entered again there. Nothing sends from the old settings any more.
+ * Runs once (the marker), and never adds to connections that already exist. The blanking also runs on a pass that finds
+ * the connections already made (a crash between the insert and the blanking), so it cannot be skipped by one.
  */
 export async function migrateNotificationConnections(): Promise<number> {
   if (getSetting(MIGRATED_MARKER) === "1") return 0;
@@ -768,6 +830,7 @@ export async function migrateNotificationConnections(): Promise<number> {
     created = pending.length;
     if (created > 0) log.info(`[notifications] moved ${created} notification provider(s) from the old settings to connections`);
   }
+  await blankMigratedSecrets();
   setSetting(MIGRATED_MARKER, "1");
   return created;
 }
