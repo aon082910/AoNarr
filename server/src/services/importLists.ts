@@ -5,6 +5,7 @@ import { getSetting } from "./settingsStore.js";
 import {
   fetchAlbumTracksFor,
   fetchArtistAlbumsFor,
+  fetchImdbIdFor,
   fetchSeriesEpisodesFor,
   searchMetadata,
   TMDB_IMAGE_BASE,
@@ -834,6 +835,36 @@ async function recordListEntries(listId: number, seen: Set<string>): Promise<voi
   });
 }
 
+/** How many titles one clean-up looks an IMDb id up for; the rest are asked on the next sync. */
+const IMDB_LOOKUPS_PER_CLEAN = 100;
+
+/**
+ * An IMDb list can only judge a title that carries an IMDb id, and one added with a TMDB or TVDB id alone (by an
+ * older sync, or by a list of another kind) was never judged. For those, the id is asked of the providers that list
+ * external ids and stored on the title, so the next clean-up needs no lookup. A title no provider answers for is
+ * left as it is, never treated as gone. Mutates `items` so the caller sees the ids.
+ */
+async function addMissingImdbIds(items: { id: number; type: string; external_ids: string | null }[], seenKinds: Set<string>): Promise<void> {
+  let lookups = 0;
+  for (const item of items) {
+    if (!seenKinds.has(`${item.type}:imdb`)) continue;
+    let ids: Record<string, string>;
+    try {
+      ids = JSON.parse(item.external_ids ?? "{}") ?? {};
+    } catch {
+      continue;
+    }
+    if (ids.imdb || (!ids.tmdb && !ids.tvdb)) continue;
+    if (lookups >= IMDB_LOOKUPS_PER_CLEAN) break;
+    lookups++;
+    const imdb = await fetchImdbIdFor(item.type as any, ids).catch(() => null);
+    if (!imdb) continue;
+    const merged = JSON.stringify({ ...ids, imdb });
+    await db.prepare("UPDATE media_items SET external_ids = ? WHERE id = ?").run(merged, item.id);
+    item.external_ids = merged;
+  }
+}
+
 /** A clean-up that would take more than this share of the titles a list added is refused: more likely the list came back short than that it changed that much. */
 const CLEAN_REFUSE_SHARE = 0.5;
 const CLEAN_REFUSE_MIN_COUNT = 10;
@@ -861,6 +892,7 @@ export async function cleanListItems(list: ImportListRow, seen: Set<string>, onW
   // An item is judged only by keys of a kind this sync produced: a sync that listed IMDb ids cannot say anything about a title kept under its TMDB id.
   const kindOf = (key: string) => key.slice(0, key.lastIndexOf(":"));
   const seenKinds = new Set([...seen].map(kindOf));
+  await addMissingImdbIds(items, seenKinds);
   // A title another enabled list still holds stays, whichever list added it.
   const others = (await db
     .prepare("SELECT l.id AS id, l.type AS type, e.entry_key AS entry_key FROM import_lists l LEFT JOIN import_list_entries e ON e.list_id = l.id WHERE l.enabled = 1 AND l.id <> ?")
