@@ -8,6 +8,7 @@ import SearchMatchModal, { type MetadataSearchResult } from "../components/Searc
 import RenamePreviewModal from "../components/RenamePreviewModal.js";
 import type { LibraryGroup } from "../types.js";
 import { useAuth } from "../context/AuthContext.js";
+import { useBackgroundJobs } from "../context/BackgroundJobsContext.js";
 import ItemProfileControls from "../components/ItemProfileControls.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
@@ -238,6 +239,10 @@ export default function MediaDetail() {
   const [showImport, setShowImport] = useState(false);
   const [browsePath, setBrowsePath] = useState("");
   const [showMove, setShowMove] = useState(false);
+  const { startJob } = useBackgroundJobs();
+  const [showMoveFiles, setShowMoveFiles] = useState(false);
+  const [moveFilesDestination, setMoveFilesDestination] = useState(0);
+  const [moveFilesPlan, setMoveFilesPlan] = useState<{ moved: { kind: string; from: string; to: string }[]; skipped: { path: string; reason: string }[]; errors: { error: string }[] } | null>(null);
   const [openSeasons, setOpenSeasons] = useState<Set<number>>(new Set());
   const [syncingSceneNumbering, setSyncingSceneNumbering] = useState(false);
   const [seededSeasons, setSeededSeasons] = useState(false);
@@ -770,6 +775,27 @@ export default function MediaDetail() {
       await api.del(`/media/${item.id}/file${confirmed.values.unmonitor ? "?unmonitor=1" : ""}`);
       notify.success("File moved to the recycle bin.");
       load();
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
+  }
+
+  /** Moves the title's own folder (artwork, NFO, subtitles, extras and all) to another root folder of its type, as a tracked background job. */
+  async function previewMoveFiles() {
+    if (!item || !moveFilesDestination) return;
+    try {
+      setMoveFilesPlan(await api.post(`/media/${item.id}/move-files?preview=1`, { rootFolderId: moveFilesDestination }));
+    } catch (e) {
+      notify.error((e as Error).message);
+    }
+  }
+
+  async function startMoveFiles() {
+    if (!item || !moveFilesDestination) return;
+    try {
+      await startJob("move", `title-${item.id}`, `Move "${item.title}"`, `/media/${item.id}/move-files`, { rootFolderId: moveFilesDestination });
+      setShowMoveFiles(false);
+      setMoveFilesPlan(null);
     } catch (e) {
       notify.error((e as Error).message);
     }
@@ -1647,6 +1673,18 @@ export default function MediaDetail() {
                 onClick={organizeItem}
                 title="Organize & Rename — move/rename this item's own file(s) to match the current naming template, same as System → Rename Files but scoped to just this item"
               />
+              {rootFolders.some((f) => f.mediaType === item.type && f.id !== item.rootFolderId && !f.readOnly) && (
+                <ToolbarButton
+                  icon={<FolderIcon />}
+                  label="Move Files"
+                  onClick={() => {
+                    setMoveFilesDestination(0);
+                    setMoveFilesPlan(null);
+                    setShowMoveFiles(true);
+                  }}
+                  title="Move this title's whole folder (files, artwork, NFO, subtitles, extras) to another root folder"
+                />
+              )}
               {shape === "episodic" && (
                 <ToolbarButton icon={<FolderIcon />} label="Move Folder" onClick={moveShowFolder} title="Move the show's whole folder to the name its title gives it now" />
               )}
@@ -2314,6 +2352,63 @@ export default function MediaDetail() {
 
       {typeInfo && typeInfo.groupLevels.length > 0 && groupBreadcrumb && !showMove && (
         <p style={{ color: "var(--muted)" }}>Location: {groupBreadcrumb}</p>
+      )}
+
+      {showMoveFiles && (
+        <Modal title="Move files to another root folder" onClose={() => setShowMoveFiles(false)} maxWidth={640}>
+          <p style={{ color: "var(--muted)", marginTop: 0 }}>
+            Moves the title's own folder with everything in it (video files, artwork, NFO, subtitles, extras) to the same place below the chosen root folder. A title that shares its folder with others moves only its own files. It runs in the background.
+          </p>
+          <label htmlFor="move-files-destination">Destination root folder</label>
+          <select
+            id="move-files-destination"
+            value={moveFilesDestination}
+            onChange={(e) => {
+              setMoveFilesDestination(Number(e.target.value));
+              setMoveFilesPlan(null);
+            }}
+          >
+            <option value={0} disabled>
+              Choose destination...
+            </option>
+            {rootFolders
+              .filter((f) => f.mediaType === item.type && f.id !== item.rootFolderId && !f.readOnly)
+              .map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name?.trim() || f.path}
+                </option>
+              ))}
+          </select>
+          {moveFilesPlan && (
+            <div style={{ marginTop: 8 }}>
+              {moveFilesPlan.moved.length === 0 && moveFilesPlan.errors.length === 0 && <p className="empty">No files to move; the title is only pointed at the new folder.</p>}
+              {moveFilesPlan.moved.map((m) => (
+                <div key={m.from} style={{ fontSize: "0.85em" }}>
+                  {m.kind === "folder" ? "Folder: " : "File: "}
+                  {m.from} → {m.to}
+                </div>
+              ))}
+              {moveFilesPlan.skipped.map((s) => (
+                <div key={s.path + s.reason} style={{ fontSize: "0.85em", color: "var(--muted)" }}>
+                  Left in place: {s.path} ({s.reason})
+                </div>
+              ))}
+              {moveFilesPlan.errors.map((e) => (
+                <div key={e.error} className="error" style={{ fontSize: "0.85em" }}>
+                  {e.error}
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="toolbar" style={{ gap: 8, marginTop: 12 }}>
+            <button type="button" className="secondary" onClick={previewMoveFiles} disabled={!moveFilesDestination}>
+              Preview
+            </button>
+            <button type="button" onClick={startMoveFiles} disabled={!moveFilesDestination}>
+              Move files
+            </button>
+          </div>
+        </Modal>
       )}
 
       {showMove && typeInfo && (
