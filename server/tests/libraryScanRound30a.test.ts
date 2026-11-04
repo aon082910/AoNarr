@@ -106,6 +106,21 @@ async function until(condition: () => boolean): Promise<void> {
   expect(condition()).toBe(true);
 }
 
+/**
+ * refreshAllLibraries reads the database before it reaches the type that has to wait, and the fake clock does not wait
+ * for a database answer: advancing it at once can carry the clock past the whole wait before the wait has begun (the
+ * deadline is then measured from a later "now" and the run never finishes). The wait says so in the log; the tests
+ * advance the clock only after that line.
+ */
+async function refreshWaitSpy() {
+  const { log } = await import("../src/services/logger.js");
+  return vi.spyOn(log, "info");
+}
+
+async function waitingHasBegun(info: { mock: { calls: unknown[][] } }): Promise<void> {
+  await until(() => info.mock.calls.some((call) => String(call[0]).includes("the scheduled full refresh waits for it")));
+}
+
 async function insertMovie(title: string): Promise<number> {
   return Number(
     (await db.prepare(`INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie', ?, ?, 1, 0, 'missing')`).run(title, title.toLowerCase()))
@@ -257,8 +272,10 @@ describe("the cheap new-children pass and the full refresh share one slot per ty
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const { cheap, held } = await slotHeldByTheCheapPass();
 
+    const waiting = await refreshWaitSpy();
     let allDone = false;
     const all = libraryScan.refreshAllLibraries().then(() => (allDone = true));
+    await waitingHasBegun(waiting);
     await vi.advanceTimersByTimeAsync(44 * 60_000);
     expect(allDone).toBe(false);
     expect(searchMetadata).not.toHaveBeenCalled();
@@ -276,7 +293,9 @@ describe("the cheap new-children pass and the full refresh share one slot per ty
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const { cheap, held } = await slotHeldByTheCheapPass();
 
+    const waiting = await refreshWaitSpy();
     const all = libraryScan.refreshAllLibraries();
+    await waitingHasBegun(waiting);
     await vi.advanceTimersByTimeAsync(20 * 60_000);
     expect(searchMetadata).not.toHaveBeenCalled();
 
