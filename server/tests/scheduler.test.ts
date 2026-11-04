@@ -23,12 +23,15 @@ const getDownloadClientAdapter = vi.fn();
 const removeQueueItemDownload = vi.fn();
 const applyRemotePathMapping = vi.fn();
 const withQueueImportLock = vi.fn();
+/** Whether a Blackhole release's output is still being written (downloadClient.ts); the real one reads the downloads folder. */
+const blackholeOutputBusy = vi.fn((_downloadId: string, _withinMs?: number) => false);
 const { DOWNLOAD_INTERRUPTED_REASON } = vi.hoisted(() => ({ DOWNLOAD_INTERRUPTED_REASON: "Download was interrupted by an AoNarr restart" }));
 vi.mock("../src/services/downloadClient.js", () => ({
   getDownloadClientAdapter: (...args: unknown[]) => getDownloadClientAdapter(...args),
   removeQueueItemDownload: (...args: unknown[]) => removeQueueItemDownload(...args),
   applyRemotePathMapping: (...args: unknown[]) => applyRemotePathMapping(...args),
   withQueueImportLock: (...args: unknown[]) => withQueueImportLock(...args),
+  blackholeOutputBusy: (...args: unknown[]) => blackholeOutputBusy(...(args as [string, number?])),
   DOWNLOAD_INTERRUPTED_REASON,
 }));
 
@@ -172,6 +175,7 @@ beforeEach(async () => {
   isIndexerBackedOff.mockReset().mockReturnValue(false);
   getDownloadClientAdapter.mockReset();
   removeQueueItemDownload.mockReset().mockResolvedValue(undefined);
+  blackholeOutputBusy.mockReset().mockReturnValue(false);
   applyRemotePathMapping.mockReset().mockImplementation(async (_id: number, p: string) => p);
   withQueueImportLock.mockReset().mockImplementation(async (_queueId: number, importFn: () => Promise<void>) => {
     await importFn();
@@ -1481,6 +1485,56 @@ describe("pollQueue", () => {
     expect(notifyFailed).not.toHaveBeenCalled();
   });
 
+  it("re-grabs a download the client dropped as a copy or duplicate (noBlame) without blocklisting it or using up a retry (Round 30b, L7)", async () => {
+    const client = await insertClient({ type: "http" });
+    const adapter = fakeAdapter({
+      addDownload: vi.fn().mockResolvedValue({ downloadId: "dl-2" }),
+      getStatus: vi
+        .fn()
+        .mockResolvedValue([{ downloadId: "dl-1", progress: 1, status: "failed", failureReason: "NZBGet: dropped as a copy of another download (DELETED/COPY)", noBlame: true }]),
+    });
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    setSetting("removeFailedDownloads", "1");
+    const release = "The.Matrix.1999.1080p.WEB-DL-COPIED";
+    searchAllIndexers.mockResolvedValue([fakeResult({ title: release, protocol: "http", seeders: null, downloadUrl: "https://ddl.example/matrix.mkv" })]);
+    const movie = await insertMovie();
+    // Already at the retry cap: a drop the release did not cause does not count against it.
+    await db
+      .prepare("INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, progress, retry_count) VALUES (?, ?, ?, 'dl-1', 'downloading', 0.4, 2)")
+      .run(movie.id, release, client.id);
+
+    await pollQueue();
+
+    expect(await db.prepare("SELECT * FROM blocklist WHERE media_item_id = ?").all(movie.id)).toEqual([]);
+    expect(await db.prepare("SELECT * FROM release_group_stats WHERE LOWER(release_group) LIKE '%copied%'").all()).toEqual([]);
+    expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    expect(adapter.addDownload.mock.calls[0][1]).toBe("https://ddl.example/matrix.mkv");
+    const rows = (await db.prepare("SELECT title, download_id, status, retry_count FROM queue WHERE media_item_id = ?").all(movie.id)) as any[];
+    expect(rows).toEqual([{ title: release, download_id: "dl-2", status: "queued", retry_count: 2 }]);
+    expect(notifyFailed).not.toHaveBeenCalled();
+  });
+
+  it("still blocklists a failed update that is not marked noBlame, whatever its reason says (Round 30b, L7)", async () => {
+    const client = await insertClient({ type: "http" });
+    const adapter = fakeAdapter({
+      addDownload: vi.fn().mockResolvedValue({ downloadId: "dl-2" }),
+      getStatus: vi.fn().mockResolvedValue([{ downloadId: "dl-1", progress: 1, status: "failed", failureReason: "NZBGet: deleted in NZBGet (DELETED/MANUAL)" }]),
+    });
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    setSetting("removeFailedDownloads", "1");
+    searchAllIndexers.mockResolvedValue([]);
+    const release = "The.Matrix.1999.1080p.WEB-DL-DELETED";
+    const movie = await insertMovie();
+    await db
+      .prepare("INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, progress, retry_count) VALUES (?, ?, ?, 'dl-1', 'downloading', 0.4, 0)")
+      .run(movie.id, release, client.id);
+
+    await pollQueue();
+
+    expect(await db.prepare("SELECT release_title FROM blocklist WHERE media_item_id = ?").all(movie.id)).toEqual([{ release_title: release }]);
+    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+  });
+
   it("does nothing when there are no active queue items at all", async () => {
     await insertClient();
 
@@ -2046,8 +2100,65 @@ describe("runSeedGoalCleanup", () => {
 
     await runSeedGoalCleanup();
 
-    expect(adapter.removeSeededTorrents).toHaveBeenCalledWith(expect.anything(), 2, null);
+    // The fourth argument is the set of downloads the queue still tracks (none here).
+    expect(adapter.removeSeededTorrents).toHaveBeenCalledWith(expect.anything(), 2, null, new Set());
     setSetting("torrentSeedRatioGoal", "");
+  });
+
+  it("passes each client the lower-cased download ids of its own queued, downloading and completed rows, so a torrent still being imported is left alone (Round 30b, M2)", async () => {
+    setSetting("torrentSeedRatioGoal", "2");
+    try {
+      const a = await insertClient({ name: "Client A" });
+      const b = await insertClient({ name: "Client B" });
+      const addRow = async (clientId: number, downloadId: string | null, status: string) => {
+        const movie = await insertMovie({ title: `Seed ${Math.random()}`, sort_title: "x" });
+        await db
+          .prepare("INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, progress) VALUES (?, 'Release', ?, ?, ?, 0)")
+          .run(movie.id, clientId, downloadId, status);
+      };
+      await addRow(a.id, "AAAA-Completed", "completed");
+      await addRow(a.id, "Bbbb-Downloading", "downloading");
+      await addRow(a.id, "CCCC-queued", "queued");
+      await addRow(a.id, "dddd-failed", "failed");
+      await addRow(a.id, null, "downloading");
+      await addRow(b.id, "eeee-other-client", "completed");
+      const adapter = fakeAdapter({ removeSeededTorrents: vi.fn().mockResolvedValue(0) });
+      getDownloadClientAdapter.mockReturnValue(adapter);
+
+      await runSeedGoalCleanup();
+
+      expect(adapter.removeSeededTorrents).toHaveBeenCalledTimes(2);
+      const skipFor = (clientId: number) => adapter.removeSeededTorrents.mock.calls.find((call: any[]) => call[0].id === clientId)![3] as Set<string>;
+      expect(skipFor(a.id)).toBeInstanceOf(Set);
+      expect([...skipFor(a.id)].sort()).toEqual(["aaaa-completed", "bbbb-downloading", "cccc-queued"]);
+      // Another client's row is not in it, and a failed row (its torrent is not wanted any more) is not either.
+      expect(skipFor(a.id).has("eeee-other-client")).toBe(false);
+      expect(skipFor(a.id).has("dddd-failed")).toBe(false);
+      expect([...skipFor(b.id)]).toEqual(["eeee-other-client"]);
+    } finally {
+      setSetting("torrentSeedRatioGoal", "");
+    }
+  });
+
+  it("still cleans up the other clients when one of them fails", async () => {
+    setSetting("torrentSeedRatioGoal", "2");
+    try {
+      await insertClient({ name: "Broken" });
+      await insertClient({ name: "Fine" });
+      const adapter = fakeAdapter({
+        removeSeededTorrents: vi.fn().mockImplementation(async (client: { name: string }) => {
+          if (client.name === "Broken") throw new Error("boom");
+          return 1;
+        }),
+      });
+      getDownloadClientAdapter.mockReturnValue(adapter);
+
+      await expect(runSeedGoalCleanup()).resolves.toBeUndefined();
+
+      expect(adapter.removeSeededTorrents).toHaveBeenCalledTimes(2);
+    } finally {
+      setSetting("torrentSeedRatioGoal", "");
+    }
   });
 });
 
@@ -5118,6 +5229,68 @@ describe("Round 20 — a Blackhole release that never appears ages out without b
     expect(notifyFailed).toHaveBeenCalledTimes(1);
     const history = (await db.prepare("SELECT data FROM history WHERE media_item_id = ? AND event_type = 'failed'").get(movie.id)) as { data: string };
     expect(history.data).toMatch(/downloads folder/);
+  });
+});
+
+describe("Round 30b — a Blackhole release whose output is still being written is not expired", () => {
+  async function blackholeRow(name: string, hoursAgo: number, downloadId: string | null = `uuid-${name}|${name}`): Promise<number> {
+    const client = (await db.prepare("SELECT id FROM download_clients WHERE type = 'blackhole' LIMIT 1").get()) as { id: number } | undefined;
+    const clientId = client?.id ?? (await insertClient({ type: "blackhole" })).id;
+    const movie = await insertMovie({ title: `Movie of ${name}`, sort_title: name.toLowerCase() });
+    return Number(
+      (
+        await db
+          .prepare(`INSERT INTO queue (media_item_id, title, download_client_id, download_id, status, progress, added_at) VALUES (?, ?, ?, ?, 'downloading', 0, ${nowOffsetHoursExpr(db, -hoursAgo)})`)
+          .run(movie.id, name, clientId, downloadId)
+      ).lastInsertRowid
+    );
+  }
+
+  it("leaves a week-old row alone while the adapter says its output is busy, and expires it once it is not", async () => {
+    const id = await blackholeRow("Slow.Release.2020", 24 * 9);
+    blackholeOutputBusy.mockReturnValue(true);
+
+    await cleanupStalledDownloads();
+
+    expect(await queueStatus(id)).toBe("downloading");
+    expect(blackholeOutputBusy).toHaveBeenCalledWith("uuid-Slow.Release.2020|Slow.Release.2020");
+    expect(notifyFailed).not.toHaveBeenCalled();
+    expect((await db.prepare("SELECT id FROM history WHERE event_type = 'failed'").all()) as unknown[]).toHaveLength(0);
+
+    blackholeOutputBusy.mockReturnValue(false);
+    await cleanupStalledDownloads();
+
+    expect(await queueStatus(id)).toBe("failed");
+    expect(notifyFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks about the rows past the timeout only, and each by its own id", async () => {
+    const old = await blackholeRow("Old.One.2020", 24 * 9);
+    const alsoOld = await blackholeRow("Old.Two.2020", 24 * 8);
+    const young = await blackholeRow("Young.One.2020", 24 * 3);
+    blackholeOutputBusy.mockImplementation((downloadId: string) => downloadId.includes("Old.One"));
+
+    await cleanupStalledDownloads();
+
+    expect(blackholeOutputBusy.mock.calls.map((c) => c[0]).sort()).toEqual(["uuid-Old.One.2020|Old.One.2020", "uuid-Old.Two.2020|Old.Two.2020"]);
+    expect(await queueStatus(old)).toBe("downloading");
+    expect(await queueStatus(alsoOld)).toBe("failed");
+    expect(await queueStatus(young)).toBe("downloading");
+  });
+
+  it("uses the same timeout setting for the age and for the failure text", async () => {
+    setSetting("blackholeTimeoutHours", "24");
+    try {
+      const id = await blackholeRow("Day.Old.2020", 30);
+
+      await cleanupStalledDownloads();
+
+      expect(await queueStatus(id)).toBe("failed");
+      const history = (await db.prepare("SELECT data FROM history WHERE event_type = 'failed'").get()) as { data: string };
+      expect(history.data).toMatch(/within 24h/);
+    } finally {
+      setSetting("blackholeTimeoutHours", "");
+    }
   });
 });
 

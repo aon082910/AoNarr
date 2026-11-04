@@ -245,6 +245,33 @@ async function proxyIssues(): Promise<HealthIssue[]> {
 }
 
 /** The process carries on after an uncaught exception (index.ts); a run of them means something is wrong in a timer or a background job. */
+/** A download left paused (or waiting its turn) at the client this long is probably forgotten. */
+const PAUSED_QUEUE_HOURS = 72;
+
+/**
+ * A paused download is never failed (the release did nothing wrong, and deleting a paused torrent would be rude), so
+ * before this nothing ever noticed one the admin forgot: it held its title from every search for ever. Health now
+ * names the ones that have not moved for three days.
+ */
+async function pausedQueueIssues(): Promise<HealthIssue[]> {
+  // Rows of a client that is switched off or gone say nothing about a download someone forgot.
+  const where = `FROM queue q JOIN download_clients d ON d.id = q.download_client_id
+       WHERE q.status IN ('queued','downloading') AND q.client_state = 'paused' AND d.enabled = 1
+       AND COALESCE(q.last_progress_at, q.added_at) <= ${nowOffsetHoursExpr(db, -PAUSED_QUEUE_HOURS)}`;
+  const count = Number(((await db.prepare(`SELECT COUNT(*) AS c ${where}`).get()) as { c: number | string }).c);
+  if (count === 0) return [];
+  const rows = (await db.prepare(`SELECT q.title AS title ${where} ORDER BY q.added_at LIMIT 3`).all()) as { title: string }[];
+  const named = rows.map((r) => `"${r.title}"`).join(", ");
+  return [
+    {
+      source: "paused-downloads",
+      severity: "warning",
+      message: `${count} download${count === 1 ? " has" : "s have"} sat paused or waiting at the download client for more than ${PAUSED_QUEUE_HOURS / 24} days without moving (${named}${count > 3 ? ", …" : ""}). ${count === 1 ? "It holds" : "They hold"} the title from every search; resume ${count === 1 ? "it" : "them"} in the client or remove ${count === 1 ? "it" : "them"} from Activity.`,
+      transient: false,
+    },
+  ];
+}
+
 /** A restore that failed to start twice was rolled back at start-up (restoreGuard.ts): the admin must hear of it. */
 async function restoreRolledBackIssues(): Promise<HealthIssue[]> {
   if (config.databaseDriver !== "sqlite") return [];
@@ -489,6 +516,7 @@ async function buildHealthReport(): Promise<HealthReport> {
     safely("jobs", failingJobIssues),
     safely("uncaught-errors", uncaughtErrorIssues),
     safely("restore-rolled-back", restoreRolledBackIssues),
+    safely("paused-downloads", pausedQueueIssues),
     safely("notifications", notificationIssues),
     safely("proxy", proxyIssues),
     safely("download-paths", downloadPathIssues),

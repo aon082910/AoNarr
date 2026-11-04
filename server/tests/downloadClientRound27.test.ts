@@ -155,6 +155,49 @@ describe("the seed goal goes to qBittorrent with the torrent (DL5)", () => {
   });
 });
 
+describe("adding a torrent starts it, even when the client is set to add torrents stopped (Round 30b)", () => {
+  it("qBittorrent: the add form says paused=false and stopped=false, beside the category and the seed goal", async () => {
+    const calls: { url: string; body?: URLSearchParams }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: any = {}) => {
+        calls.push({ url: String(url), body: init.body instanceof URLSearchParams ? init.body : undefined });
+        return { ok: true, status: 200, headers: new Headers({ "set-cookie": "SID=abc; Path=/" }), text: async () => "Ok.", json: async () => [] };
+      })
+    );
+    const hash = "e".repeat(40);
+
+    const result = await dc.getDownloadClientAdapter("qbittorrent").addDownload(client(), `magnet:?xt=urn:btih:${hash}`, "movies", "Release", "torrent", { seedGoal: { ratio: 2, minutes: null } });
+
+    expect(result.downloadId).toBe(hash);
+    const add = calls.find((c) => c.url.endsWith("/torrents/add"))!;
+    // paused is qBittorrent 4's field and stopped is 5's: each build reads the one it knows and ignores the other.
+    expect(add.body!.get("paused")).toBe("false");
+    expect(add.body!.get("stopped")).toBe("false");
+    expect(add.body!.get("category")).toBe("movies");
+    expect(add.body!.get("ratioLimit")).toBe("2");
+    expect(add.body!.get("urls")).toBe(`magnet:?xt=urn:btih:${hash}`);
+  });
+
+  it("qBittorrent: also when there is no category and no seed goal", async () => {
+    const calls: { url: string; body?: URLSearchParams }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: any = {}) => {
+        calls.push({ url: String(url), body: init.body instanceof URLSearchParams ? init.body : undefined });
+        return { ok: true, status: 200, headers: new Headers({ "set-cookie": "SID=abc; Path=/" }), text: async () => "Ok.", json: async () => [] };
+      })
+    );
+
+    await dc.getDownloadClientAdapter("qbittorrent").addDownload(client(), `magnet:?xt=urn:btih:${"f".repeat(40)}`, null);
+
+    const add = calls.find((c) => c.url.endsWith("/torrents/add"))!;
+    expect(add.body!.get("paused")).toBe("false");
+    expect(add.body!.get("stopped")).toBe("false");
+    expect(add.body!.has("category")).toBe(false);
+  });
+});
+
 describe("NZBGet (DL14)", () => {
   const nz = () => client({ type: "nzbget", host: "nz.local", port: 6789, username: "nzbget", password: "tegbzn6789", category: "tv" });
 
@@ -168,8 +211,8 @@ describe("NZBGet (DL14)", () => {
     expect(append.args[0]).toBe("Show.S01E01.1080p.nzb");
     expect(Buffer.from(append.args[1], "base64").toString()).toBe(NZB);
     expect(append.args[2]).toBe("tv");
-    // Duplicate handling is off, so a release found again after its file was deleted downloads again.
-    expect(append.args[8]).toBe("all");
+    // Duplicate handling is off (FORCE; "ALL" made NZBGet drop a repeat as DELETED/COPY), so a release found again downloads again.
+    expect(append.args[8]).toBe("FORCE");
     expect((append.init.headers as Record<string, string>).Authorization).toBe(`Basic ${Buffer.from("nzbget:tegbzn6789").toString("base64")}`);
   });
 
@@ -202,7 +245,7 @@ describe("NZBGet (DL14)", () => {
     expect(by("2")).toMatchObject({ status: "downloading", paused: true });
     expect(by("3")).toMatchObject({ status: "downloading", progress: 0.99 });
     expect(by("4")).toMatchObject({ status: "completed", progress: 1, remotePath: "/downloads/dst/Show" });
-    expect(by("5")).toMatchObject({ status: "failed", failureReason: "NZBGet: FAILURE/PAR" });
+    expect(by("5")).toMatchObject({ status: "failed", failureReason: "NZBGet: par repair failed (FAILURE/PAR)" });
     expect(by("6")).toMatchObject({ status: "downloading", warning: "NZBGet: not enough disk space" });
     expect(by("7")).toMatchObject({ status: "failed" });
     expect(by("9")).toMatchObject({ status: "failed", failureReason: "NZBGet: WARNING/PASSWORD" });
@@ -314,6 +357,98 @@ describe("Transmission (DL14)", () => {
     expect(by("ee")).toMatchObject({ status: "downloading", stalled: true });
     expect(by("ff").status).toBe("downloading");
     expect(updates.some((u) => u.downloadId === "zz")).toBe(false);
+  });
+
+  it("adds a torrent started (paused: false), whether it is a magnet or a .torrent file (Round 30b)", async () => {
+    const { fn, calls } = transmissionFetch({ "torrent-add": { "torrent-added": { hashString: HASH } } });
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) =>
+      String(url).includes("tr.local") ? fn(url, init) : Promise.resolve({ ok: true, status: 200, headers: new Headers(), arrayBuffer: async () => Buffer.from("d4:infod4:name1:xee") })
+    );
+
+    await dc.getDownloadClientAdapter("transmission").addDownload(tr(), `magnet:?xt=urn:btih:${HASH}`, null);
+    await dc.getDownloadClientAdapter("transmission").addDownload(tr(), "https://idx.example.com/dl.torrent", "movies");
+
+    const adds = calls.filter((c) => c.method === "torrent-add");
+    expect(adds).toHaveLength(2);
+    expect(adds[0].args).toMatchObject({ filename: `magnet:?xt=urn:btih:${HASH}`, paused: false });
+    expect(adds[1].args).toMatchObject({ labels: ["aonarr", "movies"], paused: false });
+    expect(adds[1].args.metainfo).toBe(Buffer.from("d4:infod4:name1:xee").toString("base64"));
+    expect(adds.every((c) => c.args.paused === false)).toBe(true);
+  });
+
+  describe("asks only for the torrents it is polled about (Round 30b)", () => {
+    const row = (hashString: string, over: Record<string, unknown> = {}) => ({
+      hashString,
+      name: `Release ${hashString}`,
+      downloadDir: "/downloads/",
+      status: 4,
+      percentDone: 0.5,
+      leftUntilDone: 500,
+      eta: 60,
+      error: 0,
+      errorString: "",
+      isStalled: false,
+      ...over,
+    });
+    const A = "a".repeat(40);
+    const B = "b".repeat(40);
+    const OTHER = "c".repeat(40);
+
+    it("sends torrent-get with ids set to the lower-cased hashes, once each, and answers only those", async () => {
+      const library = [row(A), row(B, { status: 6, percentDone: 1, leftUntilDone: 0 }), row(OTHER)];
+      // Like Transmission: only the torrents named in ids are answered.
+      const { fn, calls } = transmissionFetch({ "torrent-get": (args: any) => ({ torrents: library.filter((t) => !args.ids || args.ids.includes(t.hashString)) }) });
+      vi.stubGlobal("fetch", fn);
+
+      const updates = await dc.getDownloadClientAdapter("transmission").getStatus(tr(), [A.toUpperCase(), B, A]);
+
+      const gets = calls.filter((c) => c.method === "torrent-get");
+      expect(gets).toHaveLength(1);
+      expect(gets[0].args.ids).toEqual([A, B]);
+      expect(gets[0].args.fields).toContain("hashString");
+      // Each is reported under the id it was asked about (the queue row's own spelling).
+      expect(updates.map((u) => u.downloadId).sort()).toEqual([A.toUpperCase(), B].sort());
+      expect(updates.find((u) => u.downloadId === B)).toMatchObject({ status: "completed" });
+      expect(updates.some((u) => u.downloadId === OTHER)).toBe(false);
+    });
+
+    it("ignores a torrent in the answer that it did not ask about", async () => {
+      // A client that answers everything whatever ids says.
+      const { fn } = transmissionFetch({ "torrent-get": { torrents: [row(A), row(OTHER)] } });
+      vi.stubGlobal("fetch", fn);
+
+      const updates = await dc.getDownloadClientAdapter("transmission").getStatus(tr(), [A]);
+
+      expect(updates.map((u) => u.downloadId)).toEqual([A]);
+    });
+
+    it("lists no torrent at all when asked about none: it only checks that the client answers", async () => {
+      const { fn, calls } = transmissionFetch({ "session-get": { version: "4.0.5" }, "torrent-get": { torrents: [row(A), row(B)] } });
+      vi.stubGlobal("fetch", fn);
+
+      const updates = await dc.getDownloadClientAdapter("transmission").getStatus(tr(), []);
+
+      expect(updates).toEqual([]);
+      expect(calls.map((c) => c.method)).toEqual(["session-get"]);
+    });
+
+    it("still fails when asked about none and the client cannot be reached", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => json({}, { status: 401 })));
+
+      await expect(dc.getDownloadClientAdapter("transmission").getStatus(tr(), [])).rejects.toThrow();
+    });
+
+    it("lists every torrent, with no ids, when it removes the ones that met their seed goal", async () => {
+      const seeded = { hashString: "seeded", status: 6, uploadRatio: 3, secondsSeeding: 0, labels: ["aonarr", "aonarr-imported"] };
+      const { fn, calls } = transmissionFetch({ "torrent-get": { torrents: [seeded] }, "torrent-remove": {} });
+      vi.stubGlobal("fetch", fn);
+
+      expect(await dc.getDownloadClientAdapter("transmission").removeSeededTorrents!(tr(), 1, null)).toBe(1);
+
+      const gets = calls.filter((c) => c.method === "torrent-get");
+      expect(gets).toHaveLength(1);
+      expect("ids" in gets[0].args).toBe(false);
+    });
   });
 
   it("removes a torrent, with its data when asked", async () => {
@@ -509,6 +644,74 @@ describe("Deluge (DL14)", () => {
     expect(by(hashes[1])).toMatchObject({ status: "completed", remotePath: "/downloads/Release" });
     expect(by(hashes[2])).toMatchObject({ status: "downloading", paused: true });
     expect(by(hashes[3])).toMatchObject({ status: "downloading", warning: "Deluge: Disk full" });
+  });
+
+  it("adds a torrent started (add_paused: false), whether it is a magnet or a .torrent file (Round 30b)", async () => {
+    const { fn, calls } = delugeFetch({ "core.add_torrent_magnet": HASH, "core.add_torrent_file": HASH }, { connected: true });
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) =>
+      String(url).includes("de.local") ? fn(url, init) : Promise.resolve({ ok: true, status: 200, headers: new Headers(), arrayBuffer: async () => Buffer.from("d4:infod4:name1:xee") })
+    );
+
+    await dc.getDownloadClientAdapter("deluge").addDownload(dl(), `magnet:?xt=urn:btih:${HASH}`, null);
+    await dc.getDownloadClientAdapter("deluge").addDownload(dl(), "https://idx.example.com/dl.torrent", null);
+
+    expect(calls.find((c) => c.method === "core.add_torrent_magnet")!.args).toEqual([`magnet:?xt=urn:btih:${HASH}`, { add_paused: false }]);
+    expect(calls.find((c) => c.method === "core.add_torrent_file")!.args).toEqual(["release.torrent", Buffer.from("d4:infod4:name1:xee").toString("base64"), { add_paused: false }]);
+  });
+
+  describe("asks only for the torrents it is polled about (Round 30b)", () => {
+    const A = "a".repeat(40);
+    const B = "b".repeat(40);
+    const OTHER = "c".repeat(40);
+    const t = (over: Record<string, unknown> = {}) => ({ name: "Release", state: "Downloading", progress: 50, total_size: 1000, total_done: 500, eta: 30, save_path: "/downloads", message: "OK", download_payload_rate: 100, ...over });
+
+    it("filters core.get_torrents_status by id with the lower-cased hashes, once each, and answers only those", async () => {
+      const library: Record<string, unknown> = { [A]: t(), [B]: t({ state: "Seeding", progress: 100, total_done: 1000, eta: 0 }), [OTHER]: t() };
+      // Like Deluge: the filter's id list narrows the answer.
+      const { fn, calls } = delugeFetch(
+        { "core.get_torrents_status": (args: any) => Object.fromEntries(Object.entries(library).filter(([hash]) => !args[0]?.id || args[0].id.includes(hash))) },
+        { connected: true }
+      );
+      vi.stubGlobal("fetch", fn);
+
+      const updates = await dc.getDownloadClientAdapter("deluge").getStatus(dl(), [A.toUpperCase(), B, A]);
+
+      const asked = calls.filter((c) => c.method === "core.get_torrents_status");
+      expect(asked).toHaveLength(1);
+      expect(asked[0].args[0]).toEqual({ id: [A, B] });
+      expect(asked[0].args[1]).toContain("state");
+      // Each is reported under the id it was asked about (the queue row's own spelling).
+      expect(updates.map((u) => u.downloadId).sort()).toEqual([A.toUpperCase(), B].sort());
+      expect(updates.find((u) => u.downloadId === B)).toMatchObject({ status: "completed" });
+      expect(updates.some((u) => u.downloadId === OTHER)).toBe(false);
+    });
+
+    it("ignores a torrent in the answer that it did not ask about", async () => {
+      const { fn } = delugeFetch({ "core.get_torrents_status": { [A]: t(), [OTHER]: t() } }, { connected: true });
+      vi.stubGlobal("fetch", fn);
+
+      const updates = await dc.getDownloadClientAdapter("deluge").getStatus(dl(), [A]);
+
+      expect(updates.map((u) => u.downloadId)).toEqual([A]);
+    });
+
+    it("lists no torrent at all when asked about none: it only checks that the web UI answers", async () => {
+      const { fn, calls } = delugeFetch({ "core.get_torrents_status": { [A]: t(), [B]: t() } }, { connected: true });
+      vi.stubGlobal("fetch", fn);
+
+      const updates = await dc.getDownloadClientAdapter("deluge").getStatus(dl(), []);
+
+      expect(updates).toEqual([]);
+      const methods = calls.map((c) => c.method);
+      expect(methods).toContain("web.connected");
+      expect(methods.filter((m) => m.startsWith("core.") || m.startsWith("label."))).toEqual([]);
+    });
+
+    it("still fails when asked about none and the web UI cannot be reached", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => json({ result: false, error: null })));
+
+      await expect(dc.getDownloadClientAdapter("deluge").getStatus(dl(), [])).rejects.toThrow(/rejected the login/);
+    });
   });
 
   it("logs in again once when the session has expired", async () => {

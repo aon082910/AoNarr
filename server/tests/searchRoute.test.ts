@@ -711,3 +711,242 @@ describe("POST /api/search/:mediaItemId/grab — two clicks at once (Round 20 re
     expect(row.size).toBeNull();
   });
 });
+
+describe("POST /api/search/:mediaItemId/grab — a 409 says whether repeating can help (Round 30b)", () => {
+  let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
+  beforeAll(async () => {
+    ({ setSetting } = await import("../src/services/settingsStore.js"));
+  });
+
+  const grab = (mediaItemId: number, body: Record<string, unknown>) => request(app).post(`/api/search/${mediaItemId}/grab`).set("X-Api-Key", apiKey).send(body);
+  const queueRows = async (mediaItemId: number) => (await db.prepare("SELECT id FROM queue WHERE media_item_id = ?").all(mediaItemId)) as unknown[];
+  const movieBody = { title: "Movie.2020.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=urn:btih:one", protocol: "torrent" };
+
+  /** An adapter that hands out an id of its own per release and counts what it was given. */
+  function adapterWithOwnIds() {
+    const adapter = { addDownload: vi.fn(async (_client: unknown, url: string) => ({ downloadId: `id-${url}` })), getStatus: vi.fn(async () => []) };
+    getDownloadClientAdapter.mockReturnValue(adapter);
+    return adapter;
+  }
+
+  async function insertArtistWithUnreleasedAlbum(): Promise<number> {
+    const artistId = await insertItem("artist", "Queen");
+    for (const [title, date] of [
+      ["Queen", "1973-07-13"],
+      ["Queen II", "1974-03-08"],
+      ["The Next Record", "2999-01-01"],
+    ]) {
+      await db.prepare("INSERT INTO sub_items (media_item_id, title, release_date, monitored, has_file) VALUES (?, ?, ?, 1, 0)").run(artistId, title, date);
+    }
+    return artistId;
+  }
+
+  describe("a refusal the admin may confirm answers code override", () => {
+    it.each([
+      ["force", { force: true }],
+      ["the matching override", { overrides: ["blocklisted"] }],
+    ])("a blocklisted release: refused with code override, taken with %s", async (_label, confirm) => {
+      await insertTorrentClient();
+      const movieId = await insertItem("movie", "Movie");
+      await db.prepare("INSERT INTO blocklist (media_item_id, release_title) VALUES (?, ?)").run(movieId, movieBody.title);
+      const adapter = adapterWithOwnIds();
+
+      const refused = await grab(movieId, movieBody);
+      expect(refused.status).toBe(409);
+      expect(refused.body).toMatchObject({ code: "override" });
+      expect(refused.body.error).toMatch(/blocklisted/);
+      expect(adapter.addDownload).not.toHaveBeenCalled();
+
+      const confirmed = await grab(movieId, { ...movieBody, ...confirm });
+      expect(confirmed.status).toBe(201);
+      expect(confirmed.body.code).toBeUndefined();
+      expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    });
+
+    it("an override for another rejection does not lift the blocklist", async () => {
+      await insertTorrentClient();
+      const movieId = await insertItem("movie", "Movie");
+      await db.prepare("INSERT INTO blocklist (media_item_id, release_title) VALUES (?, ?)").run(movieId, movieBody.title);
+      const adapter = adapterWithOwnIds();
+
+      const res = await grab(movieId, { ...movieBody, overrides: ["quality", "identity"] });
+
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe("override");
+      expect(adapter.addDownload).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["force", { force: true }],
+      ["the discography override", { overrides: ["discography"] }],
+      ["the season-pack override the list sends for a pack", { overrides: ["season-pack"] }],
+    ])("a discography that includes an album not out yet: refused with code override, taken with %s", async (_label, confirm) => {
+      await insertTorrentClient();
+      const artistId = await insertArtistWithUnreleasedAlbum();
+      const adapter = adapterWithOwnIds();
+      const body = { title: "Queen - Discography [FLAC]", downloadUrl: "magnet:?xt=urn:btih:disco", protocol: "torrent" };
+
+      const refused = await grab(artistId, body);
+      expect(refused.status).toBe(409);
+      expect(refused.body.code).toBe("override");
+      expect(refused.body.error).toMatch(/not out yet.*Grab it anyway to override/);
+      expect(adapter.addDownload).not.toHaveBeenCalled();
+
+      const confirmed = await grab(artistId, { ...body, ...confirm });
+      expect(confirmed.status).toBe(201);
+      expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["force", { force: true }],
+      ["the identity override", { overrides: ["identity"] }],
+    ])("a release the enforcing identity gate rejects: refused with code override, taken with %s", async (_label, confirm) => {
+      setSetting("strictReleaseIdentity.movie", "enforce");
+      try {
+        await insertTorrentClient();
+        const movieId = await insertItem("movie", "Dune");
+        await db.prepare("UPDATE media_items SET year = 2021 WHERE id = ?").run(movieId);
+        const adapter = adapterWithOwnIds();
+        const body = { title: "Dune.Part.Two.2024.1080p.WEB-DL.x265-GRP", downloadUrl: "magnet:?xt=urn:btih:part2", protocol: "torrent" };
+
+        const refused = await grab(movieId, body);
+        expect(refused.status).toBe(409);
+        expect(refused.body.code).toBe("override");
+        expect(refused.body.error).toMatch(/Grab it anyway, or add the release's title as an alias/);
+        expect(adapter.addDownload).not.toHaveBeenCalled();
+
+        const confirmed = await grab(movieId, { ...body, ...confirm });
+        expect(confirmed.status).toBe(201);
+        expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+      } finally {
+        setSetting("strictReleaseIdentity.movie", "");
+      }
+    });
+  });
+
+  describe("a refusal repeating cannot help answers code duplicate, and force does not override it", () => {
+    it("a release already in the queue for the item", async () => {
+      await insertTorrentClient();
+      const movieId = await insertItem("movie", "Movie");
+      const adapter = adapterWithOwnIds();
+
+      expect((await grab(movieId, movieBody)).status).toBe(201);
+      const again = await grab(movieId, movieBody);
+      expect(again.status).toBe(409);
+      expect(again.body.code).toBe("duplicate");
+      expect(again.body.error).toMatch(/already in the queue for this item/);
+
+      // force is for rejections: it no longer lets the same release in twice, and neither do the overrides.
+      const forced = await grab(movieId, { ...movieBody, force: true });
+      expect(forced.status).toBe(409);
+      expect(forced.body.code).toBe("duplicate");
+      const overridden = await grab(movieId, { ...movieBody, overrides: ["blocklisted", "identity", "discography", "season-pack", "quality"] });
+      expect(overridden.status).toBe(409);
+      expect(overridden.body.code).toBe("duplicate");
+
+      expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+      expect(await queueRows(movieId)).toHaveLength(1);
+    });
+
+    it("stays a duplicate when the same release is also blocklisted and force is set", async () => {
+      await insertTorrentClient();
+      const movieId = await insertItem("movie", "Movie");
+      const adapter = adapterWithOwnIds();
+      expect((await grab(movieId, movieBody)).status).toBe(201);
+      await db.prepare("INSERT INTO blocklist (media_item_id, release_title) VALUES (?, ?)").run(movieId, movieBody.title);
+
+      const res = await grab(movieId, { ...movieBody, force: true });
+
+      // The blocklist is overridden by force, and what is left is the copy already on its way.
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe("duplicate");
+      expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+    });
+
+    it("a download the client already has for another entry", async () => {
+      await insertTorrentClient();
+      const first = await insertItem("movie", "Movie");
+      const other = await insertItem("movie", "Another Movie");
+      const adapter = { addDownload: vi.fn(async () => ({ downloadId: "same-hash" })), getStatus: vi.fn(async () => []) };
+      getDownloadClientAdapter.mockReturnValue(adapter);
+
+      expect((await grab(first, { title: "Movie.2020.1080p-GRP", downloadUrl: "magnet:?xt=urn:btih:x", protocol: "torrent" })).status).toBe(201);
+      const second = { title: "Movie.2020.1080p-GRP2", downloadUrl: "magnet:?xt=urn:btih:y", protocol: "torrent" };
+      const refused = await grab(other, second);
+      const forced = await grab(other, { ...second, force: true });
+
+      expect(refused.status).toBe(409);
+      expect(refused.body).toMatchObject({ code: "duplicate", error: "The download client already has this download for another entry." });
+      expect(forced.status).toBe(409);
+      expect(forced.body.code).toBe("duplicate");
+      expect(await queueRows(other)).toHaveLength(0);
+    });
+
+    it("the same release sent again while the first is still being handed to the client, even with force", async () => {
+      await insertTorrentClient();
+      const movieId = await insertItem("movie", "Movie");
+      // The first request is held inside the client, so no queue row exists yet when the second arrives: only the check
+      // inside the per-item chain (DuplicateGrabError) can catch it.
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => (open = resolve));
+      let entered!: () => void;
+      const inClient = new Promise<void>((resolve) => (entered = resolve));
+      let adds = 0;
+      const adapter = {
+        addDownload: vi.fn(async () => {
+          adds++;
+          entered();
+          await gate;
+          return { downloadId: `job-${adds}` };
+        }),
+        getStatus: vi.fn(async () => []),
+      };
+      getDownloadClientAdapter.mockReturnValue(adapter);
+
+      const first = grab(movieId, movieBody).then((r) => r);
+      await inClient;
+      const second = grab(movieId, { ...movieBody, force: true }).then((r) => r);
+      // Let the second request get past the route's own queue check and wait behind the first.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      open();
+      const [a, b] = await Promise.all([first, second]);
+
+      expect(a.status).toBe(201);
+      expect(b.status).toBe(409);
+      expect(b.body.code).toBe("duplicate");
+      expect(adapter.addDownload).toHaveBeenCalledTimes(1);
+      expect(await queueRows(movieId)).toHaveLength(1);
+    });
+  });
+
+  describe("an answer that is not a 409 carries no code", () => {
+    it("a client that refuses the release (502), one that is unreachable (503) and a missing downloadUrl (400)", async () => {
+      await insertTorrentClient();
+      const movieId = await insertItem("movie", "Movie");
+
+      getDownloadClientAdapter.mockReturnValue({
+        addDownload: vi.fn(async () => {
+          throw new Error("qBittorrent did not add the torrent");
+        }),
+        getStatus: vi.fn(async () => []),
+      });
+      const refused = await grab(movieId, movieBody);
+      expect(refused.status).toBe(502);
+      expect(refused.body.code).toBeUndefined();
+
+      getDownloadClientAdapter.mockReturnValue({
+        addDownload: vi.fn(async () => {
+          throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+        }),
+        getStatus: vi.fn(async () => []),
+      });
+      const down = await grab(movieId, { ...movieBody, downloadUrl: "magnet:?xt=urn:btih:two" });
+      expect(down.status).toBe(503);
+      expect(down.body.code).toBeUndefined();
+
+      const missing = await grab(movieId, { title: movieBody.title });
+      expect(missing.status).toBe(400);
+      expect(missing.body.code).toBeUndefined();
+    });
+  });
+});

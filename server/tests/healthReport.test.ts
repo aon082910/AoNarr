@@ -687,3 +687,168 @@ describe("getHealthReport — errors nothing handled (uncaught-errors)", () => {
     expect(await issuesOf("uncaught-errors")).toHaveLength(1);
   });
 });
+
+describe("getHealthReport — downloads left paused at the client (paused-downloads)", () => {
+  let mediaItemId: number;
+  /** The enabled download client the queue rows belong to (the check only counts rows of an enabled client). */
+  let enabledClientId: number;
+
+  async function insertClient(enabled: number, name = "Seedbox"): Promise<number> {
+    return Number((await db.prepare("INSERT INTO download_clients (name, type, enabled) VALUES (?, 'qbittorrent', ?)").run(name, enabled)).lastInsertRowid);
+  }
+
+  beforeEach(async () => {
+    await db.prepare("DELETE FROM media_items").run();
+    mediaItemId = Number((await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie', 'Paused Movie', 'paused movie', 1, 0, 'missing')").run()).lastInsertRowid);
+    enabledClientId = await insertClient(1);
+  });
+
+  /** A timestamp in the form the queue stores: UTC, "YYYY-MM-DD HH:MM:SS". */
+  const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString().slice(0, 19).replace("T", " ");
+
+  async function insertQueueRow(
+    over: { title?: string; status?: string; clientState?: string | null; addedHoursAgo?: number; progressHoursAgo?: number | null; clientId?: number | null } = {}
+  ): Promise<number> {
+    const row = { title: "Some.Release.2020.1080p", status: "downloading", clientState: "paused", addedHoursAgo: 100, progressHoursAgo: null as number | null, clientId: enabledClientId as number | null, ...over };
+    const result = await db
+      .prepare("INSERT INTO queue (media_item_id, title, download_client_id, status, client_state, added_at, last_progress_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(mediaItemId, row.title, row.clientId, row.status, row.clientState, hoursAgo(row.addedHoursAgo), row.progressHoursAgo == null ? null : hoursAgo(row.progressHoursAgo));
+    return Number(result.lastInsertRowid);
+  }
+
+  it("warns about one download paused for more than three days, naming it, as something that does not clear by itself", async () => {
+    await insertQueueRow({ title: "Old.Paused.Release.2019", addedHoursAgo: 80 });
+
+    const issues = await issuesOf("paused-downloads");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ source: "paused-downloads", severity: "warning", transient: false });
+    expect(issues[0].message).toBe(
+      '1 download has sat paused or waiting at the download client for more than 3 days without moving ("Old.Paused.Release.2019"). It holds the title from every search; resume it in the client or remove it from Activity.'
+    );
+  });
+
+  it("says nothing about a paused row of a client that is switched off, or one that was deleted", async () => {
+    const off = await insertClient(0, "Switched off");
+    await insertQueueRow({ title: "Of.A.Disabled.Client", clientId: off });
+    // Deleting the client leaves its rows with no client (ON DELETE SET NULL).
+    const gone = await insertClient(1, "To be deleted");
+    const orphan = await insertQueueRow({ title: "Of.A.Deleted.Client", clientId: gone });
+    await db.prepare("DELETE FROM download_clients WHERE id = ?").run(gone);
+    expect(((await db.prepare("SELECT download_client_id AS id FROM queue WHERE id = ?").get(orphan)) as { id: number | null }).id).toBeNull();
+    await insertQueueRow({ title: "Never.Had.A.Client", clientId: null });
+
+    expect(await issuesOf("paused-downloads")).toEqual([]);
+  });
+
+  it("counts and names only the rows of enabled clients when the others have paused rows too", async () => {
+    const off = await insertClient(0, "Switched off");
+    await insertQueueRow({ title: "Of.A.Disabled.Client", addedHoursAgo: 200, clientId: off });
+    await insertQueueRow({ title: "Of.The.Enabled.Client", addedHoursAgo: 100 });
+
+    const [issue] = await issuesOf("paused-downloads");
+
+    expect(issue.message).toContain('1 download has sat paused');
+    expect(issue.message).toContain('("Of.The.Enabled.Client")');
+    expect(issue.message).not.toContain("Of.A.Disabled.Client");
+  });
+
+  it("counts more than fifty rows correctly and still names only the three oldest", async () => {
+    for (let i = 0; i < 60; i++) await insertQueueRow({ title: `Bulk.${String(i).padStart(2, "0")}`, addedHoursAgo: 400 - i });
+
+    const issues = await issuesOf("paused-downloads");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain("60 downloads have sat paused or waiting at the download client");
+    expect(issues[0].message).toContain('("Bulk.00", "Bulk.01", "Bulk.02", …)');
+    expect(issues[0].message).not.toContain("Bulk.03");
+    expect(issues[0].message).toContain("They hold the title from every search; resume them in the client or remove them from Activity.");
+  });
+
+  it("counts a queued row that is paused too, not only a downloading one", async () => {
+    await insertQueueRow({ status: "queued", addedHoursAgo: 90 });
+
+    expect(await issuesOf("paused-downloads")).toHaveLength(1);
+  });
+
+  it("says nothing about a download paused for less than three days", async () => {
+    await insertQueueRow({ addedHoursAgo: 70 });
+
+    expect(await issuesOf("paused-downloads")).toEqual([]);
+  });
+
+  it("goes by the last progress when there is one: grabbed long ago but moving a day ago is not forgotten", async () => {
+    await insertQueueRow({ addedHoursAgo: 200, progressHoursAgo: 20 });
+
+    expect(await issuesOf("paused-downloads")).toEqual([]);
+  });
+
+  it("goes by the last progress when it is the old one, even if the grab is older still", async () => {
+    await insertQueueRow({ addedHoursAgo: 300, progressHoursAgo: 100 });
+
+    expect(await issuesOf("paused-downloads")).toHaveLength(1);
+  });
+
+  it("says nothing about an old download that is not paused", async () => {
+    await insertQueueRow({ title: "Running", clientState: "downloading" });
+    await insertQueueRow({ title: "Never reported", clientState: null });
+
+    expect(await issuesOf("paused-downloads")).toEqual([]);
+  });
+
+  it.each(["failed", "completed", "imported"])("says nothing about a paused row whose status is %s", async (status) => {
+    await insertQueueRow({ status });
+
+    expect(await issuesOf("paused-downloads")).toEqual([]);
+  });
+
+  it("names two downloads and uses the plural wording", async () => {
+    await insertQueueRow({ title: "First.Release", addedHoursAgo: 120 });
+    await insertQueueRow({ title: "Second.Release", addedHoursAgo: 110 });
+
+    const issues = await issuesOf("paused-downloads");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toBe(
+      '2 downloads have sat paused or waiting at the download client for more than 3 days without moving ("First.Release", "Second.Release"). They hold the title from every search; resume them in the client or remove them from Activity.'
+    );
+  });
+
+  it("names the three that were grabbed first and counts the rest, however many there are", async () => {
+    for (const [title, age] of [
+      ["Release.E", 100],
+      ["Release.A", 140],
+      ["Release.D", 110],
+      ["Release.B", 130],
+      ["Release.C", 120],
+    ] as const) {
+      await insertQueueRow({ title, addedHoursAgo: age });
+    }
+
+    const issues = await issuesOf("paused-downloads");
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('5 downloads have sat paused');
+    expect(issues[0].message).toContain('("Release.A", "Release.B", "Release.C", …)');
+    expect(issues[0].message).not.toContain("Release.D");
+    expect(issues[0].message).not.toContain("Release.E");
+  });
+
+  it("does not add an ellipsis for exactly three", async () => {
+    for (const title of ["One", "Two", "Three"]) await insertQueueRow({ title });
+
+    const [issue] = await issuesOf("paused-downloads");
+
+    expect(issue.message).toContain("3 downloads have sat paused");
+    expect(issue.message).not.toContain("…");
+  });
+
+  it("is part of the report a page load gets", async () => {
+    await insertQueueRow({ title: "Forgotten.Release", addedHoursAgo: 96 });
+    clearHealthReportCache();
+
+    const report = await getHealthReport({ refresh: true });
+
+    expect(report.issues.map((i) => i.source)).toContain("paused-downloads");
+  });
+});

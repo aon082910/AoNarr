@@ -3575,6 +3575,19 @@ export default function Settings() {
                   defaultValue={settings.stalledDownloadHours ?? "6"}
                   onBlur={(e) => saveSetting("stalledDownloadHours", e.target.value)}
                 />
+                <label htmlFor="settings-blackhole-gives-up-after-hours-78" style={{ marginTop: 12 }}>Blackhole gives up after (hours)</label>
+                <input id="settings-blackhole-gives-up-after-hours-78"
+                  type="number"
+                  min={1}
+                  style={{ maxWidth: 120 }}
+                  key={settings.blackholeTimeoutHours ?? "blackhole-hours-empty"}
+                  defaultValue={settings.blackholeTimeoutHours ?? "168"}
+                  onBlur={(e) => saveSetting("blackholeTimeoutHours", e.target.value)}
+                />
+                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginBottom: 0 }}>
+                  How long a release dropped in a Blackhole watch folder may wait for its output to appear in the downloads folder. After that
+                  it is marked failed for you to import by hand (nothing is blocklisted). Output that is still being written is never given up on.
+                </p>
               </div>
             ),
           },

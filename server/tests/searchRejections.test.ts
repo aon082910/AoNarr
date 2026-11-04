@@ -630,7 +630,7 @@ describe("'forced' in the history means a rejection was overridden", () => {
     return rows.map((r) => JSON.parse(r.data).forced);
   };
 
-  it("records the blocklist as overridden by the codes the admin accepted, and a plain second copy as not forced", async () => {
+  it("records the blocklist as overridden by the codes the admin accepted, and a plain second grab as not forced (a duplicate is refused for good)", async () => {
     await insertClient();
     const movie = await insertItem("movie", "Movie");
     await db.prepare("INSERT INTO blocklist (media_item_id, release_title) VALUES (?, 'Movie.2020.1080p.WEB-DL-GRP')").run(movie);
@@ -640,11 +640,13 @@ describe("'forced' in the history means a rejection was overridden", () => {
     await authed(request(app).post(`/api/search/${movie}/grab`)).send({ ...body, overrides: ["blocklisted"] }).expect(201);
     expect(await forcedOf(movie)).toEqual([true]);
 
-    // The same release a second time: "grab anyway" past the already-queued check overrides no rejection.
+    // The same release a second time is refused whatever the admin confirms: `force` overrides rejections, not a duplicate.
     await db.prepare("DELETE FROM blocklist").run();
-    await authed(request(app).post(`/api/search/${movie}/grab`)).send(body).expect(409);
-    // (another link: the client's own download id is tracked once)
-    await authed(request(app).post(`/api/search/${movie}/grab`)).send({ ...body, downloadUrl: "magnet:?xt=urn:btih:y", force: true }).expect(201);
+    const duplicate = await authed(request(app).post(`/api/search/${movie}/grab`)).send(body).expect(409);
+    expect(duplicate.body.code).toBe("duplicate");
+    await authed(request(app).post(`/api/search/${movie}/grab`)).send({ ...body, force: true }).expect(409);
+    // A different release for the same title is an ordinary grab: nothing was overridden.
+    await authed(request(app).post(`/api/search/${movie}/grab`)).send({ title: "Movie.2020.720p.WEB-DL-OTHER", downloadUrl: "magnet:?xt=urn:btih:y", protocol: "torrent" }).expect(201);
     expect(await forcedOf(movie)).toEqual([true, undefined]);
   });
 });

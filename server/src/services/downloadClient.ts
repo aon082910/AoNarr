@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import zlib from "node:zlib";
 import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { downloadClientFromRow } from "../db/mappers.js";
@@ -50,8 +51,42 @@ function partialPath(downloadId: string, fileIndex: number): string {
  * legitimately run far longer. */
 const CLIENT_API_TIMEOUT_MS = 30_000;
 
-function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(CLIENT_API_TIMEOUT_MS) });
+const NETWORK_CAUSE_TEXT: Record<string, string> = {
+  ECONNREFUSED: "connection refused: nothing listens on that host and port",
+  ENOTFOUND: "host name not found",
+  EAI_AGAIN: "host name could not be looked up",
+  ETIMEDOUT: "connection timed out",
+  EHOSTUNREACH: "host unreachable",
+  ENETUNREACH: "network unreachable",
+  ECONNRESET: "connection reset by the other side",
+  UND_ERR_SOCKET: "the client closed the connection (NZBGet does this for a few seconds after failed logins)",
+  UND_ERR_CONNECT_TIMEOUT: "connection timed out",
+  CERT_HAS_EXPIRED: "the certificate has expired",
+  DEPTH_ZERO_SELF_SIGNED_CERT: "self-signed certificate",
+  SELF_SIGNED_CERT_IN_CHAIN: "self-signed certificate in the chain",
+  UNABLE_TO_VERIFY_LEAF_SIGNATURE: "the certificate cannot be verified",
+};
+
+/** undici reports every network failure as "fetch failed" and keeps the reason in `cause`; the Test button and the
+ * logs showed only that. The reason is added to the message, and the original error stays as the cause (the
+ * scheduler walks the cause chain to tell a client that is down from a release that is bad). */
+function withNetworkCause(err: unknown): unknown {
+  if (!(err instanceof Error)) return err;
+  const cause = (err as { cause?: { code?: unknown; message?: unknown } }).cause;
+  const code = typeof cause?.code === "string" ? cause.code : null;
+  const detail = code ? (NETWORK_CAUSE_TEXT[code] ?? code) : typeof cause?.message === "string" ? cause.message : null;
+  if (!detail || err.message.includes(detail)) return err;
+  const wrapped = new Error(`${err.message} (${detail})`, { cause: err });
+  wrapped.name = err.name;
+  return wrapped;
+}
+
+async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(CLIENT_API_TIMEOUT_MS) });
+  } catch (err) {
+    throw withNetworkCause(err);
+  }
 }
 
 /** Debrid services can sit in a "waiting"/"queued" state indefinitely for a dead torrent — give
@@ -96,6 +131,8 @@ export interface QueueStatusUpdate {
    * download was cut off by an AoNarr restart, not rejected at the client: the release did nothing
    * wrong, so it should be retried without being blocklisted. */
   failureReason?: string;
+  /** The failure says nothing about the release (NZBGet dropped it as a duplicate of something it holds): no blocklist entry. */
+  noBlame?: boolean;
   /** Absolute path this download's data lives at, in the CLIENT's own filesystem namespace — as
    * reported directly by the client's own API (qBittorrent's save_path/content_path, SABnzbd's
    * history "storage" field). Set whenever the adapter has one on hand, regardless of status —
@@ -140,7 +177,8 @@ export interface DownloadClientAdapter {
    * once it's met a configured ratio and/or seed-time goal, freeing the client's slot instead of
    * seeding forever unless the client's own ratio-limit settings happen to be configured
    * separately. Only meaningful for backends that actually seed. */
-  removeSeededTorrents?(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null): Promise<number>;
+  /** `skipIds`: download ids (lower case) the queue still tracks, which are not removed whatever their goals. */
+  removeSeededTorrents?(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null, skipIds?: Set<string>): Promise<number>;
   /** Marks a download AoNarr has fully imported by hardlink (or by a copy where a hardlink was not possible),
    * so the client holds nothing the library does not also hold: its data may be deleted once seeding is
    * over. Optional: only a torrent client with tags has anything to mark. */
@@ -211,6 +249,21 @@ function baseUrl(client: DownloadClient): string {
 
 export { categoryForType, clientCategories };
 
+/**
+ * SABnzbd answers a wrong or missing API key and a host name it does not accept with HTTP 403 and a plain-text body
+ * ("API Key Incorrect", "Access denied - Hostname verification failed"); the body is what tells the admin which.
+ */
+async function sabnzbdHttpError(res: Response, prefix = ""): Promise<string> {
+  let text = "";
+  try {
+    text = (await res.text()).replace(/<[^>]*>/g, " ").replace(/apikey=[^&\s]*/gi, "apikey=…").replace(/\s+/g, " ").trim().slice(0, 200);
+  } catch {
+    // no readable body: the status is all there is
+  }
+  const hint = /hostname verification/i.test(text) ? " Add this host name to host_whitelist in SABnzbd (Config > Special), or use the address SABnzbd lists." : "";
+  return `${prefix}HTTP ${res.status}${text ? ` (${text})` : ""}.${hint}`;
+}
+
 /** One SABnzbd API call. SABnzbd reports a bad or missing API key as HTTP 200 with
  * `{status: false, error}`, which reads like any other JSON body unless it's checked for. */
 async function sabnzbdApi(client: DownloadClient, params: Record<string, string>): Promise<any> {
@@ -219,7 +272,7 @@ async function sabnzbdApi(client: DownloadClient, params: Record<string, string>
   url.searchParams.set("apikey", client.apiKey ?? "");
   url.searchParams.set("output", "json");
   const res = await apiFetch(url.toString());
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(await sabnzbdHttpError(res));
   let body: any;
   try {
     body = await res.json();
@@ -357,6 +410,12 @@ const QBIT_PENDING_TAG_PREFIX = "aonarr-pending-";
  * checking states are a recheck whose verdict isn't in yet, and missingFiles has no data at all. */
 const QBIT_UNSETTLED_STATES = new Set(["moving", "checkingUP", "checkingDL", "checkingResumeData", "allocating", "metaDL", "missingFiles", "unknown"]);
 
+/** The largest .torrent file uploaded to qBittorrent (a real one is well under a megabyte, a big multi-file pack a few). */
+const QBIT_MAX_TORRENT_BYTES = 16 * 1024 * 1024;
+
+/** Fetching the torrent's metadata from peers: size 0, no content_path, nothing to say about progress or location yet. */
+const QBIT_NO_METADATA_STATES = new Set(["metaDL", "forcedMetaDL"]);
+
 /** Started and allowed to run, but getting nothing: no metadata from any peer yet, or no peer
  * sending data. queuedDL (waiting for a slot) and the paused/checking states are not stalled. */
 const QBIT_STALLED_STATES = new Set(["metaDL", "forcedMetaDL", "stalledDL"]);
@@ -398,6 +457,59 @@ export function magnetInfoHash(url: string): string | null {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * The v1 info-hash of a .torrent file: the SHA-1 of the bencoded "info" dictionary exactly as it sits in the file. Null for
+ * anything that is not a torrent (or a v2-only one, which qBittorrent keys by a SHA-256 this does not compute).
+ */
+export function torrentInfoHash(bytes: Buffer): string | null {
+  const skip = (at: number, depth: number): number => {
+    if (depth > 64 || at >= bytes.length) throw new Error("bad bencode");
+    const c = bytes[at];
+    if (c === 0x69) {
+      const end = bytes.indexOf(0x65, at);
+      if (end < 0) throw new Error("bad bencode");
+      return end + 1;
+    }
+    if (c === 0x6c || c === 0x64) {
+      let i = at + 1;
+      while (bytes[i] !== 0x65) {
+        if (i >= bytes.length) throw new Error("bad bencode");
+        i = skip(i, depth + 1);
+      }
+      return i + 1;
+    }
+    if (c >= 0x30 && c <= 0x39) {
+      const colon = bytes.indexOf(0x3a, at);
+      if (colon < 0) throw new Error("bad bencode");
+      const length = Number(bytes.subarray(at, colon).toString("ascii"));
+      if (!Number.isInteger(length) || length < 0 || colon + 1 + length > bytes.length) throw new Error("bad bencode");
+      return colon + 1 + length;
+    }
+    throw new Error("bad bencode");
+  };
+  try {
+    if (bytes[0] !== 0x64) return null;
+    let i = 1;
+    while (i < bytes.length && bytes[i] !== 0x65) {
+      const keyEnd = skip(i, 1);
+      const colon = bytes.indexOf(0x3a, i);
+      const key = bytes.subarray(colon + 1, keyEnd).toString("latin1");
+      const valueEnd = skip(keyEnd, 1);
+      if (key === "info") {
+        const info = bytes.subarray(keyEnd, valueEnd);
+        // A v2-only torrent has "meta version" 2 and no "pieces": qBittorrent keys it by a SHA-256 this does not compute.
+        if (info.includes("12:meta versioni2e") && !info.includes("6:pieces")) return null;
+        return crypto.createHash("sha1").update(info).digest("hex");
+      }
+      i = valueEnd;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+
 /** qBittorrent Web API (v4.1+) adapter.
  *
  * qBittorrent's add call returns no hash, but every status/priority/remove call is keyed by one —
@@ -409,6 +521,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * to AoNarr's own torrents on a client shared with other apps. */
 class QBittorrentAdapter implements DownloadClientAdapter {
   private cookieCache = new Map<number, string>();
+  private listCache = new Map<number, { at: number; torrents: any[] }>();
 
   /** fetch() with the cached SID; on a 403 (qBittorrent restarted / session expired) the cookie
    * is dropped and the request retried once with a fresh login instead of failing every poll
@@ -475,31 +588,89 @@ class QBittorrentAdapter implements DownloadClientAdapter {
    * time) has no way back to its torrent and comes back unchanged. */
   private async resolveHash(client: DownloadClient, downloadId: string): Promise<string> {
     if (downloadId.startsWith("tag:")) return (await this.hashForTag(client, downloadId.slice(4))) ?? downloadId;
-    return magnetInfoHash(downloadId) ?? downloadId;
+    const hash = magnetInfoHash(downloadId) ?? downloadId;
+    // A hybrid torrent is keyed by its truncated v2 hash: a row that still holds the v1 hash is mapped to it.
+    return /^[0-9a-f]{40}$/i.test(hash) ? ((await this.findTorrentHash(client, hash)) ?? hash) : hash;
   }
 
-  private async hasTorrent(client: DownloadClient, hash: string): Promise<boolean> {
+  /**
+   * The id qBittorrent keys a torrent by, given the one AoNarr holds, or null when it has no such torrent. They differ for a
+   * hybrid v1+v2 torrent: qBittorrent keys it by the truncated v2 hash and lists the v1 hash as infohash_v1, and every call
+   * that names a torrent by its v1 hash (info, addTags, topPrio, delete) answers 200 and does nothing.
+   */
+  private async findTorrentHash(client: DownloadClient, hash: string): Promise<string | null> {
     try {
-      const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info?hashes=${encodeURIComponent(hash)}`);
-      if (!res.ok) return false;
-      const torrents = (await res.json()) as unknown;
-      return Array.isArray(torrents) && torrents.length > 0;
+      const direct = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info?hashes=${encodeURIComponent(hash)}`);
+      if (direct.ok) {
+        const torrents = (await direct.json()) as any[];
+        if (Array.isArray(torrents) && torrents.length > 0) return String(torrents[0].hash ?? hash);
+      }
+      // One listing serves every lookup of the next few seconds (a "remove all" asks once per row).
+      const cached = this.listCache.get(client.id);
+      let torrents: any[];
+      if (cached && Date.now() - cached.at < 5_000) torrents = cached.torrents;
+      else {
+        const all = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info`);
+        if (!all.ok) return null;
+        torrents = (await all.json()) as any[];
+        this.listCache.set(client.id, { at: Date.now(), torrents });
+      }
+      const wanted = hash.toLowerCase();
+      const match = Array.isArray(torrents) ? torrents.find((t) => String(t.infohash_v1 ?? "").toLowerCase() === wanted) : undefined;
+      return match ? String(match.hash) : null;
     } catch {
-      return false;
+      return null;
     }
   }
 
   async addDownload(client: DownloadClient, downloadUrl: string, category: string | null, _releaseTitle?: string, _protocol?: SearchResult["protocol"], options: AddOptions = {}): Promise<GrabResult> {
-    const knownHash = magnetInfoHash(downloadUrl);
+    // A release URL that is not a magnet is fetched here and uploaded as a file, like the other clients do. Handing qBittorrent the
+    // URL made it fetch the link itself: a link it could not reach (an indexer on another network) was answered
+    // 202 "pending" and never reported again, so the row waited for its timeout. An upload is answered at once (5.x names
+    // the torrent in added_torrent_ids), and the hash is known either way (see torrentInfoHash).
+    let magnet: string | null = downloadUrl.startsWith("magnet:") ? downloadUrl : null;
+    let torrentFile: Buffer | null = null;
+    if (!magnet) {
+      const source = await resolveDownloadSource(downloadUrl);
+      if (source.kind === "magnet") magnet = source.uri;
+      else {
+        // An indexer's rate-limit page or error document answers 200 like a torrent does: refused here, as the release's fault,
+        // instead of uploaded for qBittorrent to refuse (and a body of any size is not held in memory for it).
+        if (source.bytes.length > QBIT_MAX_TORRENT_BYTES) throw new Error("Failed to fetch release: the indexer's answer is too large to be a torrent file");
+        if (source.bytes[0] !== 0x64) throw new Error("Failed to fetch release: the indexer's answer to the torrent download is not a torrent file");
+        torrentFile = source.bytes;
+      }
+    }
+    const knownHash = magnet ? magnetInfoHash(magnet) : torrentFile ? torrentInfoHash(torrentFile) : null;
+    // A torrent whose hash cannot be computed (a v2-only one) is found again through a tag, as a magnet without a v1 hash is.
     const pendingTag = knownHash ? null : `${QBIT_PENDING_TAG_PREFIX}${crypto.randomBytes(6).toString("hex")}`;
-    const form: Record<string, string> = { urls: downloadUrl, tags: pendingTag ? `${QBIT_TAG},${pendingTag}` : QBIT_TAG };
-    if (category) form.category = category;
+    // paused (qBittorrent 4) and stopped (5) say "start it now": a client set to add torrents stopped would otherwise leave
+    // every grab waiting for someone to press start (and be held in Health as paused). An older build ignores the one it does not know.
+    const fields: Record<string, string> = { tags: pendingTag ? `${QBIT_TAG},${pendingTag}` : QBIT_TAG, paused: "false", stopped: "false" };
+    if (category) fields.category = category;
     // The seed goal goes to qBittorrent with the torrent (API 2.8.1 and later; an older build ignores the fields), so
     // it stops seeding at the goal by itself, whatever AoNarr's own cleanup does later.
-    if (options.seedGoal?.ratio) form.ratioLimit = String(options.seedGoal.ratio);
-    if (options.seedGoal?.minutes) form.seedingTimeLimit = String(Math.round(options.seedGoal.minutes));
+    if (options.seedGoal?.ratio) fields.ratioLimit = String(options.seedGoal.ratio);
+    if (options.seedGoal?.minutes) fields.seedingTimeLimit = String(Math.round(options.seedGoal.minutes));
 
-    const res = await this.postForm(client, "torrents/add", form);
+    let res: Response;
+    if (torrentFile) {
+      const form = new FormData();
+      for (const [key, value] of Object.entries(fields)) form.append(key, value);
+      form.append("torrents", new Blob([torrentFile]), "release.torrent");
+      res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/add`, { method: "POST", body: form });
+    } else {
+      res = await this.postForm(client, "torrents/add", { urls: magnet ?? downloadUrl, ...fields });
+    }
+    // A torrent qBittorrent already holds, or a link it refuses, is answered 409 from 5.x on (and "Fails." with 200 before).
+    if (res.status === 409) {
+      if (knownHash) {
+        const held = await this.findTorrentHash(client, knownHash);
+        if (held) return { downloadId: held };
+      }
+      throw new Error("qBittorrent refused the torrent (the link is invalid, or it is already added)");
+    }
+    if (res.status === 415) throw new Error("qBittorrent refused the file: it is not a valid torrent");
     if (!res.ok) throw new Error(`qBittorrent add failed: HTTP ${res.status}`);
     // Older builds answer HTTP 200 with the body "Fails." when the link or file could not be added.
     // Taking that as success left a row waiting for a tag that never appeared, failed 30 minutes later.
@@ -512,17 +683,28 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     if (/^\s*fails\.?\s*$/i.test(answer)) {
       // Builds before 5.3 also answer "Fails." for a torrent they already hold: that one is tracked, as a
       // duplicate add was before this check, instead of the next-best release being downloaded beside it.
-      if (knownHash && (await this.hasTorrent(client, knownHash))) return { downloadId: knownHash };
+      if (knownHash) {
+        const held = await this.findTorrentHash(client, knownHash);
+        if (held) return { downloadId: held };
+      }
       throw new Error("qBittorrent did not add the torrent (it answered \"Fails.\": a dead link, an unsupported file, or one it already has)");
+    }
+    // 5.x names what it added (the id qBittorrent itself keys the torrent by: the truncated v2 hash for a hybrid one).
+    try {
+      const added = JSON.parse(answer) as { added_torrent_ids?: unknown };
+      const id = Array.isArray(added.added_torrent_ids) ? added.added_torrent_ids[0] : null;
+      if (typeof id === "string" && /^[0-9a-f]{40,64}$/i.test(id)) return { downloadId: id.toLowerCase() };
+    } catch {
+      // "Ok." from an older build
     }
     if (knownHash) return { downloadId: knownHash };
 
-    for (let attempt = 0; attempt < 8; attempt++) {
+    for (let attempt = 0; attempt < 8 && pendingTag; attempt++) {
       await sleep(attempt === 0 ? 250 : 750);
-      const hash = await this.hashForTag(client, pendingTag!).catch(() => null);
+      const hash = await this.hashForTag(client, pendingTag).catch(() => null);
       if (hash) {
-        await this.postForm(client, "torrents/removeTags", { hashes: hash, tags: pendingTag! }).catch(() => {});
-        await this.postForm(client, "torrents/deleteTags", { tags: pendingTag! }).catch(() => {});
+        await this.postForm(client, "torrents/removeTags", { hashes: hash, tags: pendingTag }).catch(() => {});
+        await this.postForm(client, "torrents/deleteTags", { tags: pendingTag }).catch(() => {});
         return { downloadId: hash };
       }
     }
@@ -550,11 +732,12 @@ class QBittorrentAdapter implements DownloadClientAdapter {
         ...(status === "downloading" && QBIT_STALLED_STATES.has(t.state) ? { stalled: true } : {}),
         ...(status === "downloading" && QBIT_PAUSED_STATES.has(t.state) ? { paused: true } : {}),
         ...(status === "downloading" && QBIT_WARNING_STATES[t.state] ? { warning: QBIT_WARNING_STATES[t.state] } : {}),
-        ...(status === "downloading" ? qbitTimeAndSize(t) : {}),
+        ...(status === "downloading" && !QBIT_NO_METADATA_STATES.has(t.state) ? qbitTimeAndSize(t) : {}),
         // content_path (API v2.8.4+) points straight at the torrent's actual file/folder; save_path
         // is only the download root it was saved under. Older qBittorrent builds lack content_path
         // entirely, so fall back to save_path rather than reporting no path at all.
-        remotePath: t.content_path || t.save_path || undefined,
+        // A torrent without metadata has no content_path yet, and save_path is the whole download root: not a place to import from.
+        remotePath: t.content_path || (QBIT_NO_METADATA_STATES.has(t.state) ? undefined : t.save_path) || undefined,
         clientTitle: typeof t.name === "string" ? t.name : undefined,
       };
       updates.push(update);
@@ -632,7 +815,7 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     };
   }
 
-  async removeSeededTorrents(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null): Promise<number> {
+  async removeSeededTorrents(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null, skipIds?: Set<string>): Promise<number> {
     const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info`);
     if (!res.ok) throw new Error(`qBittorrent torrents/info failed: HTTP ${res.status}`);
     const torrents = (await res.json()) as any[];
@@ -653,6 +836,8 @@ class QBittorrentAdapter implements DownloadClientAdapter {
         .includes(QBIT_TAG) || (!!t.category && clientCategories(client).includes(t.category));
     const eligible = torrents.filter((t) => {
       if (!isOwn(t) || !seedingStates.has(t.state)) return false;
+      // Still tracked by a queue row (not imported yet): not removed whatever its goal.
+      if (skipIds?.has(String(t.hash).toLowerCase()) || skipIds?.has(String(t.infohash_v1 ?? "").toLowerCase())) return false;
       // A torrent from an indexer with its own goal is held to it (each part falls back to the global goal when the indexer leaves it empty).
       const own = parseSeedGoalTag(String(t.tags ?? ""));
       const ratio = own?.ratio ?? ratioGoal;
@@ -703,13 +888,48 @@ class QBittorrentAdapter implements DownloadClientAdapter {
   }
 }
 
+/** An NZB can arrive gzip-compressed (an indexer that compresses its download without saying so) or as UTF-16 with a
+ * byte order mark (some tools write that); neither reads as text to the checks below, and a client or watch folder
+ * expects plain XML. This returns the plain UTF-8 bytes (the same buffer for the ordinary case). */
+const NZB_MAX_INFLATED_BYTES = 128 * 1024 * 1024;
+
+export function normalizeNzb(bytes: Buffer): Buffer {
+  let out = bytes;
+  if (out.length > 2 && out[0] === 0x1f && out[1] === 0x8b) {
+    try {
+      out = zlib.gunzipSync(out, { maxOutputLength: NZB_MAX_INFLATED_BYTES });
+    } catch {
+      throw new Error("Failed to fetch release: the indexer's NZB download is a damaged or oversized gzip file");
+    }
+  }
+  if (out.length >= 2 && ((out[0] === 0xff && out[1] === 0xfe) || (out[0] === 0xfe && out[1] === 0xff))) {
+    const body = out.subarray(2);
+    if (body.length % 2 !== 0) throw new Error("Failed to fetch release: the indexer's NZB download is a damaged UTF-16 file");
+    let text: string;
+    if (out[0] === 0xff) text = body.toString("utf16le");
+    else {
+      const swapped = Buffer.from(body);
+      swapped.swap16();
+      text = swapped.toString("utf16le");
+    }
+    // The prolog still says the file is UTF-16 after the conversion, and a client's XML parser believes it.
+    // Only the start of the document can hold the prolog (and the pattern stays cheap on a hostile file).
+    return Buffer.from(text.slice(0, 2048).replace(/(<\?xml[^>]*\bencoding\s*=\s*["'])utf-?16(?:le|be)?(["'])/i, "$1utf-8$2") + text.slice(2048), "utf-8");
+  }
+  // A UTF-8 byte order mark would hide the opening "<" from a check that looks at the first characters.
+  if (out.length >= 3 && out[0] === 0xef && out[1] === 0xbb && out[2] === 0xbf) return out.subarray(3);
+  return out;
+}
+
 /**
  * Refuses what is not an NZB before a client or a watch folder gets it, as Sonarr's NzbValidationService
  * does: an indexer answers a download it will not serve (a rate limit, a bad key, a login page) with an
  * HTTP 200 document, and handing that on made a job that fails in the client, or garbage in the watch
- * folder, and left the indexer unaware. The error is a release refusal: the next release is tried.
+ * folder, and left the indexer unaware. The error is a release refusal: the next release is tried. Returns the NZB as
+ * plain UTF-8 bytes (see normalizeNzb), which is what is handed on.
  */
-export function validateNzb(bytes: Buffer): void {
+export function validateNzb(raw: Buffer): Buffer {
+  const bytes = normalizeNzb(raw);
   const head = bytes.subarray(0, 8192).toString("utf-8");
   const error = /<error\b([^>]*)>/i.exec(head);
   if (error) {
@@ -721,6 +941,7 @@ export function validateNzb(bytes: Buffer): void {
   }
   if (!/<nzb[\s>]/i.test(head)) throw new Error("Failed to fetch release: the indexer's answer to the NZB download is not an NZB file");
   if (bytes.indexOf("<file") < 0) throw new Error("Failed to fetch release: the NZB the indexer returned lists no files");
+  return bytes;
 }
 
 /** SABnzbd adapter. */
@@ -737,11 +958,38 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     const on = (value: unknown) => value === true || value === 1 || value === "1" || value === "true";
     const notes: string[] = [];
     const sorting = ["enable_tv_sorting", "enable_movie_sorting", "enable_date_sorting"].filter((key) => on(misc[key]));
+    // SABnzbd 5 moved the sorters out of "misc" into a section of their own, each with an is_active flag.
+    try {
+      const sorters: any = await sabnzbdApi(client, { mode: "get_config", section: "sorters" });
+      const list = sorters?.config?.sorters ?? sorters?.sorters;
+      const ours = new Set(clientCategories(client).map((c) => c.toLowerCase()));
+      // A sorter applies to the categories in sort_cats (none listed: every category).
+      const touchesUs = (sorter: any) => {
+        const cats = Array.isArray(sorter?.sort_cats) ? sorter.sort_cats.map((c: unknown) => String(c).toLowerCase()) : [];
+        return cats.length === 0 || cats.includes("*") || cats.some((c: string) => ours.has(c));
+      };
+      if (Array.isArray(list) && list.some((sorter) => on(sorter?.is_active) && touchesUs(sorter))) sorting.push("sorters");
+    } catch {
+      // an older SABnzbd has no such section: the keys above are its answer
+    }
     if (sorting.length > 0) {
       notes.push("has sorting turned on. SABnzbd renames and moves finished downloads into its own folders, so the folder AoNarr is given no longer holds them. Turn off TV, movie and date sorting.");
     }
     if (misc.history_retention_option === "all-delete") {
       notes.push("deletes every finished job from its history at once, so AoNarr can lose sight of a completed download before it imports it. Keep the history (or a number of days).");
+    }
+    // A category SABnzbd does not have is not an error to it: the job is quietly filed under "*", in the default folder.
+    try {
+      const cats: any = await sabnzbdApi(client, { mode: "get_cats" });
+      const known = new Set((Array.isArray(cats?.categories) ? cats.categories : []).map((c: unknown) => String(c).toLowerCase()));
+      if (known.size > 0) {
+        const missing = clientCategories(client).filter((c) => !known.has(c.toLowerCase()));
+        if (missing.length > 0) {
+          notes.push(`has no category ${missing.map((c) => `"${c}"`).join(", ")}. Downloads sent with it are filed without a category, in SABnzbd's default folder. Add ${missing.length === 1 ? "it" : "them"} under Config > Categories.`);
+        }
+      }
+    } catch {
+      // the category list is a courtesy check
     }
     return notes;
   }
@@ -760,7 +1008,7 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     // this is not specific to any one backend.
     const source = await resolveDownloadSource(downloadUrl);
     if (source.kind === "magnet") throw new Error("SABnzbd cannot accept a magnet link");
-    validateNzb(source.bytes);
+    const nzb = validateNzb(source.bytes);
 
     const url = new URL(`${baseUrl(client)}/api`);
     url.searchParams.set("apikey", client.apiKey ?? "");
@@ -770,14 +1018,17 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     form.append("mode", "addfile");
     if (category) form.append("cat", category);
     // The multipart filename is what the client names the job; without it the release title is lost.
-    form.append("name", new Blob([source.bytes]), `${sanitizeFilename(releaseTitle || "release")}.nzb`);
+    form.append("name", new Blob([nzb]), `${sanitizeFilename(releaseTitle || "release")}.nzb`);
 
     const res = await apiFetch(url.toString(), { method: "POST", body: form });
-    if (!res.ok) throw new Error(`SABnzbd add failed: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(await sabnzbdHttpError(res, "SABnzbd add failed: "));
     const body: any = await res.json();
     // A rejected key comes back as HTTP 200 {status: false, error}; taking that as a grab would
     // leave a queue row polling for a job SABnzbd never created.
-    if (body?.error || body?.status === false) throw new Error(`SABnzbd add failed: ${body.error ?? "rejected"}`);
+    if (body?.error || body?.status === false) {
+      // An empty or invalid NZB is answered {status:false, nzo_ids:[]} with no error text.
+      throw new Error(`SABnzbd add failed: ${body.error ?? "SABnzbd refused the NZB (it is empty or not valid)"}`);
+    }
     // Without a job id nothing was added. Tracking the row by the release URL (which carries the
     // indexer's API key) left it polling for a job that never existed, then blocklisted the release.
     const downloadId = body?.nzo_ids?.[0];
@@ -855,9 +1106,9 @@ class SabnzbdAdapter implements DownloadClientAdapter {
             progress: 1,
             status: h.status === "Failed" ? "failed" : "completed",
             ...(h.status === "Failed" && failMessage ? { failureReason: `SABnzbd: ${failMessage}` } : {}),
-            // "storage" is the final on-disk path of the completed job, in SABnzbd's own
-            // filesystem namespace — absent on a failed job (nothing was ever finished/moved).
-            remotePath: h.storage || undefined,
+            // "storage" is the final on-disk path of the completed job, in SABnzbd's own filesystem namespace. A failed job
+            // has none that matters: SABnzbd 5 fills it with the incomplete folder, which is not a result.
+            remotePath: h.status === "Failed" ? undefined : h.storage || undefined,
           });
         }
       }
@@ -900,7 +1151,8 @@ class SabnzbdAdapter implements DownloadClientAdapter {
         url.searchParams.set("mode", mode);
         url.searchParams.set("name", "delete");
         url.searchParams.set("value", downloadId);
-        if (mode === "history") url.searchParams.set("del_files", deleteFiles ? "1" : "0");
+        // Both places take del_files: a queued job left its incomplete folder (with __ADMIN__) behind without it.
+        url.searchParams.set("del_files", deleteFiles ? "1" : "0");
         url.searchParams.set("apikey", client.apiKey ?? "");
         url.searchParams.set("output", "json");
         const res = await apiFetch(url.toString());
@@ -1744,7 +1996,7 @@ class AllDebridAdapter implements DownloadClientAdapter {
  * that never shows up there is failed after `blackholeTimeoutHours` (default 168), without blame.
  */
 class BlackholeAdapter implements DownloadClientAdapter {
-  async addDownload(client: DownloadClient, downloadUrl: string, _category: string | null, releaseTitle?: string): Promise<GrabResult> {
+  async addDownload(client: DownloadClient, downloadUrl: string, _category: string | null, releaseTitle?: string, protocol?: SearchResult["protocol"]): Promise<GrabResult> {
     if (!client.host) throw new Error("Blackhole client has no watch folder path configured");
     fs.mkdirSync(client.host, { recursive: true });
     const uuid = crypto.randomUUID();
@@ -1757,9 +2009,20 @@ class BlackholeAdapter implements DownloadClientAdapter {
     if (source.kind === "magnet") {
       fs.writeFileSync(path.join(client.host, `${base}.magnet`), source.uri, "utf-8");
     } else {
-      const looksLikeNzb = source.bytes.subarray(0, 20).toString("utf-8").trimStart().startsWith("<");
-      if (looksLikeNzb) validateNzb(source.bytes);
-      fs.writeFileSync(path.join(client.host, `${base}${looksLikeNzb ? ".nzb" : ".torrent"}`), source.bytes);
+      // A torrent file is bencoded (starts with "d"); an NZB is XML, plain, gzip-compressed or UTF-16 (normalizeNzb).
+      const head = source.bytes;
+      // The release's protocol settles it when known; a gzip-compressed .torrent is not mistaken for an NZB.
+      const mayBeNzb =
+        protocol === "torrent"
+          ? false
+          : protocol === "usenet" ||
+            head.subarray(0, 20).toString("utf-8").trimStart().startsWith("<") ||
+            (head[0] === 0x1f && head[1] === 0x8b) ||
+            (head[0] === 0xff && head[1] === 0xfe) ||
+            (head[0] === 0xfe && head[1] === 0xff) ||
+            (head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf);
+      const nzb = mayBeNzb ? validateNzb(source.bytes) : null;
+      fs.writeFileSync(path.join(client.host, `${base}${nzb ? ".nzb" : ".torrent"}`), nzb ?? source.bytes);
     }
 
     return { downloadId };
@@ -1856,6 +2119,15 @@ export function findBlackholeOutput(releaseName: string): { path: string; newest
     return { path: full, newestMtimeMs: newest, partial };
   }
   return null;
+}
+
+/** Whether the output of a Blackhole release is still being written: something in it changed within `withinMs`. A
+ * release in that state is not expired, whatever its age. */
+export function blackholeOutputBusy(downloadId: string, withinMs = 60 * 60_000): boolean {
+  const at = downloadId.indexOf(BLACKHOLE_ID_SEPARATOR);
+  const found = at > 0 ? findBlackholeOutput(downloadId.slice(at + 1)) : null;
+  // Only a recent change counts: a growing partial file keeps changing, and one left behind by a client that gave up does not.
+  return !!found && Date.now() - found.newestMtimeMs < withinMs;
 }
 
 /**
@@ -2053,23 +2325,52 @@ const NZBGET_IDLE_STATES = new Set(["PAUSED", "QUEUED"]);
 /** Post-processing states: the group has left the download queue but is not finished yet. */
 const NZBGET_POSTPROCESSING = /^(PP_|LOADING_PARS|VERIFYING|REPAIRING|RENAMING|UNPACKING|MOVING|EXECUTING_SCRIPT)/;
 
+/** A size NZBGet reports as two 32-bit halves (`<name>Lo`, `<name>Hi`); the whole-megabyte field is the fallback for an old build. */
+function nzbgetBytes(group: any, name: string): number {
+  const lo = group?.[`${name}Lo`];
+  const hi = group?.[`${name}Hi`];
+  if (lo !== undefined || hi !== undefined) return (Number(hi ?? 0) >>> 0) * 2 ** 32 + (Number(lo ?? 0) >>> 0);
+  return (Number(group?.[`${name}MB`]) || 0) * 1024 * 1024;
+}
+
+/** NZBGet's history status as words: "FAILURE/HEALTH" alone does not say that articles were missing. */
+function nzbgetFailureReason(status: string, history: any): string {
+  const health = Number(history?.Health);
+  const critical = Number(history?.CriticalHealth);
+  const words: Record<string, string> = {
+    "FAILURE/HEALTH": Number.isFinite(health) && Number.isFinite(critical) && critical > 0 ? `too many articles missing (health ${health / 10}%, below the critical ${critical / 10}%)` : "too many articles missing",
+    "FAILURE/SCAN": "the NZB could not be read or lists no files",
+    "FAILURE/PAR": "par repair failed",
+    "FAILURE/UNPACK": "unpacking failed",
+    "FAILURE/MOVE": "the result could not be moved to its folder",
+    "FAILURE/BAD": "marked bad by a script",
+    "DELETED/MANUAL": "deleted in NZBGet",
+    "DELETED/DUPE": "dropped as a duplicate",
+    "DELETED/COPY": "dropped as a copy of another download",
+    "DELETED/GOOD": "deleted in NZBGet",
+  };
+  return words[status] ? `NZBGet: ${words[status]} (${status})` : `NZBGet: ${status}`;
+}
+
 export class NzbgetAdapter implements DownloadClientAdapter {
   async addDownload(client: DownloadClient, downloadUrl: string, category: string | null, releaseTitle?: string): Promise<GrabResult> {
     const source = await resolveDownloadSource(downloadUrl);
     if (source.kind === "magnet") throw new Error("NZBGet cannot accept a magnet link");
-    validateNzb(source.bytes);
+    const nzb = validateNzb(source.bytes);
     // append(NZBFilename, NZBContent, Category, Priority, AddToTop, AddPaused, DupeKey, DupeScore, DupeMode, PPParameters)
     const id = await nzbgetRpc(client, "append", [
       `${sanitizeFilename(releaseTitle || "release")}.nzb`,
-      source.bytes.toString("base64"),
+      nzb.toString("base64"),
       category ?? "",
       0,
       false,
       false,
       "",
       0,
-      // Sonarr turns NZBGet's duplicate handling off for a grab: a release found again (after its file was deleted) must download.
-      "all",
+      // FORCE turns NZBGet's duplicate handling off, as Sonarr does for a grab: a release found again (after its file was
+      // deleted, or while its first copy is still in the history) must download. "ALL" only means "check against every
+      // group", and NZBGet then discards the repeat as DELETED/COPY while still answering with an id.
+      "FORCE",
       [],
     ]);
     // NZBGet answers an id of 0 or less when it refused the file.
@@ -2077,9 +2378,23 @@ export class NzbgetAdapter implements DownloadClientAdapter {
     return { downloadId: String(id) };
   }
 
+  /** NZBGet's global status (post-processing paused, the current download rate), asked once per poll. */
+  private async globalStatus(client: DownloadClient, cache: { value?: { postPaused: boolean; downloadRate: number } | null }) {
+    if (cache.value === undefined) {
+      try {
+        const status: any = await nzbgetRpc(client, "status");
+        cache.value = { postPaused: status?.PostPaused === true, downloadRate: Number(status?.DownloadRate) || 0 };
+      } catch {
+        cache.value = null;
+      }
+    }
+    return cache.value;
+  }
+
   async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
     const wanted = new Set(downloadIds);
     const updates: QueueStatusUpdate[] = [];
+    const globalCache: { value?: { postPaused: boolean; downloadRate: number } | null } = {};
     const groups: any[] = (await nzbgetRpc(client, "listgroups", [0])) ?? [];
     const seen = new Set<string>();
     for (const g of groups) {
@@ -2087,15 +2402,23 @@ export class NzbgetAdapter implements DownloadClientAdapter {
       if (!wanted.has(id)) continue;
       seen.add(id);
       const status = String(g.Status ?? "");
-      const total = Number(g.FileSizeMB) || 0;
-      const left = Number(g.RemainingSizeMB) || 0;
+      // Bytes, not the whole megabytes of FileSizeMB/RemainingSizeMB (a 150 kB NZB reads as 0 there).
+      const total = nzbgetBytes(g, "FileSize");
+      const left = nzbgetBytes(g, "RemainingSize");
       const progress = total > 0 ? Math.min(Math.max((total - left) / total, 0), 0.99) : 0;
+      const postProcessing = NZBGET_POSTPROCESSING.test(status);
+      // Taken from NZBGet's global status, once per poll and only when a group needs it.
+      const globals = status === "PP_QUEUED" || status === "DOWNLOADING" ? await this.globalStatus(client, globalCache) : null;
       updates.push({
         downloadId: id,
-        progress: NZBGET_POSTPROCESSING.test(status) ? 0.99 : progress,
+        progress: postProcessing ? 0.99 : progress,
         status: "downloading",
         ...(NZBGET_IDLE_STATES.has(status) ? { paused: true } : {}),
-        ...(left > 0 ? { sizeLeft: Math.round(left * 1024 * 1024) } : {}),
+        // Pausing the download in NZBGet 26 also pauses post-processing: groups then wait in PP_QUEUED for good, and look
+        // like downloads at 99%. They are paused, not stuck.
+        ...(status === "PP_QUEUED" && globals?.postPaused ? { paused: true } : {}),
+        ...(left > 0 ? { sizeLeft: left } : {}),
+        ...(status === "DOWNLOADING" && left > 0 && globals && globals.downloadRate > 0 ? { etaSeconds: Math.round(left / globals.downloadRate) } : {}),
       });
     }
     const missing = downloadIds.filter((id) => !seen.has(id));
@@ -2112,11 +2435,17 @@ export class NzbgetAdapter implements DownloadClientAdapter {
           updates.push({ downloadId: id, progress: 0.99, status: "downloading", warning: "NZBGet: not enough disk space" });
         } else if (/^WARNING\/(?:PASSWORD|DAMAGED|HEALTH|REPAIRABLE)/.test(status)) {
           // Unpacked data cannot be trusted: a failure of the release.
-          updates.push({ downloadId: id, progress: 1, status: "failed", failureReason: `NZBGet: ${status}` });
+          updates.push({ downloadId: id, progress: 1, status: "failed", failureReason: nzbgetFailureReason(status, h) });
         } else if (/^(SUCCESS|WARNING)/.test(status)) {
           updates.push({ downloadId: id, progress: 1, status: "completed", remotePath: h.FinalDir || h.DestDir || undefined });
         } else if (/^(FAILURE|DELETED)/.test(status)) {
-          updates.push({ downloadId: id, progress: 1, status: "failed", failureReason: `NZBGet: ${status}` });
+          updates.push({
+            downloadId: id,
+            progress: 1,
+            status: "failed",
+            failureReason: nzbgetFailureReason(status, h),
+            ...(/^DELETED\/(?:COPY|DUPE)/.test(status) ? { noBlame: true } : {}),
+          });
         } else {
           updates.push({ downloadId: id, progress: 0.99, status: "downloading" });
         }
@@ -2193,7 +2522,8 @@ const TRANSMISSION_QUEUED = new Set([3, 5]);
 export class TransmissionAdapter implements DownloadClientAdapter {
   async addDownload(client: DownloadClient, downloadUrl: string, category: string | null): Promise<GrabResult> {
     const source = await resolveDownloadSource(downloadUrl);
-    const args: Record<string, unknown> = { labels: category ? [TRANSMISSION_LABEL, category] : [TRANSMISSION_LABEL] };
+    // paused: false starts it even when Transmission is set to add torrents stopped.
+    const args: Record<string, unknown> = { labels: category ? [TRANSMISSION_LABEL, category] : [TRANSMISSION_LABEL], paused: false };
     if (source.kind === "magnet") args.filename = source.uri;
     else args.metainfo = source.bytes.toString("base64");
     const added = await transmissionRpc(client, "torrent-add", args);
@@ -2206,11 +2536,12 @@ export class TransmissionAdapter implements DownloadClientAdapter {
     return { downloadId: hash };
   }
 
-  private async torrents(client: DownloadClient): Promise<any[]> {
+  private async torrents(client: DownloadClient, ids?: string[]): Promise<any[]> {
     const answer = await transmissionRpc(client, "torrent-get", {
+      ...(ids ? { ids } : {}),
       fields: [
         "id", "hashString", "name", "status", "percentDone", "totalSize", "leftUntilDone", "eta", "error", "errorString",
-        "downloadDir", "labels", "uploadRatio", "secondsSeeding", "isStalled", "peersConnected", "sizeWhenDone",
+        "downloadDir", "labels", "uploadRatio", "secondsSeeding", "isStalled", "peersConnected", "sizeWhenDone", "metadataPercentComplete",
       ],
     });
     return Array.isArray(answer.torrents) ? answer.torrents : [];
@@ -2219,7 +2550,13 @@ export class TransmissionAdapter implements DownloadClientAdapter {
   async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
     const wanted = new Set(downloadIds.map((id) => id.toLowerCase()));
     const updates: QueueStatusUpdate[] = [];
-    for (const t of await this.torrents(client)) {
+    // Only the torrents asked about (a client with thousands of torrents answered all of them at every poll); with none
+    // asked about, the call is just a reachability check.
+    if (wanted.size === 0) {
+      await transmissionRpc(client, "session-get", { fields: ["version"] });
+      return updates;
+    }
+    for (const t of await this.torrents(client, [...wanted])) {
       const hash = String(t.hashString ?? "").toLowerCase();
       if (!wanted.has(hash)) continue;
       const done = Number(t.percentDone) >= 1 && Number(t.leftUntilDone) === 0;
@@ -2238,7 +2575,8 @@ export class TransmissionAdapter implements DownloadClientAdapter {
         ...(!done && localError ? { warning: `Transmission: ${localError}` } : {}),
         ...(!done && Number(t.eta) > 0 ? { etaSeconds: Number(t.eta) } : {}),
         ...(!done && Number.isFinite(sizeLeft) && sizeLeft > 0 ? { sizeLeft } : {}),
-        remotePath: t.downloadDir && t.name ? `${String(t.downloadDir).replace(/[\\/]+$/, "")}/${t.name}` : undefined,
+        // Before the metadata is in, "name" is the magnet's dn (or the hash): not a path anything will ever be at.
+        remotePath: t.downloadDir && t.name && !(Number(t.metadataPercentComplete) < 1) ? `${String(t.downloadDir).replace(/[\\/]+$/, "")}/${t.name}` : undefined,
         clientTitle: typeof t.name === "string" ? t.name : undefined,
       });
     }
@@ -2269,9 +2607,10 @@ export class TransmissionAdapter implements DownloadClientAdapter {
     await transmissionRpc(client, "torrent-set", { ids: [hash], labels: [...new Set([...labels, TRANSMISSION_LABEL, ...additions])] });
   }
 
-  async removeSeededTorrents(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null): Promise<number> {
+  async removeSeededTorrents(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null, skipIds?: Set<string>): Promise<number> {
     const eligible = (await this.torrents(client)).filter((t) => {
       const labels: string[] = Array.isArray(t.labels) ? t.labels.map(String) : [];
+      if (skipIds?.has(String(t.hashString).toLowerCase())) return false;
       // Seeding (status 6), waiting to seed (5), or stopped by Transmission's own limit after finishing (status 0 at 100%), and only AoNarr's own.
       const stoppedAtLimit = Number(t.status) === 0 && Number(t.percentDone) >= 1;
       if (!labels.includes(TRANSMISSION_LABEL) || !([5, 6].includes(Number(t.status)) || stoppedAtLimit)) return false;
@@ -2298,13 +2637,42 @@ export class TransmissionAdapter implements DownloadClientAdapter {
  */
 const DELUGE_COOKIES = new Map<number, string>();
 
+/** The Python traceback wrapper Deluge puts around an error ("Failure: [Failure instance: Traceback ...: <class ...>: text"). */
+function tidyDelugeError(text: string): string {
+  return text
+    .replace(/^Failure:\s*\[Failure instance:\s*Traceback \(failure with no frames\):\s*<class '[^']*'>:\s*/i, "")
+    .replace(/\s*\]\s*$/, "")
+    .trim();
+}
+
+/** A core call that gets no answer within this long is taken for a web UI that lost its daemon (see delugeRpc). */
+const DELUGE_CORE_TIMEOUT_MS = 10_000;
+
 async function delugeRpc(client: DownloadClient, method: string, params: unknown[] = [], retried = false): Promise<any> {
   const cookie = DELUGE_COOKIES.get(client.id);
-  const res = await apiFetch(`${baseUrl(client)}/json`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
-    body: JSON.stringify({ method, params, id: 1 }),
-  });
+  const isCore = /^(?:core|label)\./.test(method);
+  // Only the poll (a status query for some torrents) gives up after 10 s; an add or a listing of everything may take longer.
+  const shortCeiling = method === "core.get_torrents_status" && Array.isArray(params[0] ? Object.values(params[0] as object)[0] : null);
+  let res: Response;
+  try {
+    res = await apiFetch(`${baseUrl(client)}/json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) },
+      body: JSON.stringify({ method, params, id: 1 }),
+      ...(shortCeiling ? { signal: AbortSignal.timeout(DELUGE_CORE_TIMEOUT_MS) } : {}),
+    });
+  } catch (err) {
+    // After deluged restarts, the web UI stays logged in but is no longer connected to the daemon, and answers every
+    // core call with silence instead of an error: only a connect brings it back, so a silent core call checks for that.
+    if (!retried && isCore && ((err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError")) {
+      const connected = await delugeRpc(client, "web.connected", [], true).catch(() => null);
+      if (connected === false) {
+        await delugeLogin(client);
+        return delugeRpc(client, method, params, true);
+      }
+    }
+    throw err;
+  }
   if (!res.ok) throw new Error(`Deluge ${method} failed: HTTP ${res.status}`);
   const setCookie = res.headers.get("set-cookie");
   if (setCookie) DELUGE_COOKIES.set(client.id, setCookie.split(";")[0]);
@@ -2327,7 +2695,7 @@ async function delugeRpc(client: DownloadClient, method: string, params: unknown
       await delugeLogin(client);
       return delugeRpc(client, method, params, true);
     }
-    throw new Error(`Deluge ${method} failed: ${body.error.message ?? JSON.stringify(body.error)}`);
+    throw new Error(`Deluge ${method} failed: ${tidyDelugeError(String(body.error.message ?? JSON.stringify(body.error)))}`);
   }
   return body?.result;
 }
@@ -2351,17 +2719,23 @@ async function delugeCall(client: DownloadClient, method: string, params: unknow
 const DELUGE_PAUSED_STATES = new Set(["Paused", "Queued"]);
 
 export class DelugeAdapter implements DownloadClientAdapter {
-  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null): Promise<GrabResult> {
+  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null, _releaseTitle?: string, _protocol?: SearchResult["protocol"], addOptions: AddOptions = {}): Promise<GrabResult> {
     const source = await resolveDownloadSource(downloadUrl);
-    const options = { add_paused: false };
+    // The seed ratio goal goes to Deluge with the torrent (it then stops seeding at the goal by itself, whatever AoNarr's own
+    // cleanup does later); Deluge has no per-torrent seed time.
+    const options: Record<string, unknown> = { add_paused: false, ...(addOptions.seedGoal?.ratio ? { stop_at_ratio: true, stop_ratio: addOptions.seedGoal.ratio, remove_at_ratio: false } : {}) };
     let hash: unknown;
     try {
       if (source.kind === "magnet") hash = await delugeCall(client, "core.add_torrent_magnet", [source.uri, options]);
       else hash = await delugeCall(client, "core.add_torrent_file", ["release.torrent", source.bytes.toString("base64"), options]);
     } catch (err) {
       // Deluge refuses a torrent it already holds: that one is tracked, as qBittorrent's and Transmission's duplicate adds are.
+      const message = (err as Error).message;
+      // The error names the torrent it already holds, for a file as well as a magnet ("Torrent already in session (<hash>)").
+      const named = /already in session \(([0-9a-f]{40,64})\)/i.exec(message)?.[1];
+      if (named) return { downloadId: named.slice(0, 40).toLowerCase() };
       const known = source.kind === "magnet" ? magnetInfoHash(source.uri) : null;
-      if (known && /already (?:in|added)/i.test((err as Error).message)) return { downloadId: known.toLowerCase() };
+      if (known && /already (?:in|added)/i.test(message)) return { downloadId: known.toLowerCase() };
       throw err;
     }
     if (typeof hash !== "string" || !hash) throw new Error("Deluge did not add the torrent (it answered with no hash)");
@@ -2387,8 +2761,14 @@ export class DelugeAdapter implements DownloadClientAdapter {
   async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
     const wanted = new Set(downloadIds.map((id) => id.toLowerCase()));
     const keys = ["name", "state", "progress", "total_size", "total_done", "eta", "save_path", "message", "is_finished", "download_payload_rate"];
-    const torrents: Record<string, any> = (await delugeCall(client, "core.get_torrents_status", [{}, keys])) ?? {};
     const updates: QueueStatusUpdate[] = [];
+    // Only the torrents asked about; with none asked about, the call is just a reachability check.
+    if (wanted.size === 0) {
+      // Logged in but not connected to the daemon is not reachable: a connect is made (the login does it).
+      if ((await delugeCall(client, "web.connected")) !== true) await delugeLogin(client);
+      return updates;
+    }
+    const torrents: Record<string, any> = (await delugeCall(client, "core.get_torrents_status", [{ id: [...wanted] }, keys])) ?? {};
     for (const [hash, t] of Object.entries(torrents)) {
       if (!wanted.has(hash.toLowerCase())) continue;
       const state = String(t.state ?? "");
@@ -2418,7 +2798,50 @@ export class DelugeAdapter implements DownloadClientAdapter {
   }
 
   async removeDownload(client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void> {
-    await delugeCall(client, "core.remove_torrent", [downloadId.toLowerCase(), deleteFiles]);
+    try {
+      await delugeCall(client, "core.remove_torrent", [downloadId.toLowerCase(), deleteFiles]);
+    } catch (err) {
+      // Removing what is not there is done: qBittorrent and Transmission answer success for it too.
+      if (/not in session/i.test((err as Error).message)) return;
+      throw err;
+    }
+  }
+
+  /**
+   * Deluge has no tags, only the Label plugin's one label per torrent, so AoNarr's own torrents are the ones carrying its
+   * category as a label. Without that plugin nothing can be told apart from the user's own torrents, and nothing is removed.
+   * A torrent that finished and reached the goal (the ratio set on it at add, else the global ratio goal, or the global
+   * seeding time) is removed from Deluge with its data kept: no mark says the library holds the same bytes.
+   */
+  async removeSeededTorrents(client: DownloadClient, ratioGoal: number | null, seedTimeGoalMinutes: number | null, skipIds?: Set<string>): Promise<number> {
+    const plugins: string[] = (await delugeCall(client, "core.get_enabled_plugins")) ?? [];
+    if (!plugins.includes("Label")) return 0;
+    const labels = new Set(clientCategories(client).map((c) => c.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-")));
+    if (labels.size === 0) return 0;
+    const torrents: Record<string, any> =
+      (await delugeCall(client, "core.get_torrents_status", [{}, ["state", "progress", "ratio", "seeding_time", "label", "stop_at_ratio", "stop_ratio"]])) ?? {};
+    let removed = 0;
+    for (const [hash, t] of Object.entries(torrents)) {
+      if (!labels.has(String(t.label ?? "").toLowerCase())) continue;
+      // A torrent AoNarr still has a queue row for (not imported yet) is not its to remove.
+      if (skipIds?.has(hash.toLowerCase())) continue;
+      // Finished, and still seeding or stopped at its goal; a download in progress is never touched. A paused one is only
+      // taken when Deluge itself paused it at the ratio set on it at add: a torrent parked by hand stays.
+      const state = String(t.state);
+      if (!((Number(t.progress) || 0) >= 100 && (state === "Seeding" || state === "Queued" || (state === "Paused" && t.stop_at_ratio)))) continue;
+      const ratio = t.stop_at_ratio && Number(t.stop_ratio) > 0 ? Number(t.stop_ratio) : ratioGoal;
+      const ratioMet = ratio !== null && Number(t.ratio) >= ratio;
+      const timeMet = seedTimeGoalMinutes !== null && Number(t.seeding_time) / 60 >= seedTimeGoalMinutes;
+      if (!ratioMet && !timeMet) continue;
+      try {
+        await delugeCall(client, "core.remove_torrent", [hash, false]);
+        removed++;
+      } catch (err) {
+        // One that cannot be removed does not stop the rest.
+        log.warn(`[downloadClient] Deluge torrent ${hash} was not removed:`, (err as Error).message);
+      }
+    }
+    return removed;
   }
 }
 

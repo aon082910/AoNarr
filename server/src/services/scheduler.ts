@@ -16,6 +16,7 @@ import {
   applyRemotePathMapping,
   DOWNLOAD_INTERRUPTED_REASON,
   withQueueImportLock,
+  blackholeOutputBusy,
 } from "./downloadClient.js";
 import { categoryForType } from "./clientCategory.js";
 import type { QueueStatusUpdate, SeedGoal } from "./downloadClient.js";
@@ -109,7 +110,13 @@ export async function runSeedGoalCleanup(): Promise<void> {
     const adapter = getDownloadClientAdapter(client.type);
     if (!adapter.removeSeededTorrents) continue;
     try {
-      const removed = await adapter.removeSeededTorrents(client, ratioGoal, seedTimeGoalHours !== null ? seedTimeGoalHours * 60 : null);
+      // Downloads the queue still tracks (not imported yet) are left alone: a torrent that met its goal while its import waits
+      // would otherwise disappear from the client under its queue row.
+      const tracked = (await db
+        .prepare("SELECT download_id FROM queue WHERE download_client_id = ? AND download_id IS NOT NULL AND status IN ('queued','downloading','completed')")
+        .all(client.id)) as { download_id: string }[];
+      const skipIds = new Set(tracked.map((row) => String(row.download_id).toLowerCase()));
+      const removed = await adapter.removeSeededTorrents(client, ratioGoal, seedTimeGoalHours !== null ? seedTimeGoalHours * 60 : null, skipIds);
       totalRemoved += removed;
     } catch (err) {
       log.warn(`[scheduler] seed-goal cleanup failed for client "${client.name}":`, (err as Error).message);
@@ -1544,7 +1551,7 @@ export function pickClientForProtocol(
   clients: DownloadClient[],
   protocol: SearchResult["protocol"],
   /** `clientId`: the client the release's indexer is set to use. `itemTags`: the tags of the title it is for. */
-  prefer: { clientId?: number | null; itemTags?: number[]; ignoreBackoff?: boolean } = {}
+  prefer: { clientId?: number | null; itemTags?: number[]; ignoreBackoff?: boolean; rotate?: boolean } = {}
 ): DownloadClient | null {
   const typesForProtocol: Record<string, string[]> = {
     torrent: ["qbittorrent", "transmission", "deluge", "realdebrid", "alldebrid", "torbox", "blackhole"],
@@ -1570,12 +1577,34 @@ export function pickClientForProtocol(
   // A client scoped to tags takes only titles carrying one of them, and wins over an unscoped client for those; an unscoped client takes the rest.
   if (prefer.itemTags) {
     const scoped = live.filter((c) => (c.tagIds?.length ?? 0) > 0);
-    const forTitle = scoped.find((c) => scopeAllows(c.tagIds, prefer.itemTags!));
+    const forTitle = firstOrRotated(scoped.filter((c) => scopeAllows(c.tagIds, prefer.itemTags!)), protocol, !!prefer.rotate);
     if (forTitle) return forTitle;
     const unscoped = live.filter((c) => (c.tagIds?.length ?? 0) === 0);
-    return unscoped[0] ?? null;
+    return firstOrRotated(unscoped, protocol, !!prefer.rotate);
   }
-  return live[0] ?? null;
+  return firstOrRotated(live, protocol, !!prefer.rotate);
+}
+
+/** Where the last grab went among clients of one priority and type (in memory: a restart starts the rotation over). */
+const roundRobinCursor = new Map<string, number>();
+
+/**
+ * The first of `list` (already ranked), or, when `rotate` is on and several clients share the first one's priority and
+ * type, the next of them in turn, so two qBittorrents set to the same priority share the grabs as Sonarr's clients of
+ * equal priority do. The type order stays a preference: a client of another type with the same priority is not
+ * mixed in. Only the grab itself rotates; checks that ask "is there a client for this release" do not use it up.
+ */
+function firstOrRotated(list: DownloadClient[], protocol: SearchResult["protocol"], rotate: boolean): DownloadClient | null {
+  if (list.length === 0) return null;
+  const head = list[0];
+  if (!rotate) return head;
+  const run = list.filter((c) => (c.priority ?? 1) === (head.priority ?? 1) && c.type === head.type);
+  if (run.length < 2) return head;
+  // The clients in the run are part of the key: tag-scoped and unscoped groups of the same priority and type each keep their own turn.
+  const key = `${protocol}:${head.priority ?? 1}:${head.type}:${run.map((c) => c.id).join(",")}`;
+  const at = roundRobinCursor.get(key) ?? 0;
+  roundRobinCursor.set(key, at + 1);
+  return run[at % run.length];
 }
 
 /** Clients that download in-process — a yt-dlp child process or a plain HTTP fetch per grab,
@@ -1701,7 +1730,7 @@ export async function grabBestRelease(
     const unreachable = new Set<number>();
     let lastUnavailable: DownloadClientUnavailableError | null = null;
     for (;;) {
-      const client = pickClientForProtocol(clients.filter((c) => !unreachable.has(c.id)), chosen.result.protocol, { clientId: indexerClient, itemTags });
+      const client = pickClientForProtocol(clients.filter((c) => !unreachable.has(c.id)), chosen.result.protocol, { clientId: indexerClient, itemTags, rotate: true });
       if (!client) {
         if (lastUnavailable) throw lastUnavailable;
         // No client may take this protocol for this title (every one is scoped to other tags): the other protocols are still worth a try.
@@ -3958,11 +3987,11 @@ async function applyClientStatuses(client: DownloadClient, relevant: QueueItem[]
         if (ctx.background) handedToLane.push(match);
         else if (await importCompletedDownload(match, sharedDownloadImported)) sharedDownloadImported = true;
       } else if (status.status === "failed") {
-        if (status.failureReason === DOWNLOAD_INTERRUPTED_REASON) {
+        if (status.failureReason === DOWNLOAD_INTERRUPTED_REASON || status.noBlame) {
           // Cut off by an AoNarr restart: the release did nothing wrong, so it's grabbed again
           // rather than blocklisted and swapped for a worse one (the adapter already dropped
           // whatever partial file the lost job left).
-          await retryFailedGrab(match, status.failureReason, { releaseAtFault: false });
+          await retryFailedGrab(match, status.failureReason ?? "Download failed at the download client", { releaseAtFault: false });
         } else if (releaseFailureRecorded) {
           await retryFailedGrab(match, status.failureReason ?? "Download failed at the download client", { failureRecorded: true });
         } else {
@@ -4205,6 +4234,8 @@ async function expireBlackholeReleases(rows: QueueItem[]): Promise<void> {
   for (const q of rows) {
     const added = q.addedAt ? Date.parse(q.addedAt.replace(" ", "T") + "Z") : NaN;
     if (!Number.isFinite(added) || added > cutoff) continue;
+    // Its output is there and still growing (a slow external client, a big pack): giving up now would fail a download that is working.
+    if (q.downloadId && blackholeOutputBusy(q.downloadId)) continue;
     const moved = await db
       .prepare(`UPDATE queue SET status = 'failed', updated_at = ${nowExpr(db)} WHERE id = ? AND status IN ('queued', 'downloading')`)
       .run(q.id);

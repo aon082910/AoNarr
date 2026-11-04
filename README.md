@@ -750,6 +750,13 @@ integrations (curl, webhooks, other *arr apps) send no `Origin` and never need i
   still scans and plays it, but never downloads for it, imports into it, renames or moves its files.
 - **Health** adds checks for failing notification services, an unreachable proxy, and unexpected
   errors that no code handled; `/metrics` has `aonarr_uncaught_errors_total`.
+- **Download clients** — clients of the same type and priority share the grabs in turn (set a lower
+  priority number to prefer one). A torrent is always added started, even when the client is set to
+  add torrents stopped, and a `.torrent` link is fetched by AoNarr and uploaded to qBittorrent. A
+  download left paused at the client for three days is named in Health. A Blackhole release is
+  given up on after the hours set under Settings → Stalled Downloads (default 168), never while its
+  output is still being written. Health also checks that SABnzbd has the categories AoNarr uses and
+  that none of its sorters moves finished downloads away.
 
 ## Verification
 

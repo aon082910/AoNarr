@@ -419,7 +419,7 @@ describe("QBittorrentAdapter", () => {
     expect(result.downloadId).toBe(INFO_HASH);
   });
 
-  it("addDownload resolves a .torrent URL's hash through its pending tag, then removes that tag", async () => {
+  it("addDownload resolves a magnet without a v1 hash through its pending tag, then removes that tag", async () => {
     vi.useFakeTimers();
     const fetchMock = routedFetch([
       loginRoute,
@@ -441,7 +441,7 @@ describe("QBittorrentAdapter", () => {
     vi.stubGlobal("fetch", fetchMock);
     const client = await insertClient({ type: "qbittorrent" });
 
-    const pending = adapter().addDownload(client, "https://indexer/get/123.torrent", "tv");
+    const pending = adapter().addDownload(client, "magnet:?xt=urn:btmh:1220aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&dn=Show.S01E01", "tv");
     await vi.advanceTimersByTimeAsync(1000);
     const result = await pending;
 
@@ -467,7 +467,7 @@ describe("QBittorrentAdapter", () => {
     vi.stubGlobal("fetch", fetchMock);
     const client = await insertClient({ type: "qbittorrent" });
 
-    const pending = adapter().addDownload(client, "https://indexer/get/456.torrent", null);
+    const pending = adapter().addDownload(client, "magnet:?xt=urn:btmh:1220bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&dn=Show.S01E02", null);
     await vi.advanceTimersByTimeAsync(10_000);
     const result = await pending;
 
@@ -2102,7 +2102,7 @@ describe("Round 20 — qBittorrent states and add answers", () => {
       routedFetch([loginRoute, { test: (u) => u.includes("/torrents/add"), response: { ok: true, status: 200, text: async () => "Fails.", json: async () => ({}) } }])
     );
 
-    await expect(adapter().addDownload(await insertClient({ type: "qbittorrent" }), "http://indexer/dead.torrent", null)).rejects.toThrow(/did not add the torrent/);
+    await expect(adapter().addDownload(await insertClient({ type: "qbittorrent" }), "magnet:?xt=urn:btmh:1220cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc&dn=dead", null)).rejects.toThrow(/did not add the torrent/);
   });
 
   it("still accepts \"Ok.\"", async () => {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api } from "../api/client.js";
+import { api, ApiError } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
 import SearchMatchModal, { type MetadataSearchResult } from "../components/SearchMatchModal.js";
@@ -211,7 +211,7 @@ export default function SubItemDetail() {
     }
   }
 
-  async function grab(result: SearchResult) {
+  async function grab(result: SearchResult, options: { force?: boolean } = {}) {
     try {
       await api.post(`/search/${mediaId}/grab`, {
         downloadUrl: result.downloadUrl,
@@ -224,10 +224,17 @@ export default function SubItemDetail() {
         imdbId: result.imdbId ?? null,
         tmdbId: result.tmdbId ?? null,
         subItemId: Number(subItemId),
+        force: options.force ?? false,
       });
       notify.success(`Sent "${result.title}" to download client.`);
       load();
     } catch (e) {
+      // The blocklist or the identity gate refused the release once; the admin decides. A copy already queued or at the
+      // client (code "duplicate") is only reported.
+      if (e instanceof ApiError && e.status === 409 && e.body?.code === "override" && !options.force) {
+        if (window.confirm(`${e.message}\n\nGrab it anyway?`)) await grab(result, { force: true });
+        return;
+      }
       notify.error(`Grab failed: ${(e as Error).message}`);
     }
   }

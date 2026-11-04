@@ -113,4 +113,39 @@ describe("errorHandler — direct", () => {
     expect(res.statusCode).toBe(409);
     expect(res.body).toEqual({ error: "conflict" });
   });
+
+  it("answers an HttpError that carries a code with { error, code }", async () => {
+    const { errorHandler, HttpError } = await import("../src/middleware/errorHandler.js");
+    const res = fakeRes();
+    const err = new HttpError(409, "blocklisted", "override");
+    expect(err.code).toBe("override");
+    errorHandler(err, {} as Request, res as unknown as Response, () => {});
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toStrictEqual({ error: "blocklisted", code: "override" });
+  });
+
+  it("leaves the code key out altogether when the HttpError has none", async () => {
+    const { errorHandler, HttpError } = await import("../src/middleware/errorHandler.js");
+    const res = fakeRes();
+    const err = new HttpError(400, "bad input");
+    expect(err.code).toBeUndefined();
+    errorHandler(err, {} as Request, res as unknown as Response, () => {});
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toStrictEqual({ error: "bad input" });
+    expect(Object.keys(res.body as object)).toEqual(["error"]);
+  });
+
+  it("does not treat an empty code as a code", async () => {
+    const { errorHandler, HttpError } = await import("../src/middleware/errorHandler.js");
+    const res = fakeRes();
+    errorHandler(new HttpError(409, "conflict", ""), {} as Request, res as unknown as Response, () => {});
+    expect(res.body).toStrictEqual({ error: "conflict" });
+  });
+
+  it("does not log an HttpError with a code as a server error", async () => {
+    const { errorHandler, HttpError } = await import("../src/middleware/errorHandler.js");
+    const errorLog = await spyOnErrorLog();
+    errorHandler(new HttpError(409, "dup", "duplicate"), {} as Request, fakeRes() as unknown as Response, () => {});
+    expect(errorLog).not.toHaveBeenCalled();
+  });
 });

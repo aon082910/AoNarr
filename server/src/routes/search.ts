@@ -693,7 +693,7 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
     const mayOverride = (code: string) => !!b.force || overrides.includes(code);
     // A blocklisted release is an ordinary rejection: "grab anyway" overrides it, as in Sonarr.
     if (await blocklistedCopy({ indexerId: b.indexerId ?? null, infoHash: b.infoHash })) {
-      if (!mayOverride("blocklisted")) throw new HttpError(409, "This release is blocklisted for this media item. Grab it anyway to override the blocklist.");
+      if (!mayOverride("blocklisted")) throw new HttpError(409, "This release is blocklisted for this media item. Grab it anyway to override the blocklist.", "override");
       forced = true;
     }
 
@@ -725,7 +725,7 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
         }
         if (!judged.ok) {
           // The list sends the code of the rejection it shows, which for a discography is the pack one.
-          if (!mayOverride("discography") && !mayOverride("season-pack")) throw new HttpError(409, `${judged.reason}. Grab it anyway to override.`);
+          if (!mayOverride("discography") && !mayOverride("season-pack")) throw new HttpError(409, `${judged.reason}. Grab it anyway to override.`, "override");
           forced = true;
         }
         discographyTargets = judged.wanted.map((album) => album.id);
@@ -740,7 +740,7 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
           )
         : null;
     if (verdict && !verdict.ok && identityModeFor(item.type) === "enforce") {
-      if (!mayOverride("identity")) throw new HttpError(409, `${verdict.detail}. Grab it anyway, or add the release's title as an alias of this item.`);
+      if (!mayOverride("identity")) throw new HttpError(409, `${verdict.detail}. Grab it anyway, or add the release's title as an alias of this item.`, "override");
       forced = true;
     }
 
@@ -772,8 +772,9 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
          AND COALESCE(episode_id, 0) = ? AND COALESCE(sub_item_id, 0) = ? LIMIT 1`
       )
       .get(item.id, releaseTitle, Number(b.episodeId) || 0, discographyTargets.length > 0 ? 0 : Number(b.subItemId) || 0);
-    if (sameRelease && !b.force) {
-      throw new HttpError(409, `"${releaseTitle}" is already in the queue for this item.`);
+    // Not overridable by `force` (that overrides rejections): a second copy of what is already on its way helps nobody.
+    if (sameRelease) {
+      throw new HttpError(409, `"${releaseTitle}" is already in the queue for this item.`, "duplicate");
     }
 
     // Through the same grab() as the automatic paths: one grab at a time per item, the client's
@@ -832,20 +833,20 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
           0,
           seasonNumber,
           "interactive",
-          { allowCovered: true, refuseSameRelease: !b.force, forced, ...(discographyTargets.length > 0 ? { targetSubItemIds: discographyTargets } : {}) }
+          { allowCovered: true, refuseSameRelease: true, forced, ...(discographyTargets.length > 0 ? { targetSubItemIds: discographyTargets } : {}) }
         );
         break;
       } catch (err) {
         if (err instanceof ReleaseRefusedError && attempt !== attempts[attempts.length - 1]) continue;
         // The messages quote the indexer's or client's own words, which can carry a URL with an API key.
         const withoutUrls = (message: string) => message.replace(/\b(?:[a-z][a-z0-9+.-]*:\/\/|magnet:\?)\S*/gi, "<link>");
-        if (err instanceof DuplicateGrabError) throw new HttpError(409, err.message);
+        if (err instanceof DuplicateGrabError) throw new HttpError(409, err.message, "duplicate");
         if (err instanceof ReleaseRefusedError) throw new HttpError(502, `This release could not be added: ${withoutUrls(err.message)}`);
         if (err instanceof DownloadClientUnavailableError) throw new HttpError(503, withoutUrls(err.message));
         throw err;
       }
     }
-    if (!grabbed) throw new HttpError(409, "The download client already has this download for another entry.");
+    if (!grabbed) throw new HttpError(409, "The download client already has this download for another entry.", "duplicate");
 
     const queueRow = await db
       .prepare("SELECT * FROM queue WHERE media_item_id = ? AND title = ? AND download_client_id = ? ORDER BY id DESC LIMIT 1")

@@ -248,6 +248,210 @@ describe("DELETE /api/activity/queue/:id", () => {
   });
 });
 
+describe("DELETE /api/activity/queue/:id — the removal reaches NZBGet, Transmission and Deluge (Round 30b)", () => {
+  async function insertClientRow(type: string, host: string, port: number, extra: { username?: string; password?: string } = {}): Promise<number> {
+    return Number(
+      (
+        await db
+          .prepare("INSERT INTO download_clients (name, type, host, port, use_ssl, username, password, enabled, audio_only) VALUES (?, ?, ?, ?, 0, ?, ?, 1, 0)")
+          .run(`${type} client`, type, host, port, extra.username ?? null, extra.password ?? null)
+      ).lastInsertRowid
+    );
+  }
+
+  const answer = (body: unknown, extra: Record<string, unknown> = {}) => ({ ok: true, status: 200, headers: new Headers(), json: async () => body, text: async () => JSON.stringify(body), ...extra });
+
+  /** Runs `work` with importStrategy set to symlink (the data stays at the client), and puts the setting back. */
+  async function withSymlinkStrategy(work: () => Promise<void>) {
+    const { getSetting, setSetting, deleteSetting } = await import("../src/services/settingsStore.js");
+    const previous = getSetting("importStrategy");
+    setSetting("importStrategy", "symlink");
+    try {
+      await work();
+    } finally {
+      if (previous === null) deleteSetting("importStrategy");
+      else setSetting("importStrategy", previous);
+    }
+  }
+
+  describe("NZBGet", () => {
+    function nzbgetFetch() {
+      const calls: { method: string; params: any[] }[] = [];
+      const fn = vi.fn(async (_url: string, init: RequestInit = {}) => {
+        const body = JSON.parse(String(init.body));
+        calls.push({ method: body.method, params: body.params });
+        return answer({ result: true });
+      });
+      return { fn, calls };
+    }
+
+    it("deletes the group and its history entry, files included, by the group's numeric id", async () => {
+      const clientId = await insertClientRow("nzbget", "nzbget.local", 6789, { username: "nzbget", password: "tegbzn6789" });
+      const id = await insertQueueRow({ status: "downloading", clientId, downloadId: "42" });
+      const { fn, calls } = nzbgetFetch();
+      vi.stubGlobal("fetch", fn);
+
+      const res = await request(app).delete(`/api/activity/queue/${id}`).set("X-Api-Key", apiKey);
+
+      expect(res.status).toBe(204);
+      expect(fn.mock.calls[0][0]).toBe("http://nzbget.local:6789/jsonrpc");
+      expect(calls).toEqual([
+        { method: "editqueue", params: ["GroupFinalDelete", "", [42]] },
+        { method: "editqueue", params: ["HistoryFinalDelete", "", [42]] },
+      ]);
+      expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(id)).toBeUndefined();
+    });
+
+    it("keeps the files under the symlink import strategy: the non-final delete commands", async () => {
+      const clientId = await insertClientRow("nzbget", "nzbget.local", 6789);
+      const id = await insertQueueRow({ status: "failed", clientId, downloadId: "43" });
+      const { fn, calls } = nzbgetFetch();
+      vi.stubGlobal("fetch", fn);
+
+      await withSymlinkStrategy(async () => {
+        expect((await request(app).delete(`/api/activity/queue/${id}`).set("X-Api-Key", apiKey)).status).toBe(204);
+      });
+
+      expect(calls.map((c) => [c.params[0], c.params[2]])).toEqual([
+        ["GroupDelete", [43]],
+        ["HistoryDelete", [43]],
+      ]);
+    });
+
+    it("leaves the group at NZBGet with ?removeFromClient=0, and sends nothing for an id that is not a group number", async () => {
+      const clientId = await insertClientRow("nzbget", "nzbget.local", 6789);
+      const kept = await insertQueueRow({ status: "downloading", clientId, downloadId: "44" });
+      const odd = await insertQueueRow({ status: "downloading", clientId, downloadId: "not-a-number" });
+      const { fn } = nzbgetFetch();
+      vi.stubGlobal("fetch", fn);
+
+      expect((await request(app).delete(`/api/activity/queue/${kept}?removeFromClient=0`).set("X-Api-Key", apiKey)).status).toBe(204);
+      expect((await request(app).delete(`/api/activity/queue/${odd}`).set("X-Api-Key", apiKey)).status).toBe(204);
+
+      expect(fn).not.toHaveBeenCalled();
+      expect(await db.prepare("SELECT id FROM queue WHERE id IN (?, ?)").get(kept, odd)).toBeUndefined();
+    });
+
+    it("still removes the queue row when NZBGet cannot be reached", async () => {
+      const clientId = await insertClientRow("nzbget", "nzbget.local", 6789);
+      const id = await insertQueueRow({ status: "downloading", clientId, downloadId: "45" });
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED")));
+
+      const res = await request(app).delete(`/api/activity/queue/${id}`).set("X-Api-Key", apiKey);
+
+      expect(res.status).toBe(204);
+      expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(id)).toBeUndefined();
+    });
+  });
+
+  describe("Transmission", () => {
+    /** Transmission answers 409 with a session id until the id is sent back. */
+    function transmissionFetch() {
+      const calls: { method: string; args: any }[] = [];
+      const fn = vi.fn(async (_url: string, init: RequestInit = {}) => {
+        const headers = init.headers as Record<string, string>;
+        if (!headers["X-Transmission-Session-Id"]) return answer({}, { ok: false, status: 409, headers: new Headers({ "x-transmission-session-id": "SESSION-1" }) });
+        const body = JSON.parse(String(init.body));
+        calls.push({ method: body.method, args: body.arguments });
+        return answer({ result: "success", arguments: {} });
+      });
+      return { fn, calls };
+    }
+    const HASH = "C12FE1C06BBA254A9DC9F519B335AA7C1367A88A";
+
+    it("removes the torrent by its lower-cased hash, data included", async () => {
+      const clientId = await insertClientRow("transmission", "tr.local", 9091, { username: "u", password: "p" });
+      const id = await insertQueueRow({ status: "downloading", clientId, downloadId: HASH });
+      const { fn, calls } = transmissionFetch();
+      vi.stubGlobal("fetch", fn);
+
+      const res = await request(app).delete(`/api/activity/queue/${id}`).set("X-Api-Key", apiKey);
+
+      expect(res.status).toBe(204);
+      expect(calls).toEqual([{ method: "torrent-remove", args: { ids: [HASH.toLowerCase()], "delete-local-data": true } }]);
+      expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(id)).toBeUndefined();
+    });
+
+    it("keeps the data under the symlink import strategy", async () => {
+      const clientId = await insertClientRow("transmission", "tr.local", 9091);
+      const id = await insertQueueRow({ status: "failed", clientId, downloadId: HASH });
+      const { fn, calls } = transmissionFetch();
+      vi.stubGlobal("fetch", fn);
+
+      await withSymlinkStrategy(async () => {
+        expect((await request(app).delete(`/api/activity/queue/${id}`).set("X-Api-Key", apiKey)).status).toBe(204);
+      });
+
+      expect(calls).toEqual([{ method: "torrent-remove", args: { ids: [HASH.toLowerCase()], "delete-local-data": false } }]);
+    });
+
+    it("keeps a torrent another queue row still points at", async () => {
+      const clientId = await insertClientRow("transmission", "tr.local", 9091);
+      const id = await insertQueueRow({ status: "downloading", clientId, downloadId: HASH });
+      const other = await insertQueueRow({ status: "downloading", clientId, downloadId: HASH });
+      const { fn } = transmissionFetch();
+      vi.stubGlobal("fetch", fn);
+
+      expect((await request(app).delete(`/api/activity/queue/${id}`).set("X-Api-Key", apiKey)).status).toBe(204);
+
+      expect(fn).not.toHaveBeenCalled();
+      expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(other)).toBeDefined();
+    });
+  });
+
+  describe("Deluge", () => {
+    function delugeFetch() {
+      const calls: { method: string; params: any[] }[] = [];
+      const fn = vi.fn(async (_url: string, init: RequestInit = {}) => {
+        const body = JSON.parse(String(init.body));
+        calls.push({ method: body.method, params: body.params });
+        if (body.method === "auth.login") return answer({ result: true, error: null }, { headers: new Headers({ "set-cookie": "_session_id=abc123; Path=/" }) });
+        if (body.method === "web.connected") return answer({ result: true, error: null });
+        return answer({ result: true, error: null });
+      });
+      return { fn, calls };
+    }
+    const HASH = "D".repeat(40);
+
+    it("removes the torrent by its lower-cased hash, data included", async () => {
+      const clientId = await insertClientRow("deluge", "de.local", 8112, { password: "deluge" });
+      const id = await insertQueueRow({ status: "downloading", clientId, downloadId: HASH });
+      const { fn, calls } = delugeFetch();
+      vi.stubGlobal("fetch", fn);
+
+      const res = await request(app).delete(`/api/activity/queue/${id}`).set("X-Api-Key", apiKey);
+
+      expect(res.status).toBe(204);
+      expect(calls.filter((c) => c.method === "core.remove_torrent")).toEqual([{ method: "core.remove_torrent", params: [HASH.toLowerCase(), true] }]);
+      expect(await db.prepare("SELECT id FROM queue WHERE id = ?").get(id)).toBeUndefined();
+    });
+
+    it("keeps the data under the symlink import strategy", async () => {
+      const clientId = await insertClientRow("deluge", "de.local", 8112, { password: "deluge" });
+      const id = await insertQueueRow({ status: "failed", clientId, downloadId: HASH });
+      const { fn, calls } = delugeFetch();
+      vi.stubGlobal("fetch", fn);
+
+      await withSymlinkStrategy(async () => {
+        expect((await request(app).delete(`/api/activity/queue/${id}`).set("X-Api-Key", apiKey)).status).toBe(204);
+      });
+
+      expect(calls.filter((c) => c.method === "core.remove_torrent")[0].params).toEqual([HASH.toLowerCase(), false]);
+    });
+
+    it("leaves the torrent at Deluge with ?removeFromClient=0", async () => {
+      const clientId = await insertClientRow("deluge", "de.local", 8112, { password: "deluge" });
+      const id = await insertQueueRow({ status: "downloading", clientId, downloadId: HASH });
+      const { fn } = delugeFetch();
+      vi.stubGlobal("fetch", fn);
+
+      expect((await request(app).delete(`/api/activity/queue/${id}?removeFromClient=0`).set("X-Api-Key", apiKey)).status).toBe(204);
+
+      expect(fn).not.toHaveBeenCalled();
+    });
+  });
+});
+
 describe("POST /api/activity/queue/:id/retry-import and /manual-import", () => {
   it("imports a failed or completed row", async () => {
     const failed = await insertQueueRow({ status: "failed" });

@@ -127,3 +127,47 @@ describe("MCP list_media", () => {
     expect(calls[0].query.get("offset")).toBe("200");
   });
 });
+
+// A refusal of the REST API carries a status and sometimes a code ("override" can be repeated with force once confirmed,
+// "duplicate" cannot); the MCP client needs both to know what to do next (Round 30b, L11).
+describe("MCP errors from the API", () => {
+  function stubRefusal(status: number, body: unknown, contentType = "application/json") {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": contentType } }))
+    );
+  }
+  const grabArgs = { mediaItemId: 5, downloadUrl: "https://idx.example/get/1", downloadClientId: 1 };
+  async function grabError(): Promise<string> {
+    const c = await connect();
+    const result = await c.callTool({ name: "grab_release", arguments: grabArgs });
+    expect(result.isError).toBe(true);
+    return (result.content as { text: string }[])[0].text;
+  }
+
+  it("puts the HTTP status and the refusal's code in the message", async () => {
+    stubRefusal(409, { error: "The release was rejected: size", code: "override" });
+
+    expect(await grabError()).toBe("AoNarr API POST /api/search/5/grab failed (HTTP 409) [override]: The release was rejected: size");
+  });
+
+  it("tells a code that cannot be forced from one that can", async () => {
+    stubRefusal(409, { error: '"Some.Release" is already in the queue for this item.', code: "duplicate" });
+
+    expect(await grabError()).toBe('AoNarr API POST /api/search/5/grab failed (HTTP 409) [duplicate]: "Some.Release" is already in the queue for this item.');
+  });
+
+  it("gives only the status when the body has no code, or one that is not a string", async () => {
+    stubRefusal(500, { error: "boom" });
+    expect(await grabError()).toBe("AoNarr API POST /api/search/5/grab failed (HTTP 500): boom");
+
+    stubRefusal(400, { error: "bad", code: 7 });
+    expect(await grabError()).toBe("AoNarr API POST /api/search/5/grab failed (HTTP 400): bad");
+  });
+
+  it("quotes a body that is not JSON as it is, with the status", async () => {
+    stubRefusal(502, "Bad Gateway", "text/plain");
+
+    expect(await grabError()).toBe("AoNarr API POST /api/search/5/grab failed (HTTP 502): Bad Gateway");
+  });
+});

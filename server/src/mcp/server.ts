@@ -31,7 +31,9 @@ async function callApi(method: string, path: string, body?: unknown): Promise<un
   }
   if (!res.ok) {
     const message = typeof data === "object" && data && "error" in (data as any) ? (data as any).error : text;
-    throw new Error(`AoNarr API ${method} ${path} failed (HTTP ${res.status}): ${message}`);
+    // A refusal may carry a code: "override" can be repeated with force once confirmed, "duplicate" cannot.
+    const code = typeof data === "object" && data && typeof (data as any).code === "string" ? ` [${(data as any).code}]` : "";
+    throw new Error(`AoNarr API ${method} ${path} failed (HTTP ${res.status})${code}: ${message}`);
   }
   return data;
 }

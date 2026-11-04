@@ -288,7 +288,7 @@ export default function EpisodeDetail() {
       load();
     } catch (e) {
       // The identity gate (enforcing) refused the release once; the admin decides.
-      if (e instanceof ApiError && e.status === 409 && !options.force) {
+      if (e instanceof ApiError && e.status === 409 && e.body?.code === "override" && !options.force) {
         if (window.confirm(`${e.message}\n\nGrab it anyway?`)) await grab(result, { force: true });
         return;
       }

@@ -88,6 +88,7 @@ const RULES: Readonly<Record<string, Rule>> = {
   usenetMinimumAgeMinutes: { wholeNumber: true, min: 0 },
   // The scheduler reads 0 as "the default", so 0 is not offered.
   stalledDownloadHours: { wholeNumber: true, min: 1 },
+  blackholeTimeoutHours: { wholeNumber: true, min: 1 },
   maxAutoRetries: { wholeNumber: true, min: 0 },
   namingMultiEpisodeStyle: { oneOf: MULTI_EPISODE_STYLES },
   namingColonReplacement: { oneOf: ["delete", "dash", "spaceDash", "spaceDashSpace", "smart"] },

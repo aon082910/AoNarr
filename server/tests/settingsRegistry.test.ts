@@ -55,6 +55,27 @@ describe("PUT /api/settings/:key refuses what nothing reads (ST18)", () => {
     expect((await put("sizeLimitMode", "")).status).toBe(200);
     expect((await put("housekeepingHistoryDays", "")).status).toBe(200);
   });
+
+  // The scheduler reads blackholeTimeoutHours with parseInt and falls back to a week for anything else (Round 30b, L5).
+  it("takes blackholeTimeoutHours as a whole number of hours, at least one", async () => {
+    for (const bad of ["abc", "1.5", "0", "-3", "1e1", "24h"]) {
+      const res = await put("blackholeTimeoutHours", bad);
+      expect(res.status, bad).toBe(400);
+      expect(res.body.error, bad).toContain("blackholeTimeoutHours");
+      expect(res.body.error, bad).toContain("whole number of at least 1");
+    }
+    expect(await db.prepare("SELECT value FROM settings WHERE key = 'blackholeTimeoutHours'").get()).toBeFalsy();
+
+    expect((await put("blackholeTimeoutHours", "24")).status).toBe(200);
+    // The setting is written to the database after the request has answered (a round trip against Postgres): look for it for a moment.
+    let stored: { value: string } | undefined;
+    for (let i = 0; i < 80 && !stored; i++) {
+      stored = (await db.prepare("SELECT value FROM settings WHERE key = 'blackholeTimeoutHours'").get()) as { value: string } | undefined;
+      if (!stored) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(stored).toMatchObject({ value: "24" });
+    expect((await put("blackholeTimeoutHours", "")).status).toBe(200);
+  });
 });
 
 describe("the registry matches the keys the code uses (ST18)", () => {
@@ -109,6 +130,9 @@ describe("settingsRegistry helpers", () => {
   it("explains a value that does not fit", () => {
     expect(settingValueProblem("sizeLimitMode", "x")).toContain("absolute, perMinute");
     expect(settingValueProblem("recycleBinRetentionDays", "1.5")).toContain("whole number");
+    expect(settingValueProblem("blackholeTimeoutHours", "1.5")).toBe('"blackholeTimeoutHours" must be a whole number of at least 1');
+    expect(settingValueProblem("blackholeTimeoutHours", "abc")).not.toBeNull();
+    expect(settingValueProblem("blackholeTimeoutHours", "24")).toBeNull();
     expect(settingValueProblem("someOtherKey", "anything")).toBeNull();
   });
 });

@@ -1239,8 +1239,9 @@ export default function MediaDetail() {
       notify.success(`Sent "${result.title}" to download client.`);
       load();
     } catch (e) {
-      // The identity gate (enforcing), the blocklist or a copy already queued refused the release once; the admin decides.
-      if (e instanceof ApiError && e.status === 409 && !options.force) {
+      // The identity gate (enforcing) or the blocklist refused the release once; the admin decides. A copy already queued
+      // or already at the client is final (code "duplicate"): it is just told.
+      if (e instanceof ApiError && e.status === 409 && e.body?.code === "override" && !options.force) {
         if (window.confirm(`${e.message}\n\nGrab it anyway?`)) await grab(result, { force: true, overrides: overrides ?? [] });
         return;
       }

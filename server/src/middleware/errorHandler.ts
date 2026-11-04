@@ -4,15 +4,18 @@ import { log } from "../services/logger.js";
 
 export class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** A short machine-readable reason the page can act on (for a 409 from a grab: "override" = the admin may confirm and repeat with force, "duplicate" = repeating cannot help). */
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
 export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
   if (err instanceof HttpError) {
-    res.status(err.status).json({ error: err.message });
+    res.status(err.status).json(err.code ? { error: err.message, code: err.code } : { error: err.message });
     return;
   }
   // Client mistakes rejected by middleware before any route runs — body-parser's malformed JSON
