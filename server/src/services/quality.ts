@@ -180,6 +180,24 @@ export function groupedRank(name: string | null, groups?: QualityGroups | null):
   return group ? Math.max(...group.map((n) => qualityRank(n))) : own;
 }
 
+/**
+ * Whether a file of `quality` is still under the profile's cutoff. A cutoff that is not on the quality
+ * ladder (a renamed or deleted tier) can never be reached, so a file of a known quality is under it and
+ * upgrades go on, instead of the file reading as "at the cutoff" because every rank is above -1. No cutoff
+ * set means nothing is under it, and a file of unknown quality is not known to be under any.
+ */
+export function isUnderCutoff(quality: string | null, cutoff: string | null | undefined, groups?: QualityGroups | null): boolean {
+  const rank = groupedRank(quality, groups);
+  if (rank < 0 || !cutoff) return false;
+  const cutoffRank = groupedRank(cutoff, groups);
+  return cutoffRank < 0 || rank < cutoffRank;
+}
+
+/** Whether the profile's cutoff is a quality on the ladder (an empty cutoff is not set, so not one). */
+export function cutoffIsRanked(cutoff: string | null | undefined, groups?: QualityGroups | null): boolean {
+  return !!cutoff && groupedRank(cutoff, groups) >= 0;
+}
+
 /** The profile rank of whichever quality has `rank` (callers hand over ranks, not names). */
 export function groupRankOfRank(rank: number, groups?: QualityGroups | null): number {
   if (rank < 0 || !groups || groups.length === 0) return rank;

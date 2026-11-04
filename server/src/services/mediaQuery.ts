@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { CONTENT_RATING_ORDER, contentRatingRank } from "./contentRatings.js";
-import { groupedRank, parseQualityGroups } from "./quality.js";
+import { groupedRank, isUnderCutoff, parseQualityGroups } from "./quality.js";
 import { typeKeysByShape } from "./mediaTypes.js";
 
 /** Shared WHERE-clause builder for GET /api/media and GET /api/media/stats — both need the exact
@@ -131,7 +131,7 @@ async function findCutoffUnmetIds(): Promise<number[]> {
   return rows
     .filter((r) => {
       const groups = parseQualityGroups(r.quality_groups);
-      return groupedRank(r.quality, groups) < groupedRank(r.cutoff, groups);
+      return groupedRank(r.quality, groups) < groupedRank(r.cutoff, groups) || isUnderCutoff(r.quality, r.cutoff, groups);
     })
     .map((r) => r.id);
 }

@@ -1,4 +1,4 @@
-import { groupedRank, type QualityGroups } from "./quality.js";
+import { cutoffIsRanked, groupedRank, isUnderCutoff, type QualityGroups } from "./quality.js";
 import { getSetting } from "./settingsStore.js";
 import { parseReleaseTitle, type ReleaseRevision } from "./releaseParser.js";
 
@@ -66,9 +66,10 @@ export function upgradeProfileOf(
 }
 
 /** Whether the file's quality has reached the profile's cutoff. A file whose quality is not on this ladder (a
- * deleted tier, "Unknown") never has: nothing is known about it to say it is enough. */
+ * deleted tier, "Unknown") never has: nothing is known about it to say it is enough. Neither has any file when the
+ * cutoff itself is not on the ladder: there is nothing to reach. */
 export function qualityCutoffMet(profile: UpgradeProfile, file: ExistingFile): boolean {
-  if (!profile.cutoff) return false;
+  if (!cutoffIsRanked(profile.cutoff, profile.qualityGroups)) return false;
   const current = groupedRank(file.quality, profile.qualityGroups);
   return current >= 0 && current >= groupedRank(profile.cutoff, profile.qualityGroups);
 }
@@ -82,8 +83,7 @@ export function formatCutoffNotMet(profile: UpgradeProfile, file: ExistingFile):
  * the format cutoff. */
 export function cutoffNotMet(profile: UpgradeProfile, file: ExistingFile): boolean {
   if (!profile.upgradeAllowed) return false;
-  const rank = groupedRank(file.quality, profile.qualityGroups);
-  const qualityBelow = !!profile.cutoff && rank >= 0 && rank < groupedRank(profile.cutoff, profile.qualityGroups);
+  const qualityBelow = isUnderCutoff(file.quality, profile.cutoff, profile.qualityGroups);
   return qualityBelow || formatCutoffNotMet(profile, file);
 }
 

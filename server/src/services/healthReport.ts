@@ -21,6 +21,7 @@ import { findRootFolderProblems } from "./rootFolderCheck.js";
 import { recycleBinFolderProblem } from "./recycleBin.js";
 import { pathExistsAsync, StorageTimeoutError } from "./fsAsync.js";
 import { log } from "./logger.js";
+import { parseQualityGroups } from "./qualityGroups.js";
 
 export const STUCK_QUEUE_HOURS = 6;
 export const DISK_WARN_PERCENT_FREE = 10;
@@ -153,6 +154,45 @@ async function downloadClientBackoffIssues(): Promise<HealthIssue[]> {
       message: `Download client "${row.name}" is being left alone until ${when} UTC after failing${row.last_error ? ` (${row.last_error})` : ""}`,
       transient: true,
     });
+  }
+  return issues;
+}
+
+/**
+ * A quality profile whose cutoff is not a quality on the ladder (a renamed or deleted tier) or not one the profile
+ * allows. Its files can never reach the cutoff, so every one stays open to upgrades for as long as the profile is in
+ * use: the cutoff is worth fixing in the profile.
+ */
+export async function qualityCutoffIssues(): Promise<HealthIssue[]> {
+  const ladder = new Set(((await db.prepare("SELECT name FROM qualities").all()) as { name: string }[]).map((r) => r.name));
+  if (ladder.size === 0) return [];
+  const rows = (await db.prepare("SELECT id, name, cutoff, allowed_qualities, quality_groups FROM quality_profiles").all()) as {
+    id: number;
+    name: string;
+    cutoff: string | null;
+    allowed_qualities: string | null;
+    quality_groups: string | null;
+  }[];
+  const issues: HealthIssue[] = [];
+  for (const row of rows) {
+    const cutoff = (row.cutoff ?? "").trim();
+    if (!cutoff) continue; // no cutoff set: nothing to reach, nothing wrong
+    let problem: string | null = null;
+    if (!ladder.has(cutoff)) {
+      problem = `its cutoff "${cutoff}" is not a quality on the ladder, so no file ever reaches it and files keep being upgraded`;
+    } else {
+      let asList: string[] = [];
+      try {
+        const parsed = JSON.parse(row.allowed_qualities ?? "[]");
+        if (Array.isArray(parsed)) asList = parsed.filter((q): q is string => typeof q === "string");
+      } catch {
+        // an unreadable list is left to the profile editor
+      }
+      const groups = parseQualityGroups(row.quality_groups);
+      const inAllowed = asList.includes(cutoff) || groups.some((g) => g.includes(cutoff) && g.some((q) => asList.includes(q)));
+      if (asList.length > 0 && !inAllowed) problem = `its cutoff "${cutoff}" is not one of the qualities it allows, so a release at the cutoff is never taken`;
+    }
+    if (problem) issues.push({ source: `quality-cutoff:${row.id}`, severity: "warning", message: `Quality profile "${row.name}": ${problem}`, transient: false });
   }
   return issues;
 }
@@ -523,6 +563,7 @@ async function buildHealthReport(): Promise<HealthReport> {
     safely("download-client-config", () => downloadClientConfigIssues(downloadClients)),
     safely("root-folders", rootFolderIssues),
     safely("recycle-bin", recycleBinIssues),
+    safely("quality-cutoff", qualityCutoffIssues),
   ]);
   issues.push(...checks.flat());
 

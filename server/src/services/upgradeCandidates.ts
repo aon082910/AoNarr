@@ -1,5 +1,5 @@
 import { db } from "../db/index.js";
-import { groupedRank, parseQualityGroups, usesQualityTiers, type QualityGroups } from "./quality.js";
+import { groupedRank, isUnderCutoff, parseQualityGroups, usesQualityTiers, type QualityGroups } from "./quality.js";
 import { formatUpgradeFloor } from "./nonVideoMatch.js";
 import { getSetting } from "./settingsStore.js";
 
@@ -44,7 +44,7 @@ function belowCutoff(quality: string, profile: ProfileInfo, formatScore: number 
   if (!profile.upgradeAllowed) return false;
   const current = groupedRank(quality, profile.qualityGroups);
   if (current < 0) return false;
-  if (current < groupedRank(profile.cutoff, profile.qualityGroups)) return true;
+  if (isUnderCutoff(quality, profile.cutoff, profile.qualityGroups)) return true;
   // At the quality cutoff, but under the format cutoff (a custom-format score the profile wants more of).
   return profile.cutoffFormatScore > 0 && Number(formatScore ?? 0) < profile.cutoffFormatScore;
 }
