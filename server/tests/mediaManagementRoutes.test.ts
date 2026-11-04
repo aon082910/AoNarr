@@ -31,6 +31,17 @@ beforeEach(async () => {
 
 const authed = (r: request.Test) => r.set("X-Api-Key", apiKey);
 
+/** A move runs as a tracked background job; waits until it has finished. */
+async function waitForJobToEnd(jobId: string): Promise<void> {
+  const { listBackgroundJobs } = await import("../src/services/backgroundJobs.js");
+  for (let i = 0; i < 500; i++) {
+    const job = listBackgroundJobs().find((j) => j.id === jobId);
+    if (job && !job.running) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`job ${jobId} never finished`);
+}
+
 async function root(name: string, mediaType = "series"): Promise<{ id: number; path: string }> {
   const p = path.join(tmp, name);
   fs.mkdirSync(p, { recursive: true });
@@ -79,7 +90,7 @@ describe("root folders (MM22)", () => {
     const res = await authed(request(app).get(`/api/root-folders/${r.id}/impact`));
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ itemCount: 2, itemsWithFiles: 1 });
+    expect(res.body).toMatchObject({ itemCount: 2, itemsWithFiles: 1, otherFolders: [] });
     await authed(request(app).get("/api/root-folders/99999/impact")).expect(404);
   });
 
@@ -104,7 +115,8 @@ describe("root folders (MM22)", () => {
     const res = await authed(request(app).patch(`/api/media/${showId}`)).send({ rootFolderId: to.id, moveFiles: true });
 
     expect(res.status).toBe(200);
-    expect(res.body.filesMoved.renamed).toHaveLength(1);
+    expect(res.body.moveJob.id).toBe(`move:title-${showId}`);
+    await waitForJobToEnd(res.body.moveJob.id);
     const dest = path.join(to.path, "Show", "Season 01", "Show - S01E01 - Pilot.mkv");
     expect(fs.existsSync(dest)).toBe(true);
     expect(fs.existsSync(file)).toBe(false);
@@ -197,16 +209,18 @@ describe("what the review found in the routes (R25-07, R25-10, R25-13)", () => {
     expect(fs.existsSync(src)).toBe(true);
   });
 
-  it("refuses moveFiles for an artist and changes nothing", async () => {
+  it("refuses a moveFiles into a folder of another media type and changes nothing", async () => {
     const from = await root("music-a", "artist");
-    const to = await root("music-b", "artist");
+    const to = await root("music-b", "movie");
     const id = Number(
       (await db.prepare("INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('artist', 'Artist', 'artist', ?, 1, 0, 'missing')").run(from.id)).lastInsertRowid
     );
 
-    const res = await authed(request(app).patch(`/api/media/${id}`)).send({ rootFolderId: to.id, moveFiles: true });
+    const res = await authed(request(app).patch(`/api/media/${id}`)).send({ rootFolderId: to.id, moveFiles: true, title: "Renamed Artist" });
 
-    expect(res.status).toBe(409);
-    expect(((await db.prepare("SELECT root_folder_id FROM media_items WHERE id = ?").get(id)) as any).root_folder_id).toBe(from.id);
+    expect(res.status).toBe(400);
+    const row = (await db.prepare("SELECT root_folder_id, title FROM media_items WHERE id = ?").get(id)) as any;
+    expect(row.root_folder_id).toBe(from.id);
+    expect(row.title).toBe("Artist");
   });
 });

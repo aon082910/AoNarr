@@ -5,7 +5,7 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 
 export interface BackgroundJobProgress {
   id: string;
-  kind: "scan" | "matchProviders" | "refresh" | "organize" | "mediaAnalysis";
+  kind: "scan" | "matchProviders" | "refresh" | "organize" | "move" | "mediaAnalysis";
   type: string;
   label: string;
   total: number;

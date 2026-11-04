@@ -82,6 +82,7 @@ import { CONTENT_TYPES } from "../services/rangeStream.js";
 import { resetSearchBackoff, wakeLeaf } from "../services/searchBackoff.js";
 import { deleteLibraryFile, removeLeftoverFolders, rollUpParentMissing } from "../services/fileDeletion.js";
 import { queueScanAfterAdd } from "../services/scanOnAdd.js";
+import { checkTitleMove, moveTitleToRootFolder, startTitleMoveJob } from "../services/titleMove.js";
 import { isNewItemMode } from "../services/monitorModes.js";
 import { applyRootFolderDefaults } from "../services/rootFolderDefaults.js";
 import { addTagsToItem, checkedTagIdsColumn } from "../services/tagScope.js";
@@ -1715,10 +1716,10 @@ mediaRouter.patch(
     if (b.metadataProfileId != null && !(await db.prepare("SELECT 1 AS ok FROM metadata_profiles WHERE id = ?").get(Number(b.metadataProfileId)))) {
       throw new HttpError(400, "Metadata profile not found");
     }
-    // Music and audiobooks are moved between root folders by the root folder tool (Settings), as before.
-    if (b.moveFiles && b.rootFolderId !== undefined && Number(b.rootFolderId) !== Number((existing as any).root_folder_id) && getMediaTypeConfig((existing as any).type).multiFilePerChild) {
-      throw new HttpError(409, "Music and Audiobooks are moved to another root folder with the root folder move in Settings");
-    }
+    // With moveFiles the title's root folder changes when its files have moved (a tracked background job, below), so a
+    // bad destination is refused before anything else in this request is saved.
+    const movesFiles = !!b.moveFiles && b.rootFolderId !== undefined && Number(b.rootFolderId) !== Number((existing as any).root_folder_id);
+    if (movesFiles) await checkTitleMove(Number(req.params.id), Number(b.rootFolderId));
     // The record of which external ids were merged in from other providers is written only by the
     // server, often in the background after the page loaded. Taken from a client's copy, it was lost
     // and those ids then counted as the item's own, moving it onto another provider's numbering on
@@ -1760,7 +1761,7 @@ mediaRouter.patch(
       monitored: b.monitored,
       protected: b.protected,
       quality_profile_id: b.qualityProfileId,
-      root_folder_id: b.rootFolderId,
+      root_folder_id: movesFiles ? undefined : b.rootFolderId,
       path: b.path,
       status: b.status,
       content_rating: b.contentRating,
@@ -1796,17 +1797,10 @@ mediaRouter.patch(
     // An edit may be why a search that kept finding nothing would now find something: it starts over.
     if (sets.length > 0) await resetSearchBackoff(Number(req.params.id));
     // Re-pointing an item at another root folder only changes where its next import goes; `moveFiles` also moves
-    // the files it already has (Sonarr asks the same when a series' path is edited).
-    let filesMoved: Awaited<ReturnType<typeof renameOneMediaItem>> | undefined;
-    if (b.moveFiles && b.rootFolderId !== undefined && Number(b.rootFolderId) !== Number((existing as any).root_folder_id)) {
-      try {
-        filesMoved = await renameOneMediaItem(Number(req.params.id));
-      } catch (err) {
-        // The root folder is the one thing this request changed for the move: put it back.
-        await db.prepare("UPDATE media_items SET root_folder_id = ? WHERE id = ?").run((existing as any).root_folder_id, req.params.id);
-        throw err;
-      }
-    }
+    // the files it already has (Sonarr asks the same when a series' path is edited). That runs as a tracked background
+    // job and the title is pointed at the new root folder when it has finished.
+    let moveJob: { id: string } | undefined;
+    if (movesFiles) moveJob = { id: (await startTitleMoveJob(Number(req.params.id), Number(b.rootFolderId))).jobId };
 
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     // Keeps a synced .nfo sidecar current when the actual metadata (not just monitored/protected/
@@ -1823,7 +1817,7 @@ mediaRouter.patch(
       }
       refreshNfoSidecar(row, externalIds);
     }
-    res.json(filesMoved ? { ...mediaItemFromRow(row), filesMoved } : mediaItemFromRow(row));
+    res.json(moveJob ? { ...mediaItemFromRow(row), moveJob } : mediaItemFromRow(row));
   })
 );
 
@@ -2158,6 +2152,26 @@ mediaRouter.post(
       if (err instanceof ImportSkippedError) throw new HttpError(409, err.message);
       throw err;
     }
+  })
+);
+
+/**
+ * Moves a title's own folder (or, for a title without one, its files and the files named for them) to another root
+ * folder of the same type, as a tracked background job; answers with the job's id at once. `?preview=1` answers with
+ * what would move and changes nothing.
+ */
+mediaRouter.post(
+  "/:id/move-files",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const destinationId = Number(req.body?.rootFolderId);
+    if (!Number.isInteger(destinationId)) throw new HttpError(400, "rootFolderId is required");
+    if (req.query.preview === "1") {
+      res.json(await moveTitleToRootFolder(Number(req.params.id), destinationId, { dryRun: true }));
+      return;
+    }
+    const started = await startTitleMoveJob(Number(req.params.id), destinationId);
+    res.status(202).json({ started: true, jobId: started.jobId });
   })
 );
 

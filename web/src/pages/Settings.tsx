@@ -7,6 +7,7 @@ import SettingsProviderTiles, { type SettingsProviderDef } from "../components/S
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import MetadataProfilesEditor from "../components/MetadataProfilesEditor.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
+import { useBackgroundJobs } from "../context/BackgroundJobsContext.js";
 import type {
   BlocklistEntry,
   CustomFormat,
@@ -659,6 +660,7 @@ export default function Settings() {
   const [metadataProfiles, setMetadataProfiles] = useState<MetadataProfile[]>([]);
   const [providers, setProviders] = useState<SubtitleProvider[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
+  const { startJob } = useBackgroundJobs();
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const templateInputRef = useRef<HTMLInputElement>(null);
@@ -1707,7 +1709,25 @@ export default function Settings() {
 
   async function removeFolder(id: number) {
     // How many titles use it: without a folder their imports are skipped until they are given another.
-    const impact = await api.get<{ itemCount: number; itemsWithFiles: number }>(`/root-folders/${id}/impact`).catch(() => null);
+    const impact = await api
+      .get<{ itemCount: number; itemsWithFiles: number; otherFolders?: { id: number; path: string; name: string | null }[] }>(`/root-folders/${id}/impact`)
+      .catch(() => null);
+    // The titles can be moved to the one other folder of the type first (the move is a background job; delete afterwards).
+    if (impact && impact.itemCount > 0 && impact.otherFolders?.length === 1) {
+      const target = impact.otherFolders[0];
+      const moveFirst = await confirmDialog({
+        title: "Move the titles first?",
+        message: `${impact.itemCount} title(s) still use this root folder. Move them to "${target.name?.trim() || target.path}" first? Delete the folder once the move has finished.`,
+        confirmLabel: "Move them first",
+        cancelLabel: "No, continue",
+      });
+      if (moveFirst) {
+        await startRootFolderMove(id, target.id);
+        return;
+      }
+    } else if (impact && impact.itemCount > 0 && (impact.otherFolders?.length ?? 0) > 1) {
+      notify.info("Tip: Move all files to another root folder (above) moves the titles first.", 6000);
+    }
     const confirmed = await confirmDialog({
       title: "Delete root folder",
       message:
@@ -1725,9 +1745,24 @@ export default function Settings() {
     });
     if (!confirmed) return;
     const { deleteMedia, deleteFiles } = confirmed.values;
-    const qs = deleteMedia ? `?deleteMedia=1${deleteFiles ? "&deleteFiles=1" : ""}` : "";
-    await api.del(`/root-folders/${id}${qs}`);
+    // The server refuses a folder that still has titles unless told how: with the titles removed, or left without a folder.
+    const qs = deleteMedia ? `?deleteMedia=1${deleteFiles ? "&deleteFiles=1" : ""}` : impact && impact.itemCount > 0 ? "?force=1" : "";
+    try {
+      await api.del(`/root-folders/${id}${qs}`);
+    } catch (err) {
+      notify.error((err as Error).message);
+      return;
+    }
     load();
+  }
+
+  /** Starts the move of every title of a root folder as a tracked background job (progress widget). */
+  async function startRootFolderMove(sourceId: number, destinationId: number) {
+    try {
+      await startJob("move", `root-${sourceId}`, "Move root folder", `/root-folders/${sourceId}/move-to/${destinationId}`);
+    } catch (err) {
+      notify.error((err as Error).message);
+    }
   }
 
   async function moveRootFolder(sourceId: number, destinationId: number) {
@@ -1735,14 +1770,17 @@ export default function Settings() {
     if (
       !(await confirmDialog({
         title: "Move root folder",
-        message: "Move every media item in this folder to the destination folder? This physically relocates their files on disk.",
+        message: "Move every media item in this folder to the destination folder? Each title's whole folder (files, artwork, NFO, extras; for music the artist's folder) is relocated on disk, in the background.",
         danger: true,
       }))
     )
       return;
-    const result = await api.post<{ started: boolean; itemCount: number }>(`/root-folders/${sourceId}/move-to/${destinationId}`, {});
-    if (result.itemCount === 0) notify.info("Nothing to move — this folder has no media items.");
-    else notify.info(`Moving ${result.itemCount} item(s) in the background — check back in a bit, or watch the Audit Log.`, 6000);
+    const impact = await api.get<{ itemCount: number }>(`/root-folders/${sourceId}/impact`).catch(() => null);
+    if (impact && impact.itemCount === 0) {
+      notify.info("Nothing to move — this folder has no media items.");
+      return;
+    }
+    await startRootFolderMove(sourceId, destinationId);
   }
 
   async function updateFolderQuota(id: number, field: "name" | "quotaPercent" | "pauseGrabsAtQuota" | "minFreeSpaceGb" | "readOnly", value: number | boolean | string | null) {

@@ -61,7 +61,7 @@ describe("POST /api/root-folders/:id/move-to/:destinationId", () => {
 
     const res = await request(app).post(`/api/root-folders/${source.id}/move-to/${destination.id}`).set("X-Api-Key", apiKey);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ started: true, itemCount: 1 });
+    expect(res.body).toMatchObject({ started: true, itemCount: 1, jobId: "move:root-" + source.id });
 
     const detail = await waitForMoveAudit(source.dir);
     expect(detail).toContain("(1 item(s))");
@@ -95,15 +95,31 @@ describe("POST /api/root-folders/:id/move-to/:destinationId", () => {
     expect(Number((await itemRow(noFileId)).root_folder_id)).toBe(destination.id);
   });
 
-  it("refuses to move a Music root folder, whose album folders it can't relocate", async () => {
+  it("moves a Music root folder by moving each artist's folder with its albums and tracks", async () => {
     const source = await createRootFolder("music-a", "artist");
     const destination = await createRootFolder("music-b", "artist");
+    const albumDir = path.join(source.dir, "Some Artist", "First Album (2001)");
+    fs.mkdirSync(albumDir, { recursive: true });
+    fs.writeFileSync(path.join(albumDir, "01 - Song.flac"), "audio");
+    fs.writeFileSync(path.join(source.dir, "Some Artist", "folder.jpg"), "art");
     const id = await insertItem("artist", "Some Artist", source.id, null);
+    const albumId = Number(
+      (await db.prepare("INSERT INTO sub_items (media_item_id, title, has_file, file_path, monitored) VALUES (?, 'First Album', 1, ?, 1)").run(id, albumDir)).lastInsertRowid
+    );
+    const trackId = Number(
+      (await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, 1, 'Song', 1, ?)").run(albumId, path.join(albumDir, "01 - Song.flac"))).lastInsertRowid
+    );
 
     const res = await request(app).post(`/api/root-folders/${source.id}/move-to/${destination.id}`).set("X-Api-Key", apiKey);
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Music/);
-    expect(Number((await itemRow(id)).root_folder_id)).toBe(source.id);
+    expect(res.status).toBe(200);
+    await waitForMoveAudit(source.dir);
+
+    const newAlbum = path.join(destination.dir, "Some Artist", "First Album (2001)");
+    expect(Number((await itemRow(id)).root_folder_id)).toBe(destination.id);
+    expect(fs.existsSync(path.join(destination.dir, "Some Artist", "folder.jpg"))).toBe(true);
+    expect(fs.existsSync(path.join(source.dir, "Some Artist"))).toBe(false);
+    expect(((await db.prepare("SELECT file_path FROM sub_items WHERE id = ?").get(albumId)) as any).file_path).toBe(newAlbum);
+    expect(((await db.prepare("SELECT file_path FROM tracks WHERE id = ?").get(trackId)) as any).file_path).toBe(path.join(newAlbum, "01 - Song.flac"));
   });
 });
 
@@ -427,7 +443,7 @@ describe("POST /api/root-folders/:id/move-to/:destinationId and read-only librar
     const res = await request(app).post(`/api/root-folders/${source.id}/move-to/${destination.id}`).set("X-Api-Key", apiKey);
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ started: true, itemCount: 1 });
+    expect(res.body).toMatchObject({ started: true, itemCount: 1 });
     await waitForMoveAudit(source.dir);
     expect(Number((await itemRow(itemId)).root_folder_id)).toBe(destination.id);
   });
