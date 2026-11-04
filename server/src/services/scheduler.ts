@@ -3845,7 +3845,12 @@ async function retryHeldForEpisodeTitles(ctx: PollContext = INLINE_POLL): Promis
   for (const match of rows) {
     if (ctx.background && importLaneIds.has(match.id)) continue;
     const last = titleHoldTriedAt.get(match.id) ?? sqlTimeToMs(match.updatedAt);
-    if (Number.isFinite(last) && Date.now() - last < titleHoldRetryMs) continue;
+    // A time that cannot be read starts the wait now, rather than trying the import again on every poll.
+    if (!Number.isFinite(last)) {
+      titleHoldTriedAt.set(match.id, Date.now());
+      continue;
+    }
+    if (Date.now() - last < titleHoldRetryMs) continue;
     titleHoldTriedAt.set(match.id, Date.now());
     const attempt = async () => {
       const claimed = await db

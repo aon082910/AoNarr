@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import request from "supertest";
 import { setupTestDb } from "./helpers/testDb.js";
+import { nowExpr } from "../src/db/asyncDb.js";
 
 // Round 30e: Sonarr's EpisodeTitleRequired. When the naming format has the episode's title in it, an automatic import of a
 // recent episode that has no title yet (empty, TBA, "Episode 5") waits instead of being named after the placeholder. It
@@ -494,7 +495,7 @@ describe("a held download", () => {
   it("is looked at again only every ten minutes", async () => {
     setSetting("episodeTitleRequired", "always");
     const held = await heldRow("TBA", today());
-    await db.prepare("UPDATE queue SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(held.queueId);
+    await db.prepare(`UPDATE queue SET updated_at = ${nowExpr(db)} WHERE id = ?`).run(held.queueId);
     await db.prepare("UPDATE episodes SET title = 'Second' WHERE id = ?").run(held.episodeId);
 
     await scheduler.pollQueue(); // default interval: parked just now, so not yet
