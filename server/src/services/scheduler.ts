@@ -3892,10 +3892,15 @@ export async function pollQueue(options: { background?: boolean } = {}) {
   for (const id of clientNotes.keys()) if (!activeIds.has(id)) clientNotes.delete(id);
   if (active.length === 0) return;
 
-  const polled = clients
+  const withRows = clients
     .map((client) => ({ client, relevant: active.filter((q) => q.downloadClientId === client.id) }))
-    // A client that failed lately is left alone until its wait is over: its rows keep what they have.
-    .filter(({ client, relevant }) => relevant.length > 0 && !isClientBackedOff(client.id));
+    .filter(({ relevant }) => relevant.length > 0);
+  // A client that failed lately is left alone until its wait is over: its rows keep their progress, but not an
+  // ETA that nothing updates any more.
+  const polled = withRows.filter(({ client }) => !isClientBackedOff(client.id));
+  for (const { client, relevant } of withRows) {
+    if (isClientBackedOff(client.id)) await markClientNotAnswering(client.id, relevant).catch(() => undefined);
+  }
   const answers = await Promise.allSettled(
     polled.map(
       async ({ client, relevant }): Promise<PolledStatus[]> =>
@@ -3909,6 +3914,7 @@ export async function pollQueue(options: { background?: boolean } = {}) {
       const reason = answer.reason instanceof Error ? answer.reason.message : String(answer.reason);
       log.warn(`[scheduler] queue poll failed for client "${client.name}":`, reason);
       await recordClientFailure(client.id, reason).catch(() => undefined);
+      await markClientNotAnswering(client.id, relevant).catch(() => undefined);
       continue;
     }
     await recordClientSuccess(client.id).catch(() => undefined);
@@ -3918,6 +3924,29 @@ export async function pollQueue(options: { background?: boolean } = {}) {
       log.warn(`[scheduler] queue poll failed for client "${client.name}":`, (err as Error).message);
     }
   }
+}
+
+/** What an active row says while its download client does not answer. */
+export const CLIENT_NOT_ANSWERING_NOTE = "Download client not answering";
+
+/**
+ * A client that stops answering leaves its rows with the last ETA and size left it reported, which look live
+ * for as long as the client is down. One update per client clears them and says why (a warning, not a failure:
+ * the download itself may be fine); the next good poll overwrites it with what the client then reports.
+ * Rows already marked are left alone, so a long outage writes nothing after the first poll.
+ */
+async function markClientNotAnswering(clientId: number, rows: QueueItem[]): Promise<void> {
+  const updated = await db
+    .prepare(
+      `UPDATE queue SET eta_seconds = NULL, size_left = NULL, client_state = 'warning', status_message = ?
+       WHERE download_client_id = ? AND status IN ('queued','downloading')
+         AND (eta_seconds IS NOT NULL OR size_left IS NOT NULL OR client_state IS NULL OR client_state <> 'warning' OR status_message IS NULL OR status_message <> ?)`
+    )
+    .run(CLIENT_NOT_ANSWERING_NOTE, clientId, CLIENT_NOT_ANSWERING_NOTE);
+  if (updated.changes === 0) return;
+  // The client's own note from its last answer (paused, a warning) is as stale as the ETA.
+  for (const row of rows) clientNotes.delete(row.id);
+  notifyQueueChanged();
 }
 
 /** Records what one client reported for its active rows, importing, failing and retrying them. */
