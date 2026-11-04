@@ -48,6 +48,13 @@ afterEach(() => {
 
 const never = () => new Promise<never>(() => {});
 
+// The real timer, kept before the fake ones replace it: the walk reads the database before it asks the disk, and against Postgres
+// that takes real time the fake clock does not wait for (the call timeout would then be set after the clock had moved on).
+const realSetTimeout = globalThis.setTimeout;
+async function untilCalled(spy: { mock: { calls: unknown[][] } }): Promise<void> {
+  for (let i = 0; i < 400 && spy.mock.calls.length === 0; i++) await new Promise<void>((resolve) => realSetTimeout(resolve, 5));
+}
+
 function write(file: string): string {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, "x");
@@ -60,11 +67,12 @@ describe("a delete does not hang on a directory that never answers (round 30c)",
     write(path.join(folder, "poster.jpg"));
     // Everything the walk asks of the disk except the directory read answers; the read never does.
     vi.spyOn(fs.promises, "access").mockResolvedValue(undefined);
-    vi.spyOn(fs.promises, "readdir").mockImplementation(never as never);
+    const readdir = vi.spyOn(fs.promises, "readdir").mockImplementation(never as never);
     vi.useFakeTimers();
 
     let settled: Awaited<ReturnType<typeof removeLeftoverFolders>> | undefined;
     const run = removeLeftoverFolders({ type: "movie", title: "Movie", library_folder: "Movie (2020)", root_folder_id: Number(((await db.prepare("SELECT id FROM root_folders").get()) as any).id) }, []).then((r) => (settled = r));
+    await untilCalled(readdir);
     await vi.advanceTimersByTimeAsync(29_000);
     expect(settled).toBeUndefined(); // still waiting: the call has not timed out yet
     await vi.advanceTimersByTimeAsync(2_000);

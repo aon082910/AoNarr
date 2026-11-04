@@ -16,6 +16,17 @@ let finishBackgroundJob: (typeof import("../src/services/backgroundJobs.js"))["f
 const quiet = { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
 const FAKE = { toFake: ["setTimeout", "clearTimeout", "Date"] } as const;
 
+// The real timer, kept before the fake ones replace it: the batch reads the database when its timer fires, and against Postgres
+// that read takes real time the fake clock does not wait for. The clock is moved in small steps with a real pause after each.
+const realSetTimeout = globalThis.setTimeout;
+async function advance(ms: number): Promise<void> {
+  const step = 100;
+  for (let moved = 0; moved < ms; moved += step) {
+    await vi.advanceTimersByTimeAsync(Math.min(step, ms - moved));
+    await new Promise<void>((resolve) => realSetTimeout(resolve, 3));
+  }
+}
+
 beforeAll(async () => {
   ({ db } = await setupTestDb());
   ({ queueScanAfterAdd, setScanOnAddTiming } = await import("../src/services/scanOnAdd.js"));
@@ -51,10 +62,10 @@ describe("the scan after an add is shared by the adds that come together", () =>
     for (let i = 0; i < 10; i++) ids.push(await insertItem("movie"));
 
     for (const id of ids) queueScanAfterAdd(id);
-    await vi.advanceTimersByTimeAsync(2900);
+    await advance(2900);
     expect(scanAndImportItems).not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(200);
+    await advance(200);
     expect(scanAndImportItems).toHaveBeenCalledTimes(1);
     const [type, targets, linkOnly] = scanAndImportItems.mock.calls[0];
     expect(type).toBe("movie");
@@ -68,7 +79,7 @@ describe("the scan after an add is shared by the adds that come together", () =>
 
     queueScanAfterAdd(movie);
     queueScanAfterAdd(series);
-    await vi.advanceTimersByTimeAsync(3100);
+    await advance(3100);
 
     expect(scanAndImportItems.mock.calls.map((c) => c[0]).sort()).toEqual(["movie", "series"]);
   });
@@ -80,14 +91,14 @@ describe("the scan after an add is shared by the adds that come together", () =>
     // One add every 2 seconds never leaves the 3 second quiet period.
     for (const id of ids.slice(0, 11)) {
       queueScanAfterAdd(id);
-      await vi.advanceTimersByTimeAsync(2000);
+      await advance(2000);
     }
     expect(scanAndImportItems).toHaveBeenCalledTimes(1);
     expect(scanAndImportItems.mock.calls[0][1].length).toBeGreaterThan(5);
 
     // The add after that starts the next batch.
     queueScanAfterAdd(ids[11]);
-    await vi.advanceTimersByTimeAsync(3100);
+    await advance(3100);
     expect(scanAndImportItems).toHaveBeenCalledTimes(2);
   });
 
@@ -98,7 +109,7 @@ describe("the scan after an add is shared by the adds that come together", () =>
     queueScanAfterAdd(kept);
     queueScanAfterAdd(gone);
     await db.prepare("DELETE FROM media_items WHERE id = ?").run(gone);
-    await vi.advanceTimersByTimeAsync(3100);
+    await advance(3100);
 
     expect(scanAndImportItems).toHaveBeenCalledTimes(1);
     expect((scanAndImportItems.mock.calls[0][1] as { id: number }[]).map((t) => t.id)).toEqual([kept]);
@@ -112,15 +123,15 @@ describe("a scan that met a running whole-library scan is retried", () => {
     const jobId = startBackgroundJob("scan", "book", "Scan & Import — Books");
 
     queueScanAfterAdd(id);
-    await vi.advanceTimersByTimeAsync(3100);
+    await advance(3100);
     expect(scanAndImportItems).toHaveBeenCalledTimes(1);
 
     // Still running: it keeps waiting.
-    await vi.advanceTimersByTimeAsync(10_000);
+    await advance(10_000);
     expect(scanAndImportItems).toHaveBeenCalledTimes(1);
 
     finishBackgroundJob(jobId);
-    await vi.advanceTimersByTimeAsync(2100);
+    await advance(2100);
     expect(scanAndImportItems).toHaveBeenCalledTimes(2);
     expect((scanAndImportItems.mock.calls[1][1] as { id: number }[]).map((t) => t.id)).toEqual([id]);
   });
@@ -130,8 +141,8 @@ describe("a scan that met a running whole-library scan is retried", () => {
     scanAndImportItems.mockResolvedValue({ ...quiet, alreadyRunning: true });
 
     queueScanAfterAdd(id);
-    await vi.advanceTimersByTimeAsync(3100);
-    await vi.advanceTimersByTimeAsync(10_000);
+    await advance(3100);
+    await advance(10_000);
 
     expect(scanAndImportItems).toHaveBeenCalledTimes(2);
   });
