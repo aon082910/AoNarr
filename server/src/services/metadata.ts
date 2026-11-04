@@ -323,6 +323,42 @@ export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearch
   };
 }
 
+/**
+ * The IMDb id of a title that carries only another provider's id, asked of the providers that list external ids:
+ * TMDB (/external_ids of the movie or show) first, then TheTVDB (the series' remote ids). Null when no provider
+ * answers (no key, an unknown id, a network error), so a caller can leave the title as it is.
+ */
+export async function fetchImdbIdFor(type: MediaType, externalIds: Record<string, string>): Promise<string | null> {
+  const isImdb = (v: unknown): v is string => typeof v === "string" && /^tt\d+$/.test(v);
+  if (isImdb(externalIds.imdb)) return externalIds.imdb;
+  const isMovie = type === "movie" || type === "ppv";
+  const isShow = type === "series" || type === "anime";
+  if (!isMovie && !isShow) return null;
+
+  const tmdbKey = getSetting("tmdbApiKey");
+  if (externalIds.tmdb && tmdbKey) {
+    try {
+      const res = await fetch(`https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${encodeURIComponent(externalIds.tmdb)}/external_ids?api_key=${tmdbKey}`);
+      if (res.ok) {
+        const body: any = await res.json();
+        if (isImdb(body?.imdb_id)) return body.imdb_id;
+      }
+    } catch {
+      // fall through to the next provider
+    }
+  }
+  if (isShow && externalIds.tvdb) {
+    try {
+      const body = await tvdbFetch(`/v4/series/${encodeURIComponent(externalIds.tvdb)}/extended`);
+      const remote = (body?.data?.remoteIds ?? []).find((r: any) => /imdb/i.test(String(r?.sourceName ?? "")));
+      if (isImdb(remote?.id)) return remote.id;
+    } catch {
+      // no TheTVDB key, or it does not know the id
+    }
+  }
+  return null;
+}
+
 /** TMDB's separate /tv/{id}/content_ratings endpoint — the main series detail response carries no
  * certification at all. Same per-region shape and US-then-any-region preference as
  * fetchMovieReleaseDatesTmdb's certification lookup, just a flatter response (one `rating` string

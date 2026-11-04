@@ -12,7 +12,7 @@ import { sendPush } from "../services/push.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { withLibraryAddLock } from "../services/importLists.js";
-import { defaultQualityProfileId } from "../services/mediaServerImport.js";
+import { resolveAddQualityProfileId } from "../services/rootFolderDefaults.js";
 import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 
 export const requestsRouter = Router();
@@ -88,7 +88,7 @@ async function approveRequestRow(
   const rootFolderId = rootFolderIdOverride ?? (await autoSelectRootFolderId(request.type));
   // No profile means the auto-search applies no allowed-quality gate or cutoff at all, so an
   // approval that doesn't name one (auto-approve, the Requests page) gets the default profile.
-  const profileId = qualityProfileId ?? (await defaultQualityProfileId());
+  const profileId = await resolveAddQualityProfileId(qualityProfileId, rootFolderId);
   const mediaResult = await db
     .prepare(
       `INSERT INTO media_items

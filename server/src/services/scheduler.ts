@@ -1790,23 +1790,29 @@ export function whyNothingGrabbed(
   clients: DownloadClient[],
   usableClients: DownloadClient[],
   upgradeFrom: string | null | undefined,
-  unavailable: Map<number, string> = new Map()
+  unavailable: Map<number, string> = new Map(),
+  /** The tags of the title the search was for: a client scoped to other tags does not count as a client for it. */
+  itemTags?: number[]
 ): string {
   if (results.length > 0 && results.every((r) => !pickClientForProtocol(clients, r.protocol, { ignoreBackoff: true }))) {
     const protocols = Array.from(new Set(results.map((r) => `"${r.protocol}"`)));
     return `No ${protocols.join("/")} download client configured`;
   }
+  // A client exists for the protocol, but every one is scoped to tags this title does not carry.
+  if (itemTags && results.length > 0 && results.every((r) => !pickClientForProtocol(clients, r.protocol, { ignoreBackoff: true, itemTags }))) {
+    return "No download client takes this title's tags";
+  }
   // A client that failed lately and is being left alone (clientStatus.ts) is why nothing could be sent.
   const waiting = clients.filter((c) => clientBackoffUntil(c.id) !== null);
-  if (waiting.length > 0 && results.length > 0 && results.every((r) => !pickClientForProtocol(clients, r.protocol))) {
+  if (waiting.length > 0 && results.length > 0 && results.every((r) => !pickClientForProtocol(clients, r.protocol, { itemTags }))) {
     const until = Math.min(...waiting.map((c) => clientBackoffUntil(c.id)!));
     return `Download client "${waiting[0].name}" failed and is being left alone until ${new Date(until).toISOString().slice(11, 16)} UTC`;
   }
   const reachable = clients.filter((c) => !unavailable.has(c.id));
-  if (results.length > 0 && results.every((r) => !pickClientForProtocol(reachable, r.protocol))) {
+  if (results.length > 0 && results.every((r) => !pickClientForProtocol(reachable, r.protocol, { itemTags }))) {
     return Array.from(unavailable.values()).join("; ");
   }
-  if (results.length > 0 && results.every((r) => !pickClientForProtocol(usableClients, r.protocol))) {
+  if (results.length > 0 && results.every((r) => !pickClientForProtocol(usableClients, r.protocol, { itemTags }))) {
     return `${MAX_ACTIVE_DIRECT_DOWNLOADS} direct downloads are already running; search again once they finish`;
   }
   if (upgradeFrom !== undefined) return `No release found that's an upgrade over ${upgradeFrom || "the existing file"}`;
@@ -1982,9 +1988,11 @@ async function noGrabVerdict(o: {
   delayProfile: DelayProfile | null;
   choose: (remaining: SearchResult[], delay: DelayProfile | null) => Promise<ChosenResult | null>;
   onHeld?: (release: SearchResult) => Promise<void>;
+  /** The tags of the title: a release only a client scoped to other tags could take is not sendable. */
+  itemTags?: number[];
 }): Promise<"none" | "held" | "skipped"> {
   if (reachOf(o.searched, o.indexers, o.type) !== "answered") return "skipped";
-  if (o.candidates.length > 0 && o.candidates.every((r) => !pickClientForProtocol(o.usable, r.protocol))) return "skipped";
+  if (o.candidates.length > 0 && o.candidates.every((r) => !pickClientForProtocol(o.usable, r.protocol, { itemTags: o.itemTags }))) return "skipped";
   return (await isHeldByDelay(o.candidates, o.cutoff, o.delayProfile, o.choose, o.onHeld)) ? "held" : "none";
 }
 
@@ -2261,12 +2269,13 @@ export async function runAutoSearch(signal?: AbortSignal) {
       if (noteUnavailableClient(err, unavailable)) return "skipped";
       throw err;
     }
-    if (!outcome && results.length > 0 && results.every((r) => !pickClientForProtocol(usable, r.protocol))) {
-      log.warn(`[scheduler] ${whyNothingGrabbed(results, clients, usable, undefined)}, skipping "${item.title}"`);
+    const itemTags = !outcome ? await tagIdsForMediaItem(item.id) : undefined;
+    if (!outcome && results.length > 0 && results.every((r) => !pickClientForProtocol(usable, r.protocol, { itemTags }))) {
+      log.warn(`[scheduler] ${whyNothingGrabbed(results, clients, usable, undefined, undefined, itemTags)}, skipping "${item.title}"`);
       return "skipped";
     }
     if (!outcome) {
-      return noGrabVerdict({ searched: results, candidates: results, indexers, type: item.type, usable, cutoff: ctx.cutoff, delayProfile: ctx.delayProfile, choose });
+      return noGrabVerdict({ searched: results, candidates: results, indexers, type: item.type, usable, cutoff: ctx.cutoff, delayProfile: ctx.delayProfile, choose, itemTags });
     }
     return outcome.grabbed ? "grabbed" : "skipped";
   };
@@ -2628,7 +2637,7 @@ async function searchAndGrabSeason(
   }
   if (!outcome) {
     return {
-      result: await noGrabVerdict({ searched: found, candidates: packs, indexers: ctx.indexers, type: item.type, usable, cutoff, delayProfile, choose }),
+      result: await noGrabVerdict({ searched: found, candidates: packs, indexers: ctx.indexers, type: item.type, usable, cutoff, delayProfile, choose, itemTags: await tagIdsForMediaItem(item.id) }),
     };
   }
   if (!outcome.grabbed) return { result: "skipped" };
@@ -2728,7 +2737,7 @@ async function searchAndGrabDiscography(
     return { result: "skipped", error: (err as Error).message };
   }
   if (!outcome) {
-    return { result: await noGrabVerdict({ searched: found, candidates: discographies, indexers: ctx.indexers, type: item.type, usable, cutoff: "", delayProfile, choose }) };
+    return { result: await noGrabVerdict({ searched: found, candidates: discographies, indexers: ctx.indexers, type: item.type, usable, cutoff: "", delayProfile, choose, itemTags: await tagIdsForMediaItem(item.id) }) };
   }
   if (!outcome.grabbed) return { result: "skipped" };
   ctx.directBudget.consume(outcome.client);
@@ -2887,6 +2896,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
     return { grabbed: false, error: (err as Error).message };
   }
   if (!outcome) {
+    const itemTags = await tagIdsForMediaItem(item.id);
     // Nothing fit to grab counts against the target only in the scheduler's own runs, and only when an indexer answered.
     if (ctx.automatic) {
       const verdict = await noGrabVerdict({
@@ -2899,10 +2909,11 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
         delayProfile,
         choose,
         onHeld: (release) => recordPending(leafTable, leafId, item.id, release),
+        itemTags,
       });
       await recordAutoSearchResult(leafTable, leafId, verdict);
     }
-    return { grabbed: false, error: whyNothingGrabbed(searchResults, ctx.clients, usable, upgradeFrom, ctx.unavailable) };
+    return { grabbed: false, error: whyNothingGrabbed(searchResults, ctx.clients, usable, upgradeFrom, ctx.unavailable, itemTags) };
   }
   if (!outcome.grabbed) return { grabbed: false, error: "Already queued" };
   await recordLeafOutcome(leafTable, leafId, true);
@@ -3437,7 +3448,7 @@ export async function retryFailedGrab(
       { itemId: item.id, indexers }
     );
     if (!outcome) {
-      const why = whyNothingGrabbed(results, clients, clients, onDisk);
+      const why = whyNothingGrabbed(results, clients, clients, onDisk, undefined, await tagIdsForMediaItem(item.id));
       log.info(`[scheduler] retry found nothing to grab for "${mediaTitle}" (${why}) — notifying instead`);
       const detail = why === "No matching results" ? "no other releases found" : why.charAt(0).toLowerCase() + why.slice(1);
       await notifyFailed(mediaTitle, `${reason} (retried, ${detail})`);

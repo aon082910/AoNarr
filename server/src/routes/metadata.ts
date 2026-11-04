@@ -31,7 +31,7 @@ import { queueScanAfterAdd } from "../services/scanOnAdd.js";
 import { syncSceneNumbering } from "../services/sceneNumbering.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { notifyAdded } from "../services/notifications.js";
-import { applySubItemMonitorMode, episodesToMonitor, isMonitorMode, isNewItemMode } from "../services/monitorModes.js";
+import { applySubItemMonitorMode, episodesToMonitor, finishFirstChildren, isMonitorMode, isNewItemMode, rememberPendingMonitor } from "../services/monitorModes.js";
 import { resolveMetadataProfileForAdd } from "../services/metadataProfiles.js";
 import { applyRootFolderDefaults, rootFolderDefaultsOf } from "../services/rootFolderDefaults.js";
 import { addTagsToItem, checkedTagIdsColumn } from "../services/tagScope.js";
@@ -355,6 +355,17 @@ metadataRouter.post(
       // used to hide) shouldn't roll that back, just surface it so the UI/Logs page can inform
       // the user instead of the item silently sitting there with zero children forever.
       log.warn(`[metadata] failed to import children for media item ${mediaItemId}:`, (err as Error).message);
+    }
+    // With no episodes, albums or books in, the Monitor choice waits for the first fetch that brings them (a refresh),
+    // or that refresh would monitor the whole back catalogue; with some in, the first fetch is on record.
+    try {
+      const shape = getMediaTypeConfig(b.type).shape;
+      if (shape !== "single") {
+        if (childCount === 0) await rememberPendingMonitor(mediaItemId, monitorStrategy);
+        else await finishFirstChildren(mediaItemId, shape === "episodic" ? "episodes" : "subItems", false);
+      }
+    } catch (err) {
+      log.warn(`[metadata] could not record the first child fetch of media item ${mediaItemId}:`, (err as Error).message);
     }
 
     // Fire-and-forget: tries every other configured provider for this type, merging in its id,

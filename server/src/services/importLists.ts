@@ -5,6 +5,7 @@ import { getSetting } from "./settingsStore.js";
 import {
   fetchAlbumTracksFor,
   fetchArtistAlbumsFor,
+  fetchImdbIdFor,
   fetchSeriesEpisodesFor,
   searchMetadata,
   TMDB_IMAGE_BASE,
@@ -17,6 +18,7 @@ import { verifyProviderHit } from "./titleMatch.js";
 import { autoSelectRootFolderId } from "./rootFolderSelect.js";
 import { finishWantedAdd } from "./addDefaults.js";
 import { addTagsToItem, parseTagIds } from "./tagScope.js";
+import { resolveAddMonitorMode, resolveAddQualityProfileId } from "./rootFolderDefaults.js";
 import { applyEpisodeMonitorMode, applySubItemMonitorMode } from "./monitorModes.js";
 import { resolveMetadataProfile } from "./metadataProfiles.js";
 import { queueSearchAfterAdd } from "./searchOnAdd.js";
@@ -164,6 +166,7 @@ export function traktListHeaders(clientId: string): Record<string, string> {
 }
 
 interface ListSyncContext {
+  /** The list's own quality profile, or null to take the root folder's default per item. */
   qualityProfileId: number | null;
   rootFolders: RootFolderPicker;
   /** Every title the list currently holds, keyed like itemListKeys(), whether or not it was added. */
@@ -191,20 +194,30 @@ export function itemListKeys(item: { type: string; title: string; external_ids: 
  */
 async function finishListAdd(list: ImportListRow, itemId: number | bigint | null, source: { releaseDate?: string | null } = {}): Promise<void> {
   if (itemId == null) return;
+  // The list's Monitor choice, else the root folder's default (a list that names none leaves it to the folder).
+  const mode = await listMonitorMode(list, itemId);
   await db
     .prepare(
       "UPDATE media_items SET source_list_id = ?, monitor_new_items = COALESCE(?, monitor_new_items), minimum_availability = COALESCE(?, minimum_availability), monitored = ? WHERE id = ?"
     )
-    .run(list.id, list.monitor_new_items ?? null, list.minimum_availability ?? null, list.monitor === "none" ? 0 : 1, Number(itemId));
+    .run(list.id, list.monitor_new_items ?? null, list.minimum_availability ?? null, mode === "none" ? 0 : 1, Number(itemId));
   await addTagsToItem(itemId, parseTagIds(list.tag_ids));
   await finishWantedAdd(itemId, source);
+}
+
+/** The Monitor choice an item a list just added starts with: the list's own, else its root folder's default, else all. */
+async function listMonitorMode(list: ImportListRow, itemId: number | bigint): Promise<string> {
+  if (list.monitor && list.monitor !== "all") return list.monitor;
+  const row = (await db.prepare("SELECT type, root_folder_id FROM media_items WHERE id = ?").get(Number(itemId))) as { type: string; root_folder_id: number | null } | undefined;
+  if (!row) return "all";
+  return resolveAddMonitorMode(null, row.root_folder_id, row.type);
 }
 
 /** What happens once a list has put in a title's episodes or albums: the list's monitor choice, then its search on add. */
 async function afterListChildren(list: ImportListRow, itemId: number | bigint | null, type: string): Promise<void> {
   if (itemId == null) return;
   try {
-    const mode = list.monitor || "all";
+    const mode = await listMonitorMode(list, itemId);
     if (mode !== "all") {
       if (type === "series") await applyEpisodeMonitorMode(itemId, mode);
       else if (type === "artist") await applySubItemMonitorMode(itemId, mode);
@@ -384,6 +397,7 @@ async function syncTraktList(list: ImportListRow, ctx: ListSyncContext): Promise
         }
         const rootFolderId = await ctx.rootFolders.pick("movie");
         if (rootFolderId == null) continue;
+        const profileId = await resolveAddQualityProfileId(ctx.qualityProfileId, rootFolderId);
         const inserted = await insertUnlessTmdbIdExists("movie", String(tmdbId), () =>
           db
             .prepare(
@@ -397,7 +411,7 @@ async function syncTraktList(list: ImportListRow, ctx: ListSyncContext): Promise
               m.overview ?? null,
               JSON.stringify({ tmdb: String(tmdbId), trakt: String(m.ids?.trakt ?? "") }),
               rootFolderId,
-              ctx.qualityProfileId
+              profileId
             )
         );
         existingMovies.add(String(tmdbId));
@@ -419,6 +433,7 @@ async function syncTraktList(list: ImportListRow, ctx: ListSyncContext): Promise
         }
         const rootFolderId = await ctx.rootFolders.pick("series");
         if (rootFolderId == null) continue;
+        const profileId = await resolveAddQualityProfileId(ctx.qualityProfileId, rootFolderId);
         const externalIds = { tmdb: String(tmdbId), trakt: String(s.ids?.trakt ?? "") };
         const result = await insertUnlessTmdbIdExists("series", String(tmdbId), () =>
           db
@@ -426,7 +441,7 @@ async function syncTraktList(list: ImportListRow, ctx: ListSyncContext): Promise
               `INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, root_folder_id, quality_profile_id, monitored, status)
                VALUES ('series', ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
             )
-            .run(s.title, s.title.toLowerCase(), s.year ?? null, s.overview ?? null, JSON.stringify(externalIds), rootFolderId, ctx.qualityProfileId)
+            .run(s.title, s.title.toLowerCase(), s.year ?? null, s.overview ?? null, JSON.stringify(externalIds), rootFolderId, profileId)
         );
         existingSeries.add(String(tmdbId));
         if (!result) continue;
@@ -569,6 +584,7 @@ async function syncImdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
 
       const rootFolderId = await ctx.rootFolders.pick(type);
       if (rootFolderId == null) continue;
+      const profileId = await resolveAddQualityProfileId(ctx.qualityProfileId, rootFolderId);
       const insertResult = await withLibraryAddLock(async () => {
         if ((await findPossibleDuplicates(type, best.title, bestYear, bestIds)).length > 0) return null;
         return db
@@ -586,7 +602,7 @@ async function syncImdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
             // The list's own id for the title is kept too, so a later sync (and the clean-up) recognises it.
             JSON.stringify(row["Const"] && !bestIds.imdb ? { ...bestIds, imdb: row["Const"] } : bestIds),
             rootFolderId,
-            ctx.qualityProfileId
+            profileId
           );
       });
       if (!insertResult) continue;
@@ -650,6 +666,7 @@ async function syncLastfmList(list: ImportListRow, ctx: ListSyncContext): Promis
 
       const rootFolderId = await ctx.rootFolders.pick("artist");
       if (rootFolderId == null) continue;
+      const profileId = await resolveAddQualityProfileId(ctx.qualityProfileId, rootFolderId);
       const externalIds = { lastfm: a.mbid || title };
       const insertResult = await withLibraryAddLock(async () => {
         if ((await findPossibleDuplicates("artist", title, null, externalIds)).length > 0) return null;
@@ -658,7 +675,7 @@ async function syncLastfmList(list: ImportListRow, ctx: ListSyncContext): Promis
             `INSERT INTO media_items (type, title, sort_title, external_ids, root_folder_id, quality_profile_id, monitored, status)
              VALUES ('artist', ?, ?, ?, ?, ?, 1, 'missing')`
           )
-          .run(title, title.toLowerCase(), JSON.stringify(externalIds), rootFolderId, ctx.qualityProfileId);
+          .run(title, title.toLowerCase(), JSON.stringify(externalIds), rootFolderId, profileId);
       });
       if (!insertResult) continue;
       await finishListAdd(list, insertResult.lastInsertRowid);
@@ -746,6 +763,7 @@ async function syncTmdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
         }
         const rootFolderId = await ctx.rootFolders.pick("series");
         if (rootFolderId == null) continue;
+        const profileId = await resolveAddQualityProfileId(ctx.qualityProfileId, rootFolderId);
         const externalIds = { tmdb: String(tmdbId) };
         const posterUrl = entry.poster_path ? `${TMDB_IMAGE_BASE}${entry.poster_path}` : null;
         const result = await insertUnlessTmdbIdExists("series", String(tmdbId), () =>
@@ -754,7 +772,7 @@ async function syncTmdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
               `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
                VALUES ('series', ?, ?, ?, ?, ?, ?, ?, ?, 1, 'missing')`
             )
-            .run(title, title.toLowerCase(), year, entry.overview ?? null, posterUrl, JSON.stringify(externalIds), rootFolderId, ctx.qualityProfileId)
+            .run(title, title.toLowerCase(), year, entry.overview ?? null, posterUrl, JSON.stringify(externalIds), rootFolderId, profileId)
         );
         existingSeries.add(String(tmdbId));
         if (!result) continue;
@@ -776,6 +794,7 @@ async function syncTmdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
         }
         const rootFolderId = await ctx.rootFolders.pick("movie");
         if (rootFolderId == null) continue;
+        const profileId = await resolveAddQualityProfileId(ctx.qualityProfileId, rootFolderId);
         const inserted = await insertUnlessTmdbIdExists("movie", String(tmdbId), () =>
           db
             .prepare(
@@ -790,7 +809,7 @@ async function syncTmdbList(list: ImportListRow, ctx: ListSyncContext): Promise<
               entry.poster_path ? `${TMDB_IMAGE_BASE}${entry.poster_path}` : null,
               JSON.stringify({ tmdb: String(tmdbId) }),
               rootFolderId,
-              ctx.qualityProfileId
+              profileId
             )
         );
         existingMovies.add(String(tmdbId));
@@ -814,6 +833,36 @@ async function recordListEntries(listId: number, seen: Set<string>): Promise<voi
     await db.prepare("DELETE FROM import_list_entries WHERE list_id = ?").run(listId);
     for (const key of seen) await db.prepare("INSERT INTO import_list_entries (list_id, entry_key) VALUES (?, ?) ON CONFLICT DO NOTHING").run(listId, key);
   });
+}
+
+/** How many titles one clean-up looks an IMDb id up for; the rest are asked on the next sync. */
+const IMDB_LOOKUPS_PER_CLEAN = 100;
+
+/**
+ * An IMDb list can only judge a title that carries an IMDb id, and one added with a TMDB or TVDB id alone (by an
+ * older sync, or by a list of another kind) was never judged. For those, the id is asked of the providers that list
+ * external ids and stored on the title, so the next clean-up needs no lookup. A title no provider answers for is
+ * left as it is, never treated as gone. Mutates `items` so the caller sees the ids.
+ */
+async function addMissingImdbIds(items: { id: number; type: string; external_ids: string | null }[], seenKinds: Set<string>): Promise<void> {
+  let lookups = 0;
+  for (const item of items) {
+    if (!seenKinds.has(`${item.type}:imdb`)) continue;
+    let ids: Record<string, string>;
+    try {
+      ids = JSON.parse(item.external_ids ?? "{}") ?? {};
+    } catch {
+      continue;
+    }
+    if (ids.imdb || (!ids.tmdb && !ids.tvdb)) continue;
+    if (lookups >= IMDB_LOOKUPS_PER_CLEAN) break;
+    lookups++;
+    const imdb = await fetchImdbIdFor(item.type as any, ids).catch(() => null);
+    if (!imdb) continue;
+    const merged = JSON.stringify({ ...ids, imdb });
+    await db.prepare("UPDATE media_items SET external_ids = ? WHERE id = ?").run(merged, item.id);
+    item.external_ids = merged;
+  }
 }
 
 /** A clean-up that would take more than this share of the titles a list added is refused: more likely the list came back short than that it changed that much. */
@@ -843,6 +892,7 @@ export async function cleanListItems(list: ImportListRow, seen: Set<string>, onW
   // An item is judged only by keys of a kind this sync produced: a sync that listed IMDb ids cannot say anything about a title kept under its TMDB id.
   const kindOf = (key: string) => key.slice(0, key.lastIndexOf(":"));
   const seenKinds = new Set([...seen].map(kindOf));
+  await addMissingImdbIds(items, seenKinds);
   // A title another enabled list still holds stays, whichever list added it.
   const others = (await db
     .prepare("SELECT l.id AS id, l.type AS type, e.entry_key AS entry_key FROM import_lists l LEFT JOIN import_list_entries e ON e.list_id = l.id WHERE l.enabled = 1 AND l.id <> ?")
@@ -903,10 +953,9 @@ export async function cleanListItems(list: ImportListRow, seen: Set<string>, onW
  * stored in last_error, the list's only status column (a warning with the added count in front,
  * since the list shows last_error in place of that count). */
 export async function syncImportList(list: ImportListRow): Promise<{ added: number; error?: string; warning?: string }> {
-  const qualityProfileId =
-    list.quality_profile_id ??
-    ((await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined)?.id ??
-    null;
+  // The list's own profile, when it names one. Without it each add takes its root folder's default
+  // profile, else the first profile (resolveAddQualityProfileId, once the item's folder is known).
+  const qualityProfileId = list.quality_profile_id ?? null;
   const ctx: ListSyncContext = { qualityProfileId, rootFolders: new RootFolderPicker(list.root_folder_id ?? null), seen: new Set() };
 
   try {

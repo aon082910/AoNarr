@@ -1,5 +1,6 @@
 import { db } from "../db/index.js";
 import { finishWantedAdd } from "./addDefaults.js";
+import { applyRootFolderMonitor, resolveAddQualityProfileId } from "./rootFolderDefaults.js";
 import { getSetting } from "./settingsStore.js";
 import { isExcluded } from "./importExclusions.js";
 import { fetchWatchedFiles, getMediaServerConfig } from "./mediaServer.js";
@@ -274,9 +275,6 @@ export async function runAutoRequestFromWatchHistory(): Promise<void> {
   const candidates = [...movies, ...series].filter((r) => r.basis === "watched").slice(0, limit);
   if (candidates.length === 0) return;
 
-  const qualityProfileId =
-    ((await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined)?.id ?? null;
-
   // getRecommendations() can independently surface the same tmdb id twice in one batch — two
   // different source items both recommending it, or it showing up under both the "added" and
   // "watched" bases (each computed with its own fresh, unrelated `seen` set) — and this loop used
@@ -298,6 +296,7 @@ export async function runAutoRequestFromWatchHistory(): Promise<void> {
     }
     try {
       const rootFolderId = await autoSelectRootFolderId(rec.type);
+      const qualityProfileId = await resolveAddQualityProfileId(null, rootFolderId);
       const result = await db
         .prepare(
           `INSERT INTO media_items (type, title, sort_title, year, overview, poster_url, external_ids, root_folder_id, quality_profile_id, monitored, status)
@@ -318,7 +317,10 @@ export async function runAutoRequestFromWatchHistory(): Promise<void> {
 
       if (rec.type === "series") {
         const episodes = await fetchSeriesEpisodesFor(rec.externalIds).catch(() => []);
-        if (result.lastInsertRowid != null) await insertNewSeriesEpisodes(result.lastInsertRowid, episodes);
+        if (result.lastInsertRowid != null) {
+          await insertNewSeriesEpisodes(result.lastInsertRowid, episodes);
+          await applyRootFolderMonitor(result.lastInsertRowid);
+        }
       }
       added++;
       log.info(`[recommendations] auto-requested "${rec.title}" (because you watched "${rec.sourceTitle}")`);

@@ -1,6 +1,7 @@
 import { log } from "./logger.js";
 import { db } from "../db/index.js";
 import { finishWantedAdd } from "./addDefaults.js";
+import { applyRootFolderMonitor, resolveAddQualityProfileId } from "./rootFolderDefaults.js";
 import { getSetting } from "./settingsStore.js";
 import { fetchSeriesEpisodesFor } from "./metadata.js";
 import { insertNewSeriesEpisodes } from "./seriesAdd.js";
@@ -47,11 +48,6 @@ async function existingTmdbIds(type: string): Promise<Set<string>> {
   return ids;
 }
 
-async function defaultQualityProfileId(): Promise<number | null> {
-  const row = (await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined;
-  return row?.id ?? null;
-}
-
 /** Adds anything new in the configured Trakt list/watchlist as a monitored library item —
  * movies as single items, shows with their full episode list fetched via TMDB (reusing the same
  * add-media pipeline every other import path uses). Never removes items the list no longer has. */
@@ -71,7 +67,6 @@ export async function runTraktSync(): Promise<{ added: number; error?: string; w
     return { added: 0, error: (err as Error).message };
   }
 
-  const qualityProfileId = await defaultQualityProfileId();
   const existingMovies = await existingTmdbIds("movie");
   const existingSeries = await existingTmdbIds("series");
   const rootFolders = new RootFolderPicker();
@@ -86,6 +81,7 @@ export async function runTraktSync(): Promise<{ added: number; error?: string; w
         if (await isExcluded("movie", m.title, m.year ?? null, String(tmdbId), "tmdb")) continue;
         const rootFolderId = await rootFolders.pick("movie");
         if (rootFolderId == null) continue;
+        const qualityProfileId = await resolveAddQualityProfileId(null, rootFolderId);
         const inserted = await insertUnlessTmdbIdExists("movie", String(tmdbId), () =>
           db
             .prepare(
@@ -114,6 +110,7 @@ export async function runTraktSync(): Promise<{ added: number; error?: string; w
         if (await isExcluded("series", s.title, s.year ?? null, String(tmdbId), "tmdb")) continue;
         const rootFolderId = await rootFolders.pick("series");
         if (rootFolderId == null) continue;
+        const qualityProfileId = await resolveAddQualityProfileId(null, rootFolderId);
         const externalIds = {
           tmdb: String(tmdbId),
           trakt: String(s.ids?.trakt ?? ""),
@@ -132,7 +129,10 @@ export async function runTraktSync(): Promise<{ added: number; error?: string; w
         await finishWantedAdd(result.lastInsertRowid);
 
         const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
-        if (result.lastInsertRowid != null) await insertNewSeriesEpisodes(result.lastInsertRowid, episodes);
+        if (result.lastInsertRowid != null) {
+          await insertNewSeriesEpisodes(result.lastInsertRowid, episodes);
+          await applyRootFolderMonitor(result.lastInsertRowid);
+        }
 
         added++;
       }

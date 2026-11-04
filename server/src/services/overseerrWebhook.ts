@@ -3,6 +3,7 @@ import { fetchMovieByTmdbId, fetchSeriesByTmdbId, fetchSeriesEpisodesFor, type M
 import { autoSelectRootFolderId } from "./rootFolderSelect.js";
 import { findLibraryItemIdByTmdbId, libraryHasTmdbId, withLibraryAddLock } from "./importLists.js";
 import { finishWantedAdd } from "./addDefaults.js";
+import { resolveAddQualityProfileId } from "./rootFolderDefaults.js";
 import { insertMissingSeriesEpisodes, insertNewSeriesEpisodes } from "./seriesAdd.js";
 import { log } from "./logger.js";
 
@@ -118,9 +119,7 @@ export async function handleOverseerrWebhook(payload: any): Promise<WebhookResul
     log.warn(`[overseerrWebhook] not adding tmdb ${tmdbId}: ${reason}`);
     return { added: false, reason };
   }
-  const qualityProfileId =
-    ((await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined)?.id ?? null;
-
+  const qualityProfileId = await resolveAddQualityProfileId(null, rootFolderId);
   const meta = type === "movie" ? await fetchMovieByTmdbId(tmdbId) : await fetchSeriesByTmdbId(tmdbId);
   const tvdbId = type === "series" ? payloadTvdbId(payload) : null;
   const externalIds = tvdbId && !meta.externalIds?.tvdb ? { ...meta.externalIds, tvdb: tvdbId } : meta.externalIds;
