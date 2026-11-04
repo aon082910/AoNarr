@@ -4,11 +4,10 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { getMediaTypeConfig, isValidMediaType } from "../services/mediaTypes.js";
+import { isValidMediaType } from "../services/mediaTypes.js";
 import { deleteMediaItemCascade } from "./media.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
-import { renameOneMediaItem, removeEmptyParents } from "../services/importer.js";
-import { log } from "../services/logger.js";
+import { startRootFolderMoveJob } from "../services/titleMove.js";
 import { statfsAsync } from "../services/fsAsync.js";
 import { assertWritableRootFolder, validateNewRootFolder } from "../services/rootFolderCheck.js";
 import { isMonitorMode, isNewItemMode } from "../services/monitorModes.js";
@@ -146,24 +145,14 @@ rootFoldersRouter.patch(
 );
 
 /**
- * Default behavior is unchanged: the folder row goes, and every media item that pointed at it
- * (`root_folder_id ON DELETE SET NULL`) is silently orphaned — still fully in the library, just
- * no longer tied to any folder. `?deleteMedia=1` opts into actually removing those items too
- * (same untrack-only-by-default / `?deleteFiles=1`-also-recycles-files behavior the single-item
- * delete route already has), for the case where the folder's being removed because everything in
- * it is gone/being replaced, not just reorganized.
- */
-/**
- * Sonarr/Radarr's real "move root folder" action: physically relocates every media item
- * currently in this folder to a different one (must be the same media type — moving Movies into
- * a Books folder makes no sense), rather than the PATCH route's plain DB-pointer repoint, which
- * would silently desync `root_folder_id` from where the file actually lives on disk.
- * Fire-and-forget (like every other whole-library operation here) — moving potentially thousands
- * of files can easily outrun an HTTP/gateway timeout. Reuses renameOneMediaItem() for the actual
- * per-item move: it already recomputes an item's destination from its *current* `root_folder_id`
- * and physically relocates the file if that destination differs from where it is now, so
- * updating `root_folder_id` first and then calling it is the entire "move" operation — no new
- * file-moving logic needed.
+ * Sonarr/Radarr's real "move root folder" action: physically relocates every media item currently in this folder to a
+ * different one (the same media type: moving Movies into a Books folder makes no sense), rather than the PATCH route's
+ * plain DB-pointer repoint, which would desync `root_folder_id` from where the files live on disk.
+ *
+ * Each title moves with its whole own folder (artwork, NFO, subtitles, extras; for Music and Audiobooks the artist's or
+ * author's folder with its albums), see services/titleMove.ts. It runs as one tracked background job (the progress
+ * widget), one title at a time; the request answers at once with the job's id. A title that cannot be moved stays
+ * pointed at the source folder and is counted as failed.
  */
 rootFoldersRouter.post(
   "/:id/move-to/:destinationId",
@@ -179,9 +168,6 @@ rootFoldersRouter.post(
     // A read-only library is one AoNarr never writes to: nothing is moved into it, and nothing is taken out of it.
     if (Number(destination.read_only)) throw new HttpError(400, "The destination is a read-only library: nothing is moved into it");
     if (Number(source.read_only)) throw new HttpError(400, "The source is a read-only library: its files are not moved out of it");
-    if (isValidMediaType(source.media_type) && getMediaTypeConfig(source.media_type).multiFilePerChild) {
-      throw new HttpError(400, `Moving a ${getMediaTypeConfig(source.media_type).label} root folder isn't supported — its album/book folders can't be relocated automatically`);
-    }
 
     const items = (await db.prepare("SELECT id, title FROM media_items WHERE root_folder_id = ?").all(source.id)) as {
       id: number;
@@ -192,75 +178,11 @@ rootFoldersRouter.post(
       return;
     }
 
-    (async () => {
-      let moved = 0;
-      let failed = 0;
-      for (const item of items) {
-        try {
-          // Every file path this item currently owns, captured *before* renameOneMediaItem moves
-          // anything — its own empty-parent cleanup is scoped to the item's (now-updated)
-          // root_folder_id, so it can only ever clean up under the *destination* folder; the
-          // source folder's now-empty leftover directories need their own cleanup pass below.
-          const oldPaths = (
-            (
-              await db
-                .prepare(
-                  `SELECT path FROM media_items WHERE id = ? AND path IS NOT NULL
-                   UNION ALL SELECT file_path FROM episodes WHERE media_item_id = ? AND file_path IS NOT NULL
-                   UNION ALL SELECT file_path FROM sub_items WHERE media_item_id = ? AND file_path IS NOT NULL`
-                )
-                .all(item.id, item.id, item.id)
-            ) as { path: string }[]
-          ).map((r) => r.path);
-
-          await db.prepare("UPDATE media_items SET root_folder_id = ? WHERE id = ?").run(destination.id, item.id);
-          const result = await renameOneMediaItem(item.id);
-          // A failed or unsupported file move is reported in the result rather than thrown (a throw
-          // from the rename's own setup is handled by the catch below). Leaving the item repointed
-          // would claim it lives where its files never went, so point it back at the source and
-          // return any files that did make it across.
-          if (result.errors.length > 0 || result.skippedMusic > 0) {
-            await db.prepare("UPDATE media_items SET root_folder_id = ? WHERE id = ?").run(source.id, item.id);
-            if (result.renamed.length > 0) await renameOneMediaItem(item.id);
-            failed++;
-            log.warn(
-              `[rootFolders] didn't move "${item.title}" to "${destination.path}":`,
-              result.errors.map((e) => e.error).join("; ") || "its files can't be relocated automatically"
-            );
-            continue;
-          }
-
-          for (const oldPath of oldPaths) {
-            try {
-              removeEmptyParents(path.dirname(oldPath), source.path);
-            } catch {
-              // best-effort cleanup only — a leftover empty directory in the old folder is cosmetic
-            }
-          }
-          moved++;
-        } catch (err) {
-          failed++;
-          // A throw out of renameOneMediaItem comes before it moves any file, so the item's files
-          // are all still under the source folder — the pointer has to go back there too.
-          try {
-            await db.prepare("UPDATE media_items SET root_folder_id = ? WHERE id = ?").run(source.id, item.id);
-          } catch {
-            // best-effort — the failure below is logged and counted either way
-          }
-          log.warn(`[rootFolders] failed to move "${item.title}" to "${destination.path}":`, (err as Error).message);
-        }
-      }
-      log.info(`[rootFolders] moved ${moved}/${items.length} item(s) from "${source.path}" to "${destination.path}"`);
-      const actor = auditActor(req);
-      logAuditEvent(
-        actor.userId,
-        actor.username,
-        "root_folder_moved",
-        `${source.path} → ${destination.path} (${moved} item(s)${failed > 0 ? `, ${failed} failed` : ""})`
-      );
-    })().catch((err) => log.warn("[rootFolders] move-to background task failed:", err.message));
-
-    res.json({ started: true, itemCount: items.length });
+    const actor = auditActor(req);
+    const jobId = startRootFolderMoveJob(source, destination, items, ({ moved, failed }) => {
+      logAuditEvent(actor.userId, actor.username, "root_folder_moved", `${source.path} → ${destination.path} (${moved} item(s)${failed > 0 ? `, ${failed} failed` : ""})`);
+    });
+    res.json({ started: true, itemCount: items.length, jobId });
   })
 );
 
@@ -277,15 +199,42 @@ rootFoldersRouter.get(
     const withFiles = (await db
       .prepare("SELECT COUNT(*) AS c FROM media_items WHERE root_folder_id = ? AND has_file = 1")
       .get(req.params.id)) as { c: number | string };
-    res.json({ itemCount: Number(items.c), itemsWithFiles: Number(withFiles.c) });
+    // The folders the titles could be moved to first: the same type, writable.
+    const mine = (await db.prepare("SELECT media_type FROM root_folders WHERE id = ?").get(req.params.id)) as { media_type: string };
+    const others = (await db
+      .prepare("SELECT id, path, name FROM root_folders WHERE media_type = ? AND id <> ? AND read_only = 0 ORDER BY id")
+      .all(mine.media_type, req.params.id)) as { id: number; path: string; name: string | null }[];
+    res.json({
+      itemCount: Number(items.c),
+      itemsWithFiles: Number(withFiles.c),
+      otherFolders: others.map((o) => ({ id: Number(o.id), path: o.path, name: o.name })),
+    });
   })
 );
 
+/**
+ * Removes the folder row. A folder that still has titles is refused (409, code root_folder_in_use) unless `?force=1`:
+ * the titles then keep their rows, untied from any folder. `?deleteMedia=1` opts into removing those titles too (the
+ * same untrack-only-by-default / `?deleteFiles=1`-also-recycles-files behavior the single-item delete route has).
+ */
 rootFoldersRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
     const folder = (await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(req.params.id)) as any;
     if (!folder) throw new HttpError(404, "Root folder not found");
+
+    // Removing a folder that still has titles leaves them without a place to import into: say so, and move them first
+    // or repeat with force=1 (or deleteMedia=1, which removes the titles too).
+    if (req.query.deleteMedia !== "1" && req.query.force !== "1") {
+      const inUse = (await db.prepare("SELECT COUNT(*) AS c FROM media_items WHERE root_folder_id = ?").get(req.params.id)) as { c: number | string };
+      if (Number(inUse.c) > 0) {
+        throw new HttpError(
+          409,
+          `${Number(inUse.c)} title(s) still use this root folder. Move them to another root folder first, or repeat with force=1 to leave them without a folder (or deleteMedia=1 to remove them).`,
+          "root_folder_in_use"
+        );
+      }
+    }
 
     let removedCount = 0;
     if (req.query.deleteMedia === "1") {

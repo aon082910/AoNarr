@@ -34,29 +34,28 @@ async function waitForMoveAudit(sourceDir: string): Promise<string> {
   throw new Error("move-to background task never finished");
 }
 
-// renameOneMediaItem can throw (rather than report an error in its result) from the setup it does
-// before touching any file — here, parsing a malformed genres column. The item was already
-// repointed at the destination by then, so it claimed a folder its file never moved into.
-describe("POST /api/root-folders/:id/move-to/:destinationId — rename throws", () => {
+// A move that fails half way (here the destination's category folder is a plain file, so the title's folder cannot be
+// created) must leave the title pointed at the source folder, with its row and file unchanged, and count it as failed.
+describe("POST /api/root-folders/:id/move-to/:destinationId — a move that throws", () => {
   it("points the item back at the source folder and counts it as failed", async () => {
     const source = await createRootFolder("movies-throw-a", "movie");
     const destination = await createRootFolder("movies-throw-b", "movie");
-    const file = path.join(source.dir, "Broken Row (2020)", "Broken Row (2020).mkv");
+    const file = path.join(source.dir, "Category", "Broken Row (2020)", "Broken Row (2020).mkv");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "video");
+    // The destination already has a plain file where the category folder has to go.
+    fs.writeFileSync(path.join(destination.dir, "Category"), "in the way");
     const id = Number(
       (
         await db
-          .prepare(
-            "INSERT INTO media_items (type, title, sort_title, year, path, root_folder_id, monitored, has_file, status, genres) VALUES ('movie', 'Broken Row', 'broken row', 2020, ?, ?, 1, 1, 'unknown', 'not json')"
-          )
+          .prepare("INSERT INTO media_items (type, title, sort_title, year, path, root_folder_id, monitored, has_file, status) VALUES ('movie', 'Broken Row', 'broken row', 2020, ?, ?, 1, 1, 'unknown')")
           .run(file, source.id)
       ).lastInsertRowid
     );
 
     const res = await request(app).post(`/api/root-folders/${source.id}/move-to/${destination.id}`).set("X-Api-Key", apiKey);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ started: true, itemCount: 1 });
+    expect(res.body).toMatchObject({ started: true, itemCount: 1 });
 
     const detail = await waitForMoveAudit(source.dir);
     expect(detail).toContain("(0 item(s), 1 failed)");

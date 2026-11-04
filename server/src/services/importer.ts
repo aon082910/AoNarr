@@ -973,7 +973,7 @@ function applyConfiguredPermissions(targetPath: string, isDirectory: boolean): v
  * download's bytes enter the library; a rename of a file already inside the library must always
  * be a real move, or the old file is left behind (hardlink) / the DB ends up pointing at a
  * symlink to a symlink (symlink). */
-async function moveFile(src: string, dest: string, forceMove = false): Promise<void> {
+export async function moveFile(src: string, dest: string, forceMove = false): Promise<void> {
   const destDir = path.dirname(dest);
   makeLibraryDirectory(destDir);
   const strategy = forceMove ? "move" : currentImportStrategy();
@@ -1298,7 +1298,7 @@ function isSameFile(a: string, b: string): boolean {
 /** mkdir -p that gives every folder it creates the configured permissions, not just the deepest
  * one — a new show's own folder above "Season 01" otherwise kept the umask default, and other apps
  * in the shared group couldn't write artwork or NFOs into it. */
-function makeLibraryDirectory(dir: string): void {
+export function makeLibraryDirectory(dir: string): void {
   const firstCreated = fs.mkdirSync(dir, { recursive: true });
   if (!firstCreated) return;
   const stopAt = path.resolve(firstCreated);
@@ -4000,7 +4000,7 @@ function renameConflict(src: string, dest: string, claimed: Set<string>): string
 
 /** True when something other than `src` itself (a case-only rename on a case-insensitive
  * filesystem finds src there) occupies `dest`, dangling symlinks included. */
-function isOtherExistingEntry(src: string, dest: string): boolean {
+export function isOtherExistingEntry(src: string, dest: string): boolean {
   let destStat: fs.Stats;
   try {
     destStat = fs.lstatSync(dest);
@@ -4109,7 +4109,7 @@ export async function moveItemFolder(itemId: number, newName?: string): Promise<
 }
 
 /** Moves an album folder to a new place: a rename, or a copy and removal when the root folders are on different file systems. */
-async function moveAlbumFolder(src: string, dest: string): Promise<void> {
+export async function moveAlbumFolder(src: string, dest: string): Promise<void> {
   makeLibraryDirectory(path.dirname(dest));
   try {
     await fsp.rename(src, dest);
