@@ -757,6 +757,16 @@ integrations (curl, webhooks, other *arr apps) send no `Origin` and never need i
   given up on after the hours set under Settings → Stalled Downloads (default 168), never while its
   output is still being written. Health also checks that SABnzbd has the categories AoNarr uses and
   that none of its sorters moves finished downloads away.
+- **Search, import and media management** — the Activity page lists the last judged RSS releases with
+  the reason each was taken or turned away, and lets you map an unmatched one to a title (the title
+  is taught as an alternate name and the release is judged again). "Forget" on a held release now
+  sticks. A manual import there has the same copy/move/hardlink choice and preview as the media page.
+  "Move files" on a title (and the root folder move, now also for music and audiobook libraries)
+  moves the whole folder with its artwork, NFO and extras as a tracked background job. Removing a
+  root folder that still has titles asks first and offers to move them. Organize & Rename also
+  renames music tracks and audiobook parts. Titles added from a list, a watchlist or a request take
+  the root folder's default quality profile and monitor choice unless the list sets its own. A
+  quality profile whose cutoff is not on the ladder is repaired at start-up to its best allowed quality.
 
 ## Verification
 
