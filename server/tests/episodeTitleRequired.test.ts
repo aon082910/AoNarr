@@ -138,9 +138,8 @@ describe("episodeTitleHoldReason", () => {
       for (const [titleLabel, title, hasTitle] of TITLES) {
         for (const requiresTitle of [true, false]) {
           const expected = holdsSingleEpisode && requiresTitle && recent && !hasTitle;
-          // "bulkSeasonReleases" holds a lone episode of the season only when it has no air date to tell it from a bulk drop.
-          const bulkNoDate = mode === "bulkSeasonReleases" && requiresTitle && airDate === null && !hasTitle;
-          it(`${expected || bulkNoDate ? "holds" : "lets through"} an episode that ${ageLabel} with ${titleLabel}, naming format ${requiresTitle ? "with" : "without"} {episodeTitle}`, () => {
+          // "bulkSeasonReleases" lets a lone episode through whatever its date: with none it cannot be told to be one of a drop.
+          it(`${expected ? "holds" : "lets through"} an episode that ${ageLabel} with ${titleLabel}, naming format ${requiresTitle ? "with" : "without"} {episodeTitle}`, () => {
             const reason = rule.episodeTitleHoldReason({
               mode,
               requiresTitle,
@@ -148,7 +147,7 @@ describe("episodeTitleHoldReason", () => {
               seasonEpisodes: [episode(1, "One", "2026-10-27"), episode(2, title, airDate), episode(3, null, "2026-11-10")],
               now: NOW,
             });
-            if (expected || bulkNoDate) expect(reason).toMatch(/^Waiting for the episode title: S01E02 /);
+            if (expected) expect(reason).toMatch(/^Waiting for the episode title: S01E02 /);
             else expect(reason).toBeNull();
           });
         }
@@ -188,8 +187,19 @@ describe("episodeTitleHoldReason", () => {
       expect(run([drop(4)[0]], drop(4))).not.toBeNull();
       expect(run([drop(3)[0]], drop(3))).toBeNull();
     });
-    it("counts an episode with no air date as part of the day", () => {
-      expect(run([drop(3)[0]], [...drop(3), episode(4, "TBA", null)])).not.toBeNull();
+    it("does not count an episode with no air date towards the day", () => {
+      expect(run([drop(3)[0]], [...drop(3), episode(4, "TBA", null)])).toBeNull();
+      expect(run([drop(3)[0]], [...drop(3), episode(4, "TBA", null), episode(5, "TBA", null)])).toBeNull();
+      expect(run([drop(3)[0]], [...drop(4)])).not.toBeNull(); // a fourth with the date does
+    });
+    it("lets through a weekly show with one aired, untitled episode and three or more still undated", () => {
+      const aired = episode(1, "TBA", "2026-11-03");
+      const season = [aired, episode(2, null, null), episode(3, null, null), episode(4, null, null), episode(5, null, null)];
+      expect(run([aired], season)).toBeNull();
+    });
+    it("lets through a file whose own episode has no air date, however many undated episodes the season has", () => {
+      const season = [1, 2, 3, 4, 5].map((n) => episode(n, "TBA", null));
+      expect(run([season[1]], season)).toBeNull();
     });
     it("lets through a weekly show: one episode a day", () => {
       const weekly = [1, 2, 3, 4].map((n) => episode(n, "TBA", `2026-11-0${n}`));
@@ -393,6 +403,36 @@ describe("a season pack and episodeTitleRequired", () => {
     for (const id of result.ids) expect((await episodeRow(id)).has_file).toBe(0);
   });
 
+  it("asks the title rule before it looks into the pack's folder when the pack was held, and keeps the old order the first time", async () => {
+    setSetting("episodeTitleRequired", "always");
+    const folder = await insertRootFolder();
+    const { showId } = await insertShow(folder.id, ["One", "TBA", "Three"].map((title, i) => ({ n: i + 1, title, airDate: today() })));
+    const dir = "Show.S01.1080p.WEB-DL.x264-GRP";
+    const files = [1, 2, 3].map((n) => writeDownloadFile(path.join(dir, `Show.S01E0${n}.mkv`), `ep${n}`));
+    writeDownloadFile(path.join(dir, "setup.exe"));
+    const base = { itemId: showId, seasonNumber: 1, anchorFile: files[0], quality: "WEBDL-1080p", releaseTitle: dir, verify: true };
+
+    const retry = await importer.placeSeasonPackFiles({ ...base, titleHeld: true }).catch((e: Error) => e);
+    const first = await importer.placeSeasonPackFiles(base).catch((e: Error) => e);
+
+    expect(retry).toBeInstanceOf(importer.EpisodeTitleHoldError);
+    expect(first).not.toBeInstanceOf(importer.EpisodeTitleHoldError);
+    expect((first as Error).message).toMatch(/holds "setup\.exe"/);
+    for (const file of files) expect(fs.existsSync(file)).toBe(true);
+  });
+
+  it("imports a held pack as before once its titles are in", async () => {
+    setSetting("episodeTitleRequired", "always");
+    const folder = await insertRootFolder();
+    const { showId } = await insertShow(folder.id, ["One", "Two", "Three"].map((title, i) => ({ n: i + 1, title, airDate: today() })));
+    const dir = "Show.S01.1080p.WEB-DL.x264-GRP";
+    const files = [1, 2, 3].map((n) => writeDownloadFile(path.join(dir, `Show.S01E0${n}.mkv`), `ep${n}`));
+
+    const done = await importer.placeSeasonPackFiles({ itemId: showId, seasonNumber: 1, anchorFile: files[0], quality: "WEBDL-1080p", releaseTitle: dir, verify: true, titleHeld: true });
+
+    expect(done.episodeCount).toBe(3);
+  });
+
   it("imports the pack when every episode has its title", async () => {
     setSetting("episodeTitleRequired", "always");
     const result = await pack(["One", "Two", "Three"], today());
@@ -490,6 +530,45 @@ describe("a held download", () => {
     expect(row.import_skipped_reason).toMatch(/^Waiting for the episode title: S01E02/);
     expect(fs.existsSync(held.download)).toBe(true);
     expect(manualInteraction).not.toHaveBeenCalled();
+  });
+
+  it("neither tells the admin again nor grows its reason when each retry fails the same way for another reason", async () => {
+    setSetting("episodeTitleRequired", "always");
+    const held = await heldRow("Second", today()); // titled by now: what stops the import is something else
+    scheduler.__setEpisodeTitleRetryMsForTests(0);
+    unpackDownloadedArchives.mockRejectedValue(new Error("EIO: the share went away"));
+    const reasonOf = async () => ((await db.prepare("SELECT import_skipped_reason FROM queue WHERE id = ?").get(held.queueId)) as { import_skipped_reason: string }).import_skipped_reason;
+
+    await scheduler.pollQueue();
+    const first = await reasonOf();
+    expect(first).toMatch(/^Waiting for the episode title: .* \(tried again: EIO: the share went away\)$/);
+    expect(manualInteraction).toHaveBeenCalledTimes(1); // the reason changed, so the admin is told once
+
+    await scheduler.pollQueue();
+    await scheduler.pollQueue();
+
+    expect(await reasonOf()).toBe(first); // one note, not three
+    expect(manualInteraction).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks the title rule before it looks into the release's folder when it tries a held download again, and keeps the old order the first time", async () => {
+    setSetting("episodeTitleRequired", "always");
+    const folder = await insertRootFolder();
+    const { showId, ids } = await insertShow(folder.id, [{ n: 2, title: "TBA", airDate: today() }]);
+    // The release's own folder holds a program: a file type that is rejected, which refuses the import when it is looked at.
+    const download = writeDownloadFile(path.join(RELEASE, `${RELEASE}.mkv`));
+    writeDownloadFile(path.join(RELEASE, "setup.exe"));
+    const reason = 'Waiting for the episode title: S01E02 is still named "TBA" and the naming format uses it; it is imported when the title arrives or two days after it aired';
+    const retried = await queueEpisode(showId, ids[0], download, { status: "completed", reason });
+    const firstAttempt = await queueEpisode(showId, ids[0], download, { status: "completed" });
+
+    const retry = await importer.importQueueItem(retried).catch((e: Error) => e);
+    const first = await importer.importQueueItem(firstAttempt).catch((e: Error) => e);
+
+    expect(retry).toBeInstanceOf(importer.EpisodeTitleHoldError); // still waiting, and nothing else was read
+    expect(first).toBeInstanceOf(importer.ImportSkippedError); // the first attempt reports what would be refused anyway
+    expect(first).not.toBeInstanceOf(importer.EpisodeTitleHoldError);
+    expect((first as Error).message).toMatch(/holds "setup\.exe"/);
   });
 
   it("is looked at again only every ten minutes", async () => {

@@ -16,6 +16,7 @@ import { resetInterruptedRestores } from "./services/recycleBin.js";
 import { waitForQueueImports } from "./services/downloadClient.js";
 import { backfillMissingAlbumTracks } from "./services/libraryScan.js";
 import { repairUnrankedCutoffs } from "./services/quality.js";
+import { sweepSetAside } from "./services/importScriptSetAside.js";
 import { appUrlBase, appUrlBaseIsInvalid } from "./services/urlBase.js";
 
 // Without these, an unhandled rejection or a synchronous throw outside Express's own request
@@ -49,6 +50,8 @@ await migrateCredentialedMediaServerPosters().catch((err) => log.warn("[startup]
 await migrateScreenscraperArtwork().catch((err) => log.warn("[startup] ScreenScraper artwork migration failed:", err.message));
 // A profile cutoff that is not on the quality ladder would make every file under it an upgrade candidate.
 await repairUnrankedCutoffs().catch((err) => log.warn("[startup] quality cutoff repair failed:", err.message));
+// A library file an import script run was replacing when the process stopped waits in a hidden folder: put it back or recycle it.
+await sweepSetAside().catch((err) => log.warn("[startup] import script set-aside sweep failed:", err.message));
 
 /** Runs after the app is already serving traffic (see the `listen` callback below), delayed
  * further still so the first couple of minutes after a restart or update — when an admin is most

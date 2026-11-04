@@ -3597,6 +3597,16 @@ const IMPORT_RESUME_MANUAL = 3;
 const INTERRUPTED_TWICE_REASON = "Import was interrupted by a restart twice — use Manual import";
 const MANUAL_INTERRUPTED_REASON = "Manual import was interrupted by a restart — run it again";
 
+/** A parked reason ends with the note of its last retry: "(retried after a restart: ...)", "(retried automatically: ...)",
+ * "(retried after the library scan: ...)" or "(tried again: ...)" (a download that waited for an episode title). */
+const RETRY_NOTE_SUFFIX = / \((?:retried|tried again)\b[\s\S]*$/;
+
+/** The reason without that note, so a retry that fails the same way again writes the very same reason (it neither grows by
+ * a note each time nor tells the admin again), whichever of the retriers wrote the note. */
+function withoutRetryNote(reason: string): string {
+  return reason.replace(RETRY_NOTE_SUFFIX, "");
+}
+
 /**
  * Imports a row its client reports completed as the only import of that row in flight: an admin's
  * Retry import or Manual import of it races on the same files, and whichever finishes first deletes
@@ -3637,7 +3647,7 @@ async function importCompletedDownload(
           : sharedDownloadImported
           ? `Another queue entry for the same download was already imported: ${message}`
           : keepForManual && match.importSkippedReason
-          ? `${match.importSkippedReason.split(" (retried")[0]} (${retryNote}: ${message})`
+          ? `${withoutRetryNote(match.importSkippedReason)} (${retryNote}: ${message})`
           : `Couldn't place the file: ${message}`;
         log.info(`[scheduler] import skipped for "${match.title}": ${reason}`);
         await db.prepare(`UPDATE queue SET import_started_at = NULL, import_skipped_reason = ?, updated_at = ${nowExpr(db)} WHERE id = ?`).run(reason, match.id);
