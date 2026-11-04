@@ -147,7 +147,8 @@ export async function childrenSyncedBefore(mediaItemId: number | bigint, haveChi
  * Called once children were inserted: records the first successful fetch and, when this was the first
  * list, applies the Monitor choice the add could not (a failed child fetch at add time), then forgets it.
  */
-export async function finishFirstChildren(mediaItemId: number | bigint, kind: "episodes" | "subItems", wasFirst: boolean): Promise<void> {
+export async function finishFirstChildren(mediaItemId: number | bigint | null | undefined, kind: "episodes" | "subItems", wasFirst: boolean): Promise<void> {
+  if (mediaItemId == null) return;
   const id = Number(mediaItemId);
   const row = (await db.prepare("SELECT children_synced_at, pending_monitor FROM media_items WHERE id = ?").get(id)) as
     | { children_synced_at: string | null; pending_monitor: string | null }
