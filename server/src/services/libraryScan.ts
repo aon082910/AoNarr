@@ -45,7 +45,8 @@ import { recycleBinDirectory } from "./recycleBin.js";
 // Title normalization/comparison moved to titleMatch.ts so the release identity gate and the
 // scheduler can share it without this module's metadata/ffprobe imports; re-exported so existing
 // importers of libraryScan keep working.
-import { looseTitlesMatch, normalizeForMatch, pickVerifiedProviderHit, sameTitleIgnoringQualifier, titlesMatch } from "./titleMatch.js";
+import { buildScopeTitleIndex } from "./scopeTitleIndex.js";
+import { normalizeForMatch, pickVerifiedProviderHit, sameTitleIgnoringQualifier, titlesMatch } from "./titleMatch.js";
 import { syncPrimaryTitle } from "./releaseAliases.js";
 import { refreshProviderAliases } from "./aliasBackfill.js";
 import { applyAnilistSeasonToEpisodes } from "./anilistSeasons.js";
@@ -982,8 +983,10 @@ async function scanAndImportLibraryInner(
   const result: ScanImportResult = { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
   // Which titles this scan is for: one (the per-item button), several (the scan after a batch of adds shares one walk), or all.
   const scopeTargets: ScanScopeItem[] | null = scope?.length ? scope : onlyTitle ? [{ id: onlyMediaItemId, title: onlyTitle }] : null;
-  const inScope = (title: string): boolean => !scopeTargets || scopeTargets.some((t) => looseTitlesMatch(title, t.title));
-  const scopeIdOf = (title: string): number | undefined => (scopeTargets ? scopeTargets.find((t) => looseTitlesMatch(title, t.title))?.id : onlyMediaItemId);
+  // The targets' titles are normalized once here, not once per file and target.
+  const scopeIndex = scopeTargets ? buildScopeTitleIndex(scopeTargets) : null;
+  const inScope = (title: string): boolean => !scopeIndex || scopeIndex.has(title);
+  const scopeIdOf = (title: string): number | undefined => (scopeIndex ? scopeIndex.find(title)?.id : onlyMediaItemId);
 
   const folders = ((await db.prepare("SELECT * FROM root_folders WHERE media_type = ?").all(type)) as any[]).map(rootFolderFromRow);
   if (folders.length === 0) return result;

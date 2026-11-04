@@ -145,6 +145,60 @@ describe("an IMDb list's clean-up for titles stored without an imdb id", () => {
     expect(await idsOf(unknown)).toEqual({ tmdb: "400" });
   });
 
+  it("keeps an id a refresh added while the lookup was running", async () => {
+    const list = await imdbList();
+    const id = await addedBy(list, "movie", "Racing", { tmdb: "600" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        // A metadata refresh stores a tvdb id between the clean-up's read and its write.
+        await db.prepare("UPDATE media_items SET external_ids = ? WHERE id = ?").run(JSON.stringify({ tmdb: "600", tvdb: "9000" }), id);
+        return new Response(JSON.stringify({ imdb_id: "tt0000600" }), { status: 200, headers: { "content-type": "application/json" } });
+      })
+    );
+
+    await cleanListItems(list, new Set(["movie:imdb:tt0000600"]));
+
+    expect(await idsOf(id)).toEqual({ tmdb: "600", tvdb: "9000", imdb: "tt0000600" });
+  });
+
+  it("does not overwrite an imdb id that appeared meanwhile", async () => {
+    const list = await imdbList();
+    const id = await addedBy(list, "movie", "Raced", { tmdb: "700" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        await db.prepare("UPDATE media_items SET external_ids = ? WHERE id = ?").run(JSON.stringify({ tmdb: "700", imdb: "tt0000777" }), id);
+        return new Response(JSON.stringify({ imdb_id: "tt0000700" }), { status: 200, headers: { "content-type": "application/json" } });
+      })
+    );
+
+    await cleanListItems(list, new Set(["movie:imdb:tt0000777"]));
+
+    expect(await idsOf(id)).toEqual({ tmdb: "700", imdb: "tt0000777" });
+  });
+
+  it("gives the provider lookups a timeout", async () => {
+    const seen: (AbortSignal | null | undefined)[] = [];
+    setSetting("tvdbApiKey", "tvdb-key");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        seen.push(init?.signal);
+        const url = String(input);
+        if (url.includes("/v4/login")) return new Response(JSON.stringify({ data: { token: "t" } }), { status: 200 });
+        if (url.includes("/v4/series/")) return new Response(JSON.stringify({ data: { remoteIds: [{ id: "tt0000800", sourceName: "IMDB" }] } }), { status: 200 });
+        return new Response("{}", { status: 404 });
+      })
+    );
+
+    expect(await fetchImdbIdFor("movie", { tmdb: "800" })).toBeNull();
+    expect(await fetchImdbIdFor("series", { tvdb: "800" })).toBe("tt0000800");
+
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    for (const signal of seen) expect(signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("does no lookups for a list whose sync produced no imdb ids", async () => {
     const list = await imdbList({ type: "tmdb" });
     await addedBy(list, "movie", "Tmdb List Title", { tmdb: "500" });

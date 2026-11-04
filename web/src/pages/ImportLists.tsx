@@ -36,6 +36,7 @@ interface ImportList {
 /** What a list monitors of what it adds. A movie only tells "All" and "None" apart; the rest narrow a show's episodes or an artist's albums. */
 function monitorChoices(type: ImportList["type"]): { value: string; label: string }[] {
   const common = [
+    { value: "inherit", label: "Use the root folder's choice" },
     { value: "all", label: "All" },
     { value: "future", label: "Future only" },
   ];
@@ -138,7 +139,7 @@ export default function ImportLists() {
   const [minRating, setMinRating] = useState("");
   const [minVotes, setMinVotes] = useState("");
   const [excludeGenres, setExcludeGenres] = useState("");
-  const [monitor, setMonitor] = useState("all");
+  const [monitor, setMonitor] = useState("inherit");
   const [monitorNewItems, setMonitorNewItems] = useState("");
   const [searchOnAdd, setSearchOnAdd] = useState(false);
   const [minimumAvailability, setMinimumAvailability] = useState("");
@@ -172,7 +173,7 @@ export default function ImportLists() {
   function changeType(next: ImportList["type"]) {
     setType(next);
     // The choices differ between lists of artists and of movies and shows.
-    if (!monitorChoices(next).some((c) => c.value === monitor)) setMonitor("all");
+    if (!monitorChoices(next).some((c) => c.value === monitor)) setMonitor("inherit");
     if (!cleanChoices(next).some((c) => c.value === cleanLevel)) setCleanLevel("disabled");
     // A folder of a type the new list doesn't add would only be refused by the server.
     if (rootFolderId !== "" && !foldersFor(next).some((f) => f.id === rootFolderId)) setRootFolderId("");
@@ -210,7 +211,7 @@ export default function ImportLists() {
     setMinRating("");
     setMinVotes("");
     setExcludeGenres("");
-    setMonitor("all");
+    setMonitor("inherit");
     setMonitorNewItems("");
     setSearchOnAdd(false);
     setMinimumAvailability("");

@@ -39,6 +39,27 @@ async function storedRootFolder(id: number): Promise<number | null> {
   return ((await db.prepare("SELECT root_folder_id FROM import_lists WHERE id = ?").get(id)) as { root_folder_id: number | null }).root_folder_id;
 }
 
+describe("import list monitor choice", () => {
+  it("a new list that names no Monitor value inherits the root folder's choice, and 'all' stays all", async () => {
+    const plain = await createList({});
+    expect(plain.status).toBe(201);
+    expect(plain.body.monitor).toBe("inherit");
+
+    const all = await createList({ monitor: "all" });
+    expect(all.body.monitor).toBe("all");
+
+    const patched = await patchList(plain.body.id, { monitor: "none" });
+    expect(patched.status).toBe(200);
+    const back = await patchList(plain.body.id, { monitor: "inherit" });
+    expect(back.status).toBe(200);
+    expect(((await db.prepare("SELECT monitor FROM import_lists WHERE id = ?").get(plain.body.id)) as any).monitor).toBe("inherit");
+  });
+
+  it("still refuses an unknown Monitor value", async () => {
+    expect((await createList({ monitor: "everything" })).status).toBe(400);
+  });
+});
+
 describe("import list root folder", () => {
   it("creates a list with its own root folder and returns it, from GET too", async () => {
     const movies = await addRootFolder("movie");
