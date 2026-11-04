@@ -87,6 +87,7 @@ import { isNewItemMode } from "../services/monitorModes.js";
 import { applyRootFolderDefaults } from "../services/rootFolderDefaults.js";
 import { addTagsToItem, checkedTagIdsColumn, tagIdsOfItem } from "../services/tagScope.js";
 import { mediaFromRow } from "../services/notificationPayloads.js";
+import { kindleSmtpConfig } from "../services/notificationConnections.js";
 import type { MediaType } from "../types/index.js";
 
 export const mediaRouter = Router();
@@ -2705,8 +2706,8 @@ const KINDLE_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 /**
  * Emails a sub-item's downloaded file to the configured Kindle "Send to Kindle" address as an
- * attachment, reusing the same SMTP settings the notification providers use (Settings →
- * Notifications) with `to` overridden to the Kindle address instead of `smtpTo`.
+ * attachment, reusing the mail server of the Email notification connection (Settings →
+ * Notifications) with the Kindle address as the recipient.
  */
 mediaRouter.post(
   "/:id/subitems/:subItemId/send-to-kindle",
@@ -2719,9 +2720,8 @@ mediaRouter.post(
     const kindleAddress = getSetting("kindleEmailAddress");
     if (!kindleAddress) throw new HttpError(400, "No Kindle email address set — add one in Settings → General");
 
-    const smtpHost = getSetting("smtpHost");
-    const smtpFrom = getSetting("smtpFrom");
-    if (!smtpHost || !smtpFrom) throw new HttpError(400, "SMTP isn't configured — set it up in Settings → Notifications first");
+    const smtp = await kindleSmtpConfig(kindleAddress);
+    if (!smtp) throw new HttpError(400, "SMTP isn't configured — add an Email connection in Settings → Notifications first");
 
     let stat: fs.Stats;
     try {
@@ -2748,15 +2748,7 @@ mediaRouter.post(
     const filename = `${headerSafeTitle.replace(/[/\\]/g, "_")}${ext.replace(/[^A-Za-z0-9.]+/g, "")}`;
 
     await sendEmailWithAttachment(
-      {
-        host: smtpHost,
-        port: Number(getSetting("smtpPort") || 587),
-        secure: getSetting("smtpSecure") === "1",
-        username: getSetting("smtpUsername") || undefined,
-        password: getSetting("smtpPassword") || undefined,
-        from: smtpFrom,
-        to: kindleAddress,
-      },
+      smtp,
       headerSafeTitle,
       `Sent from AoNarr: ${sub.title}`,
       { filename, content: fs.readFileSync(sub.file_path), contentType: CONTENT_TYPES[ext] ?? "application/octet-stream" }

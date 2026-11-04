@@ -2006,7 +2006,7 @@ export default function Settings() {
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
           Lets you email a book/comic/audiobook file to a Kindle "Send to Kindle" address (found in
           your Amazon account's Content &amp; Devices settings) straight from its detail page.
-          Reuses the Email (SMTP) notification settings under Notifications — set your Kindle address as an
+          Reuses the mail server of your Email connection under Notifications — set your Kindle address as an
           approved sender on Amazon's side first, since Amazon only accepts mail from addresses you
           allow.
         </p>

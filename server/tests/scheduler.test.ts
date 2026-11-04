@@ -1808,7 +1808,7 @@ describe("retryFailedGrab", () => {
 
     await retryFailedGrab({ id: 1, mediaItemId: movie.id, title: "Bad.Release", episodeId: null, subItemId: null, retryCount: 0 } as any, "corrupt file");
 
-    expect(notifyFailed).toHaveBeenCalledWith(movie.title, expect.stringContaining("no other releases found"));
+    expect(notifyFailed).toHaveBeenCalledWith(movie.title, expect.stringContaining("no other releases found"), expect.objectContaining({ mediaItemId: expect.any(Number) }));
   });
 
   it("replaces a failed season pack only with another full pack of the same season, keeping its season number", async () => {
@@ -1855,7 +1855,7 @@ describe("retryFailedGrab", () => {
     );
 
     expect(adapter.addDownload).not.toHaveBeenCalled();
-    expect(notifyFailed).toHaveBeenCalledWith("Show", expect.stringContaining("no other releases found"));
+    expect(notifyFailed).toHaveBeenCalledWith("Show", expect.stringContaining("no other releases found"), expect.objectContaining({ mediaItemId: expect.any(Number) }));
   });
 
   it("replaces a failed single-episode grab from a season search with another release of that episode", async () => {
@@ -2016,7 +2016,7 @@ describe("checkHealthAndNotify", () => {
       await checkHealthAndNotify();
       await checkHealthAndNotify();
       expect(notifyHealthIssue).toHaveBeenCalledTimes(1);
-      expect(notifyHealthIssue).toHaveBeenCalledWith(expect.stringContaining("Scheduled backup failed: disk full"));
+      expect(notifyHealthIssue).toHaveBeenCalledWith(expect.stringContaining("Scheduled backup failed: disk full"), expect.objectContaining({ health: expect.objectContaining({ level: expect.stringMatching(/warning|error/) }) }));
 
       setSetting("backupEnabled", "0");
       notifyHealthIssue.mockReset();
@@ -2034,7 +2034,7 @@ describe("checkHealthAndNotify", () => {
 
     await checkHealthAndNotify();
 
-    expect(notifyHealthIssue).toHaveBeenCalledWith(expect.stringContaining("low on disk space"));
+    expect(notifyHealthIssue).toHaveBeenCalledWith(expect.stringContaining("low on disk space"), expect.objectContaining({ health: expect.objectContaining({ level: expect.stringMatching(/warning|error/) }) }));
   });
 });
 
@@ -3276,7 +3276,7 @@ describe("runAutoUpgrade / retryFailedGrab — quota and upgrade gates", () => {
     await retryFailedGrab({ id: 1, mediaItemId: movie.id, title: "Bad.Release", episodeId: null, subItemId: null, retryCount: 0 } as any, "corrupt file");
 
     expect(searchAllIndexers).not.toHaveBeenCalled();
-    expect(notifyFailed).toHaveBeenCalledWith(movie.title, expect.stringContaining("quota"));
+    expect(notifyFailed).toHaveBeenCalledWith(movie.title, expect.stringContaining("quota"), expect.objectContaining({ mediaItemId: expect.any(Number) }));
   });
 
   it("retryFailedGrab only replaces a failed upgrade with a release that's still an upgrade over the file on disk", async () => {
@@ -3294,7 +3294,7 @@ describe("runAutoUpgrade / retryFailedGrab — quota and upgrade gates", () => {
     );
 
     expect(adapter.addDownload).not.toHaveBeenCalled();
-    expect(notifyFailed).toHaveBeenCalledWith(movie.title, expect.stringContaining("upgrade over WEBDL-1080p"));
+    expect(notifyFailed).toHaveBeenCalledWith(movie.title, expect.stringContaining("upgrade over WEBDL-1080p"), expect.objectContaining({ mediaItemId: expect.any(Number) }));
   });
 
   it("retryFailedGrab grabs no replacement for a file that already meets the profile's cutoff", async () => {
@@ -3313,7 +3313,7 @@ describe("runAutoUpgrade / retryFailedGrab — quota and upgrade gates", () => {
 
     expect(searchAllIndexers).not.toHaveBeenCalled();
     expect(adapter.addDownload).not.toHaveBeenCalled();
-    expect(notifyFailed).toHaveBeenCalledWith(movie.title, expect.stringContaining("already meets the profile's cutoff (WEBDL-1080p)"));
+    expect(notifyFailed).toHaveBeenCalledWith(movie.title, expect.stringContaining("already meets the profile's cutoff (WEBDL-1080p)"), expect.objectContaining({ mediaItemId: expect.any(Number) }));
   });
 
   it("retryFailedGrab only replaces a failed season pack with one better than every episode file it would replace", async () => {
@@ -3329,7 +3329,7 @@ describe("runAutoUpgrade / retryFailedGrab — quota and upgrade gates", () => {
     searchAllIndexers.mockResolvedValue([fakeResult({ title: "Show.S02.1080p.WEB-DL-GRP", seeders: 900, downloadUrl: "magnet:?xt=worse" })]);
     await retryFailedGrab(failed, "Download failed at the download client");
     expect(adapter.addDownload).not.toHaveBeenCalled();
-    expect(notifyFailed).toHaveBeenCalledWith("Show", expect.stringContaining("upgrade over Bluray-1080p"));
+    expect(notifyFailed).toHaveBeenCalledWith("Show", expect.stringContaining("upgrade over Bluray-1080p"), expect.objectContaining({ mediaItemId: expect.any(Number) }));
 
     searchAllIndexers.mockResolvedValue([
       fakeResult({ title: "Show.S02.1080p.WEB-DL-GRP", seeders: 900, downloadUrl: "magnet:?xt=worse" }),
@@ -3361,7 +3361,7 @@ describe("runAutoUpgrade / retryFailedGrab — quota and upgrade gates", () => {
     );
 
     expect(searchAllIndexers).not.toHaveBeenCalled();
-    expect(notifyFailed).toHaveBeenCalledWith("First We Feast", "Download failed at the download client");
+    expect(notifyFailed).toHaveBeenCalledWith("First We Feast", "Download failed at the download client", expect.objectContaining({ mediaItemId: expect.any(Number) }));
   });
 });
 
@@ -3443,7 +3443,7 @@ describe("cleanupStalledDownloads — downloads that never made progress", () =>
 
     expect(await queueStatus(id)).toBe("failed");
     expect(await blocklistedTitles(mediaItemId)).toEqual(["Some.Release.2020.1080p.WEB-DL-GRP"]);
-    expect(notifyFailed).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("Stalled"));
+    expect(notifyFailed).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("Stalled"), expect.objectContaining({ mediaItemId: expect.any(Number) }));
   });
 
   it("doesn't fail a download its client has only just flagged as stalled, however long ago it was grabbed", async () => {
@@ -3664,7 +3664,7 @@ describe("pollQueue — imports that fail on the library side", () => {
     expect(await queueStatus(id)).toBe("completed");
     expect(await blocklistedTitles(mediaItemId)).toEqual([]);
     expect(searchAllIndexers).not.toHaveBeenCalled();
-    expect(notifyManualInteractionRequired).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("EACCES"));
+    expect(notifyManualInteractionRequired).toHaveBeenCalledWith(expect.any(String), expect.stringContaining("EACCES"), expect.objectContaining({ mediaItemId: expect.any(Number) }));
   });
 
   it("tells a missing destination (kept for a manual import) apart from a download whose files are gone (retried)", async () => {

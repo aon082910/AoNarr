@@ -5,6 +5,7 @@ import { getSetting, setSetting } from "./settingsStore.js";
 import { decryptValue, encryptValue } from "./encryption.js";
 import { checkedTagIdsColumn, parseTagIds } from "./tagScope.js";
 import { forgetNotificationFailures } from "./notificationStatus.js";
+import type { SmtpConfig } from "./smtp.js";
 
 /**
  * Notifications as connections (Sonarr/Radarr's Settings > Connect): any number of named destinations, each of one
@@ -602,6 +603,41 @@ export async function deleteNotificationConnection(id: number): Promise<boolean>
   const result = await db.prepare("DELETE FROM notification_connections WHERE id = ?").run(id);
   forgetNotificationFailures(id);
   return result.changes > 0;
+}
+
+/**
+ * The mail server Send to Kindle goes through (it reuses the notification email settings, with the Kindle address as the
+ * recipient): the first Email connection, one that is switched on before one that is off, or the old email settings on an
+ * install that has no Email connection. Null when neither is set up.
+ */
+export async function kindleSmtpConfig(to: string): Promise<SmtpConfig | null> {
+  const emails = (await listNotificationConnections()).filter((c) => c.kind === "email");
+  const conn = emails.find((c) => c.enabled) ?? emails[0];
+  if (conn) {
+    const c = conn.config;
+    if (!c.host || !c.from) return null;
+    return {
+      host: String(c.host),
+      port: Number(c.port || 587),
+      secure: c.secure === true,
+      username: c.username ? String(c.username) : undefined,
+      password: c.password ? String(c.password) : undefined,
+      from: String(c.from),
+      to,
+    };
+  }
+  const host = getSetting("smtpHost");
+  const from = getSetting("smtpFrom");
+  if (!host || !from) return null;
+  return {
+    host,
+    port: Number(getSetting("smtpPort") || 587),
+    secure: getSetting("smtpSecure") === "1",
+    username: getSetting("smtpUsername") || undefined,
+    password: getSetting("smtpPassword") || undefined,
+    from,
+    to,
+  };
 }
 
 /**

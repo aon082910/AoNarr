@@ -109,6 +109,41 @@ describe("POST /api/media/:id/subitems/:subItemId/send-to-kindle", () => {
     expect(attachment.filename).toBe("進撃の巨人 第34巻 — Édition collector_illustrée.epub");
   });
 
+  // Round 30e: the mail server is the Email notification connection's (the old settings are the fallback).
+  it("mails through the Email connection when there is one, preferring one that is switched on, and falls back to the old settings without one", async () => {
+    const { createNotificationConnection, deleteNotificationConnection } = await import("../src/services/notificationConnections.js");
+    const off = await createNotificationConnection({ name: "Off", kind: "email", config: { host: "mail.off", from: "off@example", to: "x@example" }, enabled: false });
+    const on = await createNotificationConnection({
+      name: "On",
+      kind: "email",
+      config: { host: "mail.connection", port: 465, secure: true, username: "mailer", password: "pw-123456", from: "aonarr@connection", to: "x@example" },
+    });
+    try {
+      sendEmailWithAttachment.mockReset().mockResolvedValue(undefined);
+      const { authorId, subId } = await insertBook("Via Connection");
+      const res = await request(app).post(`/api/media/${authorId}/subitems/${subId}/send-to-kindle`).set("X-Api-Key", apiKey);
+
+      expect(res.status).toBe(200);
+      expect(sendEmailWithAttachment.mock.calls[0][0]).toEqual({
+        host: "mail.connection",
+        port: 465,
+        secure: true,
+        username: "mailer",
+        password: "pw-123456",
+        from: "aonarr@connection",
+        to: "reader@kindle.example",
+      });
+    } finally {
+      await deleteNotificationConnection(on.id);
+      await deleteNotificationConnection(off.id);
+    }
+
+    sendEmailWithAttachment.mockReset().mockResolvedValue(undefined);
+    const { authorId, subId } = await insertBook("Via Settings");
+    await request(app).post(`/api/media/${authorId}/subitems/${subId}/send-to-kindle`).set("X-Api-Key", apiKey);
+    expect(sendEmailWithAttachment.mock.calls[0][0]).toMatchObject({ host: "smtp.example", from: "aonarr@example", to: "reader@kindle.example" });
+  });
+
   it("names the attachment Untitled only when the title is empty", async () => {
     sendEmailWithAttachment.mockReset().mockResolvedValue(undefined);
     const { authorId, subId } = await insertBook("  \r\n ");
