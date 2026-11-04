@@ -157,6 +157,52 @@ async function downloadClientBackoffIssues(): Promise<HealthIssue[]> {
   return issues;
 }
 
+/**
+ * A download client scoped to tags takes only titles carrying one of them, so a monitored title whose tags match no
+ * client has nowhere to download to even though a client exists for its protocol. Counted by the tag sets the monitored
+ * titles carry (an untagged title is one with an empty set); nothing is asked while no enabled client is tag-scoped.
+ */
+export async function clientTagIssues(clients: ReturnType<typeof downloadClientFromRow>[]): Promise<HealthIssue[]> {
+  if (!clients.some((c) => (c.tagIds?.length ?? 0) > 0)) return [];
+  // Loaded here: the scheduler imports this module.
+  const { pickClientForProtocol } = await import("./scheduler.js");
+  const protocols = ["torrent", "usenet", "http", "slskd"] as const;
+  const served = protocols.filter((p) => pickClientForProtocol(clients, p, { ignoreBackoff: true }) !== null);
+  if (served.length === 0) return [];
+  const takesNone = (tags: number[]) => served.every((p) => pickClientForProtocol(clients, p, { ignoreBackoff: true, itemTags: tags }) === null);
+
+  let orphaned = 0;
+  if (takesNone([])) {
+    orphaned += Number(
+      (
+        (await db
+          .prepare("SELECT COUNT(*) AS c FROM media_items m WHERE m.monitored = 1 AND NOT EXISTS (SELECT 1 FROM media_item_tags t WHERE t.media_item_id = m.id)")
+          .get()) as { c: number | string }
+      ).c
+    );
+  }
+  const tagged = (await db
+    .prepare("SELECT t.media_item_id AS item_id, t.tag_id AS tag_id FROM media_item_tags t JOIN media_items m ON m.id = t.media_item_id WHERE m.monitored = 1")
+    .all()) as { item_id: number; tag_id: number }[];
+  const tagSets = new Map<number, number[]>();
+  for (const row of tagged) tagSets.set(Number(row.item_id), [...(tagSets.get(Number(row.item_id)) ?? []), Number(row.tag_id)]);
+  const verdictBySet = new Map<string, boolean>();
+  for (const tags of tagSets.values()) {
+    const key = [...tags].sort((a, b) => a - b).join(",");
+    if (!verdictBySet.has(key)) verdictBySet.set(key, takesNone(tags));
+    if (verdictBySet.get(key)) orphaned++;
+  }
+  if (orphaned === 0) return [];
+  return [
+    {
+      source: "download-client-tags",
+      severity: "warning",
+      message: `${orphaned} monitored title(s) have no download client that takes their tags, so nothing can be sent for them`,
+      transient: false,
+    },
+  ];
+}
+
 /** Library types that are filled from feeds and channels, not from an indexer search. */
 const NOT_INDEXER_SEARCHED = new Set(["podcast", "video"]);
 
@@ -521,6 +567,7 @@ async function buildHealthReport(): Promise<HealthReport> {
     safely("proxy", proxyIssues),
     safely("download-paths", downloadPathIssues),
     safely("download-client-config", () => downloadClientConfigIssues(downloadClients)),
+    safely("download-client-tags", () => clientTagIssues(downloadClients)),
     safely("root-folders", rootFolderIssues),
     safely("recycle-bin", recycleBinIssues),
   ]);
