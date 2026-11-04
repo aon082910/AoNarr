@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
@@ -255,5 +258,58 @@ describe("dateFormat relative dates", () => {
     expect(dateFormat.formatRelative("2026-03-05T12:00:20Z", now)).toBe(rtf.format(20, "second"));
     expect(dateFormat.formatRelative("2024-03-05T12:00:00Z", now)).toBe(rtf.format(-2, "year"));
     expect(dateFormat.formatRelative(null, now)).toBe("");
+  });
+});
+
+describe("todayInPreferredZone (the Calendar's today, review finding L16)", () => {
+  beforeEach(() => dateFormat.setDisplayPreferences(null));
+  const word = (offset: number) => {
+    const text = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(offset, "day");
+    return text.charAt(0).toLocaleUpperCase() + text.slice(1);
+  };
+
+  it("is the browser's own day, as YYYY-MM-DD, when no time zone is chosen", () => {
+    expect(dateFormat.todayInPreferredZone(NOON)).toBe("2026-03-05");
+    // Local clock times either side of midnight: the local date, not the UTC one.
+    expect(dateFormat.todayInPreferredZone(new Date(2026, 11, 31, 23, 59, 59))).toBe("2026-12-31");
+    expect(dateFormat.todayInPreferredZone(new Date(2027, 0, 1, 0, 0, 1))).toBe("2027-01-01");
+    expect(dateFormat.todayInPreferredZone(new Date(2026, 0, 2, 12, 0, 0))).toBe("2026-01-02");
+    expect(dateFormat.todayInPreferredZone()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("is the day it is in the chosen zone, whatever day it is where the browser is", () => {
+    const instant = new Date("2026-03-05T23:30:00Z");
+    for (const [timeZone, day] of [
+      ["UTC", "2026-03-05"],
+      ["Asia/Tokyo", "2026-03-06"],
+      ["America/Los_Angeles", "2026-03-05"],
+      ["Pacific/Kiritimati", "2026-03-06"],
+      ["Pacific/Pago_Pago", "2026-03-05"],
+    ] as const) {
+      set({ timeZone });
+      expect(dateFormat.todayInPreferredZone(instant), timeZone).toBe(day);
+    }
+    set({ timeZone: "Pacific/Pago_Pago" });
+    expect(dateFormat.todayInPreferredZone(new Date("2026-03-05T05:00:00Z"))).toBe("2026-03-04");
+    set({ timeZone: "Asia/Tokyo" });
+    expect(dateFormat.todayInPreferredZone(new Date("2025-12-31T15:00:00Z"))).toBe("2026-01-01");
+  });
+
+  it("names the day the relative dates call Today, so the Calendar's accent and its labels agree", () => {
+    const instant = new Date("2026-03-05T23:30:00Z");
+    set({ relativeDates: true, timeZone: "Asia/Tokyo" });
+    const today = dateFormat.todayInPreferredZone(instant);
+    expect(dateFormat.formatIsoDate(today, instant)).toBe(word(0));
+    // The previous calendar day is Yesterday there, even though the browser's zone may still be on it.
+    expect(dateFormat.formatIsoDate("2026-03-05", instant)).toBe(word(-1));
+    set({ relativeDates: true, timeZone: "America/Los_Angeles" });
+    expect(dateFormat.formatIsoDate(dateFormat.todayInPreferredZone(instant), instant)).toBe(word(0));
+  });
+
+  it("is what the Calendar page marks today with (the web package has no runner to render it, so the source is checked)", () => {
+    const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "web", "src", "pages", "Calendar.tsx"), "utf-8");
+    expect(source).toContain("const today = todayInPreferredZone();");
+    expect(source).not.toMatch(/const today = toIsoDate\(new Date\(\)\)/);
+    expect(source).toContain("startOfMonth(parseCalendarDate(todayInPreferredZone()))");
   });
 });

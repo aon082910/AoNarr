@@ -42,14 +42,20 @@ export function withAppUrlBase(path: string): string {
   return base && path.startsWith("/") && !path.startsWith("//") ? `${base}${path}` : path;
 }
 
+/** The path part of an origin string: "https://h.example:8443/aonarr/" is "/aonarr", "http://aonarr" is "" (a host
+ * name is not a path, even when it reads like one). Not a URL parse, so "//h/aonarr" and "" work too. */
+function pathOfOrigin(origin: string): string {
+  return origin.replace(/^(?:[a-z][a-z0-9+.-]*:)?\/\/[^/?#]*/i, "").replace(/\/+$/, "");
+}
+
 /** `origin` (the External URL setting, a guess from the request, or "" for a root-relative link) plus a path of this
- * app, with the URL base between them unless the External URL already ends with it (an admin who typed
+ * app, with the URL base between them unless the External URL's path already ends with it (an admin who typed
  * https://host/aonarr there before the URL base existed keeps getting the same link). */
 export function appUrl(origin: string, path: string): string {
   const base = appUrlBase();
   if (!base) return `${origin}${path}`;
   const root = origin.replace(/\/+$/, "");
-  return root.endsWith(base) ? `${root}${path}` : `${root}${base}${path}`;
+  return pathOfOrigin(origin).endsWith(base) ? `${root}${path}` : `${root}${base}${path}`;
 }
 
 /** The proxied-artwork paths AoNarr stores as a poster/backdrop (/api/media/local-artwork/<token>, or a remote

@@ -1,4 +1,5 @@
 import { getSetting } from "./settingsStore.js";
+import { log } from "./logger.js";
 
 /**
  * The language metadata providers describe a title in (Starr's PreferredMetadataLanguage). Only the descriptive
@@ -51,18 +52,54 @@ export function tmdbLanguage(): string | null {
  * is no second request at all.
  */
 
-/** The same TMDB request in the metadata language, or null for English or when TMDB does not answer: the English data stands then. */
+/** How long the language request may take. It runs beside the default-language one, so a hung one would hold up a call that had already finished. */
+export const LOCALIZED_REQUEST_TIMEOUT_MS = 10_000;
+/** After a 429 the request is tried once more, waiting what Retry-After says up to this long (one second when it says nothing). */
+export const LOCALIZED_RETRY_MAX_WAIT_MS = 5_000;
+const LOCALIZED_RETRY_DEFAULT_WAIT_MS = 1_000;
+
+/** What fetchTmdbLocalized() answers when TMDB did not give the language's text because the request FAILED (not because it has
+ * no translation, which is an ordinary answer with empty fields). It has none of TMDB's fields, so every `localized?.x` reader
+ * falls back to the default language as before; a caller that stores the text asks localizationFailed(). */
+export const LOCALIZATION_FAILED = Object.freeze({ localizationFailed: true as const });
+
+export function localizationFailed(localized: unknown): boolean {
+  return typeof localized === "object" && localized !== null && (localized as { localizationFailed?: unknown }).localizationFailed === true;
+}
+
+/** A Retry-After header (seconds, or an HTTP date) as a wait, never longer than the cap. */
+function retryWaitMs(header: string | null | undefined): number {
+  if (!header) return LOCALIZED_RETRY_DEFAULT_WAIT_MS;
+  const seconds = Number(header);
+  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+  if (!Number.isFinite(ms)) return LOCALIZED_RETRY_DEFAULT_WAIT_MS;
+  return Math.min(Math.max(ms, 0), LOCALIZED_RETRY_MAX_WAIT_MS);
+}
+
+/**
+ * The same TMDB request in the metadata language, or null for English. When the request fails (a timeout, a network or
+ * HTTP error, a 429 that a retry did not clear) the answer is LOCALIZATION_FAILED: the default-language data stands,
+ * and a refresh that would store the text knows not to write it over what the language put there earlier.
+ */
 export async function fetchTmdbLocalized(url: URL): Promise<any | null> {
   const language = tmdbLanguage();
   if (!language) return null;
   const localizedUrl = new URL(url.toString());
   localizedUrl.searchParams.set("language", language);
+  const target = localizedUrl.toString();
   try {
-    const res = await fetch(localizedUrl.toString());
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
+    let res = await fetch(target, { signal: AbortSignal.timeout(LOCALIZED_REQUEST_TIMEOUT_MS) });
+    if (res.status === 429) {
+      await new Promise((resolve) => setTimeout(resolve, retryWaitMs(res.headers?.get?.("retry-after"))));
+      res = await fetch(target, { signal: AbortSignal.timeout(LOCALIZED_REQUEST_TIMEOUT_MS) });
+    }
+    if (res.ok) return await res.json();
+    // The path only: the query holds the API key.
+    log.debug(`[metadata] TMDB ${language} request for ${localizedUrl.pathname} answered HTTP ${res.status}; the default-language text stands`);
+  } catch (err) {
+    log.debug(`[metadata] TMDB ${language} request for ${localizedUrl.pathname} failed (${(err as Error).name}); the default-language text stands`);
   }
+  return LOCALIZATION_FAILED;
 }
 
 /** A TMDB list (search, trending, recommendations) as English rows, with each row's overview, poster and backdrop taken from the language's row for the same id. */

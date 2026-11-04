@@ -44,13 +44,19 @@ export function absoluteUrl(path: string): string {
   return `${window.location.origin}${withBase(path)}`;
 }
 
+/** The path part of an origin string: "https://h.example:8443/aonarr/" is "/aonarr", "http://aonarr" is "" (a host
+ * name is not a path, even when it reads like one). Same code as pathOfOrigin() in server/src/services/urlBase.ts. */
+function pathOfOrigin(origin: string): string {
+  return origin.replace(/^(?:[a-z][a-z0-9+.-]*:)?\/\/[^/?#]*/i, "").replace(/\/+$/, "");
+}
+
 /** `origin` (the External URL setting, or this page's origin) plus a path of this app, with the URL base between
- * them unless the External URL already ends with it (an admin who typed https://host/aonarr there before the
- * URL base existed keeps getting the same link). */
+ * them unless the External URL's path already ends with it (an admin who typed https://host/aonarr there before
+ * the URL base existed keeps getting the same link). */
 export function linkOnOrigin(origin: string, path: string): string {
   if (!URL_BASE) return `${origin}${path}`;
   const root = origin.replace(/\/+$/, "");
-  return root.endsWith(URL_BASE) ? `${root}${path}` : `${root}${URL_BASE}${path}`;
+  return pathOfOrigin(origin).endsWith(URL_BASE) ? `${root}${path}` : `${root}${URL_BASE}${path}`;
 }
 
 // AoNarr stores the artwork it proxies (a media server's, ScreenScraper's, a remote library's) as a root-relative

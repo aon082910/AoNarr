@@ -7,7 +7,7 @@ import { PlusCircleIcon, ShareIcon, CalendarIcon } from "../components/NavIcons.
 import { TrashIcon, ChevronLeftIcon, ChevronRightIcon, ArrowRightIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
-import { formatIsoDate, getDisplayPreferences, weekStartsOn } from "../utils/dateFormat.js";
+import { formatIsoDate, getDisplayPreferences, parseCalendarDate, todayInPreferredZone, weekStartsOn } from "../utils/dateFormat.js";
 
 interface CalendarEntry {
   mediaItemId: number;
@@ -61,7 +61,7 @@ export default function Calendar() {
   const weekStart = weekStartsOn();
   const weekdayLabels = [...WEEKDAY_LABELS.slice(weekStart), ...WEEKDAY_LABELS.slice(0, weekStart)];
   const [mode, setMode] = useState<"month" | "agenda">("month");
-  const [viewMonth, setViewMonth] = useState<Date>(() => startOfMonth(new Date()));
+  const [viewMonth, setViewMonth] = useState<Date>(() => startOfMonth(parseCalendarDate(todayInPreferredZone())));
   const [entries, setEntries] = useState<CalendarEntry[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [daysBack, setDaysBack] = useState(7);
@@ -158,7 +158,8 @@ export default function Calendar() {
     if (!grouped.has(day)) grouped.set(day, []);
     grouped.get(day)!.push(entry);
   }
-  const today = toIsoDate(new Date());
+  // The day in the chosen time zone, the same one the relative dates ("Today") are worked out from.
+  const today = todayInPreferredZone();
 
   const { gridStart, gridEnd } = gridBounds(viewMonth, weekStart);
   const gridDays: Date[] = [];
@@ -187,7 +188,7 @@ export default function Calendar() {
                   onClick={() => changeMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
                   title="Next month"
                 />
-                <ToolbarButton icon={<CalendarIcon />} label="Today" onClick={() => changeMonth(() => startOfMonth(new Date()))} title="Jump to today" />
+                <ToolbarButton icon={<CalendarIcon />} label="Today" onClick={() => changeMonth(() => startOfMonth(parseCalendarDate(todayInPreferredZone())))} title="Jump to today" />
               </>
             ) : (
               <>
