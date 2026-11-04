@@ -994,7 +994,9 @@ export default function MediaDetail() {
     });
     if (!confirmed) return;
     const params = [confirmed.values.deleteFiles && "deleteFiles=1", confirmed.values.addExclusion && "addExclusion=1"].filter(Boolean).join("&");
-    await api.del(`/media/${item.id}${params ? `?${params}` : ""}`);
+    const result = await api.del<{ warnings?: string[] } | undefined>(`/media/${item.id}${params ? `?${params}` : ""}`);
+    // Removed, but a folder of it could not be cleaned up (its storage did not answer).
+    for (const warning of result?.warnings ?? []) notify.error(warning, 10000);
     navigate(`/library/${item.type}`);
   }
 

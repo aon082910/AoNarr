@@ -371,6 +371,18 @@ CREATE TABLE IF NOT EXISTS pending_releases (
 );
 CREATE INDEX IF NOT EXISTS idx_pending_releases_leaf ON pending_releases(leaf_table, leaf_id);
 
+-- Releases the admin told AoNarr to forget — see schema.sql's copy of this comment.
+CREATE TABLE IF NOT EXISTS forgotten_releases (
+  id SERIAL PRIMARY KEY,
+  media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+  leaf_table TEXT NOT NULL,
+  leaf_id INTEGER NOT NULL,
+  forgotten_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_forgotten_releases_expires ON forgotten_releases(expires_at);
+
 -- User-defined release-title patterns (regex) that score releases up/down during grabbing,
 -- similar to Sonarr/Radarr custom formats (e.g. prefer REMUX, avoid a bad release group).
 CREATE TABLE IF NOT EXISTS custom_formats (

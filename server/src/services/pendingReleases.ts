@@ -5,7 +5,7 @@ import { episodePlanFor, subItemPlanFor } from "./searchPlan.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { recordLeafOutcome } from "./searchBackoff.js";
 import { qualityRank } from "./quality.js";
-import { loadPending, pendingExpired, removePending, type PendingRow } from "./pendingStore.js";
+import { loadPending, pendingExpired, pruneForgotten, removePending, type PendingRow } from "./pendingStore.js";
 import {
   chooseBestResult,
   existingFileQuality,
@@ -119,6 +119,7 @@ async function judgeOne(row: PendingRow, ctx: { delayProfiles: Awaited<ReturnTyp
 }
 
 export async function runPendingReleases(): Promise<{ checked: number; grabbed: number }> {
+  await pruneForgotten().catch((err) => log.warn("[pending] could not prune the forgotten releases:", (err as Error).message));
   const rows = await loadPending();
   if (rows.length === 0) return { checked: 0, grabbed: 0 };
   const ctx = {

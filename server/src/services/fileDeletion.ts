@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import type fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { db } from "../db/index.js";
@@ -13,6 +13,13 @@ import { offlineStorageFor } from "./deletedFileCheck.js";
 import { resetSearchBackoff, wakeLeaf } from "./searchBackoff.js";
 import { notifyFileDeleted } from "./notifications.js";
 import { folderSegmentsOf, ownFolderOf } from "./libraryFolder.js";
+import { FS_CALL_TIMEOUT_MS, StorageTimeoutError, pathExistsAsync, readdirAsync, readdirNamesAsync } from "./fsAsync.js";
+
+/** How long one directory read of a delete may take before its storage is called unresponsive (a test shortens it). */
+let walkTimeoutMs = FS_CALL_TIMEOUT_MS;
+export function setFolderWalkTimeoutForTests(ms: number | null): void {
+  walkTimeoutMs = ms ?? FS_CALL_TIMEOUT_MS;
+}
 
 /**
  * What a delete leaves on disk, after Sonarr's and Radarr's MediaFileDeletionService: deleting a title with its
@@ -52,20 +59,21 @@ const ANY_MEDIA_EXTENSIONS: ReadonlySet<string> = new Set([
 ]);
 
 /** First file under `dir` that is media of any type (outside extras folders and samples), or null. */
-function findMediaFile(dir: string, mediaType: string, depth = 0): string | null {
+async function findMediaFile(dir: string, mediaType: string, depth = 0): Promise<string | null> {
   if (depth > 8) return null;
   const filter = scanFilterFor(mediaType);
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
+    entries = await readdirAsync(dir, walkTimeoutMs);
+  } catch (err) {
+    if (err instanceof StorageTimeoutError) throw err;
     return dir;
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (isExcludedFolder(entry.name, full, filter, depth + 1)) continue;
-      const found = findMediaFile(full, mediaType, depth + 1);
+      const found = await findMediaFile(full, mediaType, depth + 1);
       if (found) return found;
     } else if (ANY_MEDIA_EXTENSIONS.has(path.extname(entry.name).toLowerCase()) && !isExcludedFile(entry.name, filter)) {
       return full;
@@ -78,31 +86,43 @@ function findMediaFile(dir: string, mediaType: string, depth = 0): string | null
 const DISPOSABLE_EXTENSIONS = new Set([".nfo", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tbn", ".srt", ".sub", ".idx", ".ass", ".ssa", ".vtt", ".txt", ".xml", ".json", ".db", ".ini", ".url"]);
 
 /** Whether every file under `dir` is disposable. */
-function onlyDisposableFiles(dir: string, depth = 0): boolean {
+async function onlyDisposableFiles(dir: string, depth = 0): Promise<boolean> {
   if (depth > 8) return false;
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
+    entries = await readdirAsync(dir, walkTimeoutMs);
+  } catch (err) {
+    if (err instanceof StorageTimeoutError) throw err;
     return false;
   }
-  return entries.every((entry) => (entry.isDirectory() ? onlyDisposableFiles(path.join(dir, entry.name), depth + 1) : DISPOSABLE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())));
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (!(await onlyDisposableFiles(path.join(dir, entry.name), depth + 1))) return false;
+    } else if (!DISPOSABLE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) return false;
+  }
+  return true;
 }
 
-function hasAnyFile(dir: string, depth = 0): boolean {
+async function hasAnyFile(dir: string, depth = 0): Promise<boolean> {
   if (depth > 8) return true;
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
+    entries = await readdirAsync(dir, walkTimeoutMs);
+  } catch (err) {
+    if (err instanceof StorageTimeoutError) throw err;
     return true;
   }
-  return entries.some((entry) => !entry.isDirectory() || hasAnyFile(path.join(dir, entry.name), depth + 1));
+  for (const entry of entries) {
+    if (!entry.isDirectory() || (await hasAnyFile(path.join(dir, entry.name), depth + 1))) return true;
+  }
+  return false;
 }
 
 export interface FolderCleanup {
   removed: string[];
   kept: { folder: string; reason: string }[];
+  /** Folders whose storage did not answer, so they were not looked at (and are still there). */
+  unresponsive: string[];
 }
 
 /**
@@ -115,7 +135,7 @@ export async function removeLeftoverFolders(
   row: { type: string; title: string; library_folder?: string | null; root_folder_id?: number | null },
   recycledPaths: string[]
 ): Promise<FolderCleanup> {
-  const result: FolderCleanup = { removed: [], kept: [] };
+  const result: FolderCleanup = { removed: [], kept: [], unresponsive: [] };
   if (getSetting("removeFolderOnDelete") === "0") return result;
   const roots = await rootPaths();
   const candidates = new Set<string>();
@@ -139,29 +159,37 @@ export async function removeLeftoverFolders(
       result.kept.push({ folder, reason: "it is, or holds, a root folder" });
       continue;
     }
-    if (!fs.existsSync(folder)) continue;
-    const tracked = await trackedFileInside(folder);
-    if (tracked) {
-      result.kept.push({ folder, reason: `"${tracked}" belongs to another title` });
-      continue;
+    try {
+      if (!(await pathExistsAsync(folder, walkTimeoutMs))) continue;
+      const tracked = await trackedFileInside(folder);
+      if (tracked) {
+        result.kept.push({ folder, reason: `"${tracked}" belongs to another title` });
+        continue;
+      }
+      const media = await findMediaFile(folder, row.type);
+      if (media) {
+        result.kept.push({ folder, reason: `it still holds "${media}"` });
+        continue;
+      }
+      if (!(await hasAnyFile(folder))) {
+        await fsp.rm(folder, { recursive: true, force: true }).catch(() => {});
+        if (!(await pathExistsAsync(folder, walkTimeoutMs))) result.removed.push(folder);
+        continue;
+      }
+      // With the recycle bin off the folder is deleted outright: only when nothing but disposable leftovers is in it.
+      if (!isRecycleBinEnabled() && !(await onlyDisposableFiles(folder))) {
+        result.kept.push({ folder, reason: "the recycle bin is off and it holds files of other kinds" });
+        continue;
+      }
+      if (await recycleFile(folder, row.type, `${row.title} (folder)`, null)) result.removed.push(folder);
+      else result.kept.push({ folder, reason: "the recycle bin could not take it" });
+    } catch (err) {
+      // A share that does not answer: the folder is left as it is, rather than the delete (and with a sync read, the
+      // whole server) hanging on it.
+      if (!(err instanceof StorageTimeoutError)) throw err;
+      result.unresponsive.push(folder);
+      result.kept.push({ folder, reason: `its storage did not answer (${err.message})` });
     }
-    const media = findMediaFile(folder, row.type);
-    if (media) {
-      result.kept.push({ folder, reason: `it still holds "${media}"` });
-      continue;
-    }
-    if (!hasAnyFile(folder)) {
-      await fsp.rm(folder, { recursive: true, force: true }).catch(() => {});
-      if (!fs.existsSync(folder)) result.removed.push(folder);
-      continue;
-    }
-    // With the recycle bin off the folder is deleted outright: only when nothing but disposable leftovers is in it.
-    if (!isRecycleBinEnabled() && !onlyDisposableFiles(folder)) {
-      result.kept.push({ folder, reason: "the recycle bin is off and it holds files of other kinds" });
-      continue;
-    }
-    if (await recycleFile(folder, row.type, `${row.title} (folder)`, null)) result.removed.push(folder);
-    else result.kept.push({ folder, reason: "the recycle bin could not take it" });
   }
   for (const k of result.kept) log.info(`[delete] left folder "${k.folder}" in place: ${k.reason}`);
   return result;
@@ -185,7 +213,7 @@ async function removeEmptyParents(file: string, roots: string[]): Promise<void> 
   if (!owner) return;
   for (let dir = path.dirname(resolved); dir !== owner && dir.startsWith(owner + path.sep); dir = path.dirname(dir)) {
     try {
-      if (fs.readdirSync(dir).length > 0) return;
+      if ((await readdirNamesAsync(dir, walkTimeoutMs)).length > 0) return;
       await fsp.rmdir(dir);
     } catch {
       return;

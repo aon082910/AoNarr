@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -8,7 +7,7 @@ import { config } from "../config.js";
 import { getSetting } from "./settingsStore.js";
 import { log } from "./logger.js";
 import { fitFileName } from "./pathNames.js";
-import { StorageTimeoutError, guardedFsCall, statAsync } from "./fsAsync.js";
+import { StorageTimeoutError, directorySizeAsync, guardedFsCall, lstatAsync, pathExistsAsync, readdirAsync, statAsync } from "./fsAsync.js";
 
 function recycleBinRoot(): string {
   return getSetting("recycleBinDir") || path.join(config.configDir, "recycle-bin");
@@ -24,10 +23,10 @@ export function isRecycleBinEnabled(): boolean {
 }
 
 /** Whether anything (a file, a directory, or a symlink, dangling or not) still sits at `p`. Any
- * error other than "not there", like a dead mount's ENOTCONN, counts as still there. */
+ * error other than "not there", like a dead mount's ENOTCONN or a mount that does not answer, counts as still there. */
 async function entryExists(p: string): Promise<boolean> {
   try {
-    await fsp.lstat(p);
+    await lstatAsync(p);
     return true;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -123,13 +122,15 @@ export async function recycleFile(filePath: string, mediaType: string, title: st
 
   let size: number;
   try {
-    size = (await fsp.stat(filePath)).size;
+    const stat = await statAsync(filePath);
+    // A folder's own size is its directory inode (4 KB): its entry shows what is in it.
+    size = stat.isDirectory() ? (await directorySizeAsync(filePath)).bytes : stat.size;
   } catch (err) {
     // stat follows symlinks, so a library symlink into a debrid/rclone mount that's down fails
     // here although the link itself is fine. The link is still moved into the bin (as a link,
     // restorable); anything else unreachable is left in place. Deleting it "instead" used to
     // destroy exactly the files a mount outage made look missing.
-    const link = await fsp.lstat(filePath).catch(() => null);
+    const link = await lstatAsync(filePath).catch(() => null);
     if (!link?.isSymbolicLink()) {
       if (link || (err as NodeJS.ErrnoException).code !== "ENOENT") {
         log.warn(`[recycleBin] can't reach "${filePath}", leaving it in place:`, (err as Error).message);
@@ -267,6 +268,57 @@ function resetInterruptedRestoresOnce(): Promise<void> {
   return interruptedRestoresReset;
 }
 
+/** Whether `p` is a directory (not a link to one); false for anything else or a path that cannot be read. */
+async function isDirectoryAt(p: string): Promise<boolean> {
+  try {
+    return (await lstatAsync(p)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Moves what is in recycled folder `src` into the existing folder `dest`: entries that are not there yet are moved,
+ * folders in both are merged, and a file that is already there is left in `src` (it may be a newer copy). Returns how
+ * many entries were left.
+ */
+async function mergeDirectoryInto(src: string, dest: string, id: number): Promise<number> {
+  let left = 0;
+  for (const entry of await readdirAsync(src)) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    if (!(await entryExists(to))) {
+      await moveFileAsync(from, to, restoreStagingPath(id, to));
+    } else if (entry.isDirectory() && (await isDirectoryAt(to))) {
+      left += await mergeDirectoryInto(from, to, id);
+      if ((await readdirAsync(from)).length === 0) await fsp.rmdir(from).catch(() => {});
+    } else {
+      left++;
+    }
+  }
+  return left;
+}
+
+/** Starts the restore of every other entry whose original path is below `folder`. Each is restored on its own (an
+ * entry already restoring is skipped, as are those whose file is back already: they report it on their own row). */
+async function restoreEntriesBeneath(folder: string, exceptId: number): Promise<void> {
+  const prefix = folder.endsWith(path.sep) ? folder : folder + path.sep;
+  const rows = (await db
+    .prepare("SELECT id, original_path FROM recycle_bin WHERE restoring = 0 AND id <> ? AND substr(original_path, 1, ?) = ? ORDER BY id")
+    .all(exceptId, prefix.length, prefix)) as { id: number; original_path: string }[];
+  // The same path recycled more than once: only the most recent entry is restored, as restore-all does.
+  const claimed = new Set<string>();
+  for (const row of [...rows].reverse()) {
+    if (claimed.has(row.original_path)) continue;
+    claimed.add(row.original_path);
+    try {
+      await startRestoreFromRecycleBin(row.id);
+    } catch (err) {
+      log.warn(`[recycleBin] restoring beneath "${folder}" skipped entry ${row.id}:`, (err as Error).message);
+    }
+  }
+}
+
 /** Kicks off a restore and returns immediately — the caller (the route) responds right away
  * rather than holding the HTTP request open for however long a large file takes to move. Progress
  * is tracked via the `restoring`/`restore_error` columns so the list view can reflect it. Throws
@@ -294,12 +346,26 @@ export async function startRestoreFromRecycleBin(id: number): Promise<void> {
     try {
       // rename()/cp() would silently replace whatever is there now — typically a newer download of
       // the same item that landed at the same templated path after this one was recycled.
-      if (fs.existsSync(row.original_path)) {
-        throw new Error("A file already exists at the original location — move or remove it first, then restore again");
+      if (await pathExistsAsync(row.original_path)) {
+        // A recycled folder whose files came back first (their restore created it again) is put back by merging: what is
+        // not there yet is moved in, and nothing is replaced.
+        const folderIntoFolder = (await isDirectoryAt(row.recycle_path)) && (await isDirectoryAt(row.original_path));
+        if (!folderIntoFolder) {
+          throw new Error("A file already exists at the original location — move or remove it first, then restore again");
+        }
+        const left = await mergeDirectoryInto(row.recycle_path, row.original_path, id);
+        if (left > 0) {
+          throw new Error(`The folder was restored, but ${left} file(s) in it already exist at the original location and stay in the recycle bin`);
+        }
+        await fsp.rm(row.recycle_path, { recursive: true, force: true });
+      } else {
+        await fsp.mkdir(path.dirname(row.original_path), { recursive: true });
+        await moveFileAsync(row.recycle_path, row.original_path, restoreStagingPath(id, row.original_path));
       }
-      await fsp.mkdir(path.dirname(row.original_path), { recursive: true });
-      await moveFileAsync(row.recycle_path, row.original_path, restoreStagingPath(id, row.original_path));
       await db.prepare("DELETE FROM recycle_bin WHERE id = ?").run(id);
+      // Restoring a folder brings back what was recycled from beneath it too (a file recycled on its own before the
+      // folder went, which a restore of the folder alone would leave behind in the bin).
+      await restoreEntriesBeneath(row.original_path, id);
     } catch (err) {
       log.warn(`[recycleBin] restore failed for entry ${id}:`, (err as Error).message);
       await db.prepare("UPDATE recycle_bin SET restoring = 0, restore_error = ? WHERE id = ?").run((err as Error).message, id);
@@ -365,7 +431,7 @@ export async function purgeRecycleBinEntry(id: number): Promise<void> {
   if (!row) return;
   if (row.restoring) throw new Error("This item is being restored — wait for that to finish first");
   try {
-    fs.rmSync(row.recycle_path, { recursive: true, force: true });
+    await fsp.rm(row.recycle_path, { recursive: true, force: true });
   } catch {
     // already gone
   }

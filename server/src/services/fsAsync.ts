@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 
 /**
  * Helpers for the library-wide jobs and the status pages that touch the disk.
@@ -74,6 +75,72 @@ export function guardedFsCall<T>(operation: string, target: string, timeoutMs: n
  * missing path; throws StorageTimeoutError for a mount that does not answer. */
 export function statAsync(target: string, timeoutMs = FS_CALL_TIMEOUT_MS): Promise<fs.Stats> {
   return guardedCall("stat", target, timeoutMs, () => fs.promises.stat(target));
+}
+
+/** `fs.promises.lstat` (does not follow symlinks) with the timeout rules above. */
+export function lstatAsync(target: string, timeoutMs = FS_CALL_TIMEOUT_MS): Promise<fs.Stats> {
+  return guardedCall("lstat", target, timeoutMs, () => fs.promises.lstat(target));
+}
+
+/** The entries of a directory with their types, with the timeout rules above (the same call a library scan makes). */
+export function readdirAsync(target: string, timeoutMs = FS_CALL_TIMEOUT_MS): Promise<fs.Dirent[]> {
+  return guardedCall("readdir", target, timeoutMs, () => fs.promises.readdir(target, { withFileTypes: true }));
+}
+
+/** The names in a directory, with the timeout rules above. */
+export function readdirNamesAsync(target: string, timeoutMs = FS_CALL_TIMEOUT_MS): Promise<string[]> {
+  return guardedCall("readdir-names", target, timeoutMs, () => fs.promises.readdir(target));
+}
+
+/**
+ * The total size of the files under `dir` (symlinks are not followed), counted without blocking and within bounds:
+ * at most `maxEntries` entries and `budgetMs` in all. `complete` is false when a bound was hit or part of the tree
+ * did not answer, in which case `bytes` is what was counted so far.
+ */
+export async function directorySizeAsync(dir: string, options: { maxEntries?: number; budgetMs?: number } = {}): Promise<{ bytes: number; complete: boolean }> {
+  const maxEntries = options.maxEntries ?? 50_000;
+  const deadline = Date.now() + (options.budgetMs ?? 10_000);
+  const remaining = () => Math.max(1, Math.min(FS_CALL_TIMEOUT_MS, deadline - Date.now()));
+  let bytes = 0;
+  let seen = 0;
+  let complete = true;
+  const pendingDirs = [dir];
+  while (pendingDirs.length > 0) {
+    if (Date.now() >= deadline) return { bytes, complete: false };
+    const current = pendingDirs.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await readdirAsync(current, remaining());
+    } catch (err) {
+      if (err instanceof StorageTimeoutError) return { bytes, complete: false };
+      complete = false; // unreadable: its files are not counted
+      continue;
+    }
+    for (let i = 0; i < entries.length; i += 16) {
+      const batch = entries.slice(i, i + 16);
+      seen += batch.length;
+      if (seen > maxEntries) return { bytes, complete: false };
+      const sizes = await Promise.all(
+        batch.map(async (entry) => {
+          const full = path.join(current, entry.name);
+          if (entry.isDirectory()) {
+            pendingDirs.push(full);
+            return 0;
+          }
+          if (!entry.isFile()) return 0;
+          try {
+            return (await lstatAsync(full, remaining())).size;
+          } catch (err) {
+            complete = false;
+            if (err instanceof StorageTimeoutError) pendingDirs.length = 0;
+            return 0;
+          }
+        })
+      );
+      for (const size of sizes) bytes += size;
+    }
+  }
+  return { bytes, complete };
 }
 
 /** `fs.existsSync` without blocking: any error other than a timeout reads as "not there", as before.

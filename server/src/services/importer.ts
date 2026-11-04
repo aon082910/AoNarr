@@ -1742,8 +1742,10 @@ export async function placeFile(params: {
   /** An automatic import (not a manual one, nor a release the admin picked from the interactive search):
    * a file of a worse quality is refused rather than put over a better one the library already has. */
   refuseDowngrade?: boolean;
+  /** Works out where the file would go and refuses what the import would refuse, but places nothing and writes nothing. */
+  dryRun?: boolean;
 }): Promise<{ destPath: string; fileLabel: string }> {
-  const { itemId, episodeId, subItemId, sourceFile, quality, batchClaims, verify, releaseTitle, refuseDowngrade } = params;
+  const { itemId, episodeId, subItemId, sourceFile, quality, batchClaims, verify, releaseTitle, refuseDowngrade, dryRun } = params;
 
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
@@ -1752,6 +1754,7 @@ export async function placeFile(params: {
   const shape = effectiveShape(item);
 
   if (shape === "collection" && typeConfig.multiFilePerChild && subItemId) {
+    if (dryRun) throw new Error("The destination of a track is decided when its album is imported");
     const placed = await placeAlbumFiles({ itemId, subItemId, anchorFile: sourceFile, quality, onlyAnchor: true, batchClaims });
     if (!placed.anchorDest) throw new ImportSkippedError(`"${path.basename(sourceFile)}" could not be placed`);
     return { destPath: placed.anchorDest, fileLabel: path.basename(placed.anchorDest) };
@@ -1961,6 +1964,8 @@ export async function placeFile(params: {
     throw new ImportSkippedError(`Another file in this import was already placed for "${fileLabel}" — not replacing it with "${path.basename(sourceFile)}"`);
   }
 
+  if (dryRun) return { destPath, fileLabel };
+
   // Radarr's "Skip Free Space Check" — on by default (i.e. the check runs), refuses an import that
   // would leave the destination filesystem with less free space than the file being placed, rather
   // than silently filling a small library drive to zero. `move` frees the source file's own space
@@ -2165,6 +2170,74 @@ export async function manualImportWarnings(params: {
     if (reason) warnings.push(`This file: ${reason}`);
   }
   return warnings;
+}
+
+export interface QueueManualImportPreview {
+  sourceFile: string;
+  /** The strategy the import would use: move, copy, hardlink or symlink. */
+  mode: string;
+  /** Where the file would be put; null when the importer decides that while it runs (an album, a season pack, a discography). */
+  destPath: string | null;
+  fileLabel: string | null;
+  /** Whether the file stays where it is in the download (every mode but move). */
+  sourceKept: boolean;
+  warnings: string[];
+  /** Why the import would be refused, when it would. */
+  error?: string;
+  note?: string;
+}
+
+/**
+ * What Activity's manual import of `sourceFile` for a queue row would do, without doing it: the strategy, where the file
+ * would land, and the warnings the other manual import preview gives. The same checks as the import itself decide the
+ * source file (inside the downloads folder, there) and the destination (the importer's own dry run).
+ */
+export async function previewQueueManualImport(queueItemId: number, sourceFile: string, overrideQuality?: string): Promise<QueueManualImportPreview> {
+  const queueRow = (await db.prepare("SELECT * FROM queue WHERE id = ?").get(queueItemId)) as any;
+  if (!queueRow) throw new Error(`Queue item ${queueItemId} not found`);
+  const queueItem = queueItemFromRow(queueRow);
+  const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(queueItem.mediaItemId);
+  if (!mediaRow) throw new Error(`Media item ${queueItem.mediaItemId} not found`);
+  const item = mediaItemFromRow(mediaRow);
+  const typeConfig = getMediaTypeConfig(item.type);
+  const shape = effectiveShape(item);
+
+  const downloadsDir = path.resolve(config.downloadsDir);
+  const resolved = path.resolve(sourceFile);
+  if (resolved !== downloadsDir && !resolved.startsWith(downloadsDir + path.sep)) throw new Error("Selected file must be inside the downloads directory");
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) throw new Error("Selected file no longer exists");
+
+  // What the strategy would be: the one asked for, else the setting, with "auto" decided by this download's protocol.
+  let mode = strategyOverride.getStore() ?? getSetting("importStrategy") ?? "move";
+  if (mode === "auto") {
+    const client = queueRow.download_client_id
+      ? ((await db.prepare("SELECT type FROM download_clients WHERE id = ?").get(queueRow.download_client_id)) as { type: string } | undefined)
+      : undefined;
+    mode = autoStrategyFor(queueRow.protocol, client?.type) ?? "move";
+  }
+  const quality = overrideQuality ?? queueItem.quality;
+  const preview: QueueManualImportPreview = { sourceFile: resolved, mode, destPath: null, fileLabel: null, sourceKept: mode !== "move", warnings: [] };
+  preview.warnings = await manualImportWarnings({ itemId: item.id, episodeId: queueItem.episodeId, subItemId: queueItem.subItemId, sourceFile: resolved, quality });
+
+  const isAlbum = shape === "collection" && typeConfig.multiFilePerChild;
+  if (isAlbum && !queueItem.episodeId) {
+    preview.note = queueItem.subItemId
+      ? "The album's files are filed together when it is imported; where they go is decided then"
+      : "The albums this download holds are filed when it is imported; where they go is decided then";
+    return preview;
+  }
+  if (shape === "episodic" && queueItem.seasonNumber != null && !queueItem.episodeId) {
+    preview.note = "The files of the season are filed when it is imported; where they go is decided then";
+    return preview;
+  }
+  try {
+    const placed = await placeFile({ itemId: item.id, episodeId: queueItem.episodeId, subItemId: queueItem.subItemId, sourceFile: resolved, quality, dryRun: true });
+    preview.destPath = placed.destPath;
+    preview.fileLabel = placed.fileLabel;
+  } catch (err) {
+    preview.error = err instanceof Error ? err.message : String(err);
+  }
+  return preview;
 }
 
 /** How long a post-import step (a subtitle provider's search and download) may hold the import open. */

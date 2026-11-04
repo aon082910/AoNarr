@@ -17,6 +17,19 @@ interface ImportCandidate {
   mtimeMs: number;
 }
 
+/** What a manual import would do (POST /activity/queue/:id/manual-import with preview). */
+interface ManualImportPreview {
+  sourceFile: string;
+  mode: string;
+  destPath: string | null;
+  sourceKept: boolean;
+  warnings: string[];
+  error?: string;
+  note?: string;
+}
+
+const IMPORT_MODE_LABELS: Record<string, string> = { move: "Move", copy: "Copy", hardlink: "Hardlink", symlink: "Symlink" };
+
 interface TimelineEntry {
   timestamp: string;
   type: string;
@@ -165,6 +178,10 @@ export default function Activity() {
   const [candidates, setCandidates] = useState<ImportCandidate[] | null>(null);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
+  // "" follows the import strategy setting; the others are for this import alone.
+  const [importMode, setImportMode] = useState("");
+  const [previews, setPreviews] = useState<Record<string, ManualImportPreview | { error: string }>>({});
+  const [previewing, setPreviewing] = useState<string | null>(null);
 
   const [queueStatusFilter, setQueueStatusFilter] = useState<QueueStatusFilter>(
     () => (localStorage.getItem("aonarr_activity_queue_status") as QueueStatusFilter) || "all"
@@ -473,6 +490,8 @@ export default function Activity() {
     setCandidates(null);
     setCandidatesError(null);
     setOverrideQuality("");
+    setImportMode("");
+    setPreviews({});
     if (qualities.length === 0) api.get<Quality[]>("/qualities").then(setQualities);
     api
       .get<ImportCandidate[]>(`/activity/queue/${item.id}/import-candidates`)
@@ -488,13 +507,32 @@ export default function Activity() {
     if (!manualImportFor) return;
     setImporting(sourceFile);
     try {
-      await api.post(`/activity/queue/${manualImportFor.id}/manual-import`, { sourceFile, quality: overrideQuality || undefined });
+      await api.post(`/activity/queue/${manualImportFor.id}/manual-import`, { sourceFile, quality: overrideQuality || undefined, mode: importMode || undefined });
       setManualImportFor(null);
       load();
     } catch (e) {
       notify.error((e as Error).message);
     } finally {
       setImporting(null);
+    }
+  }
+
+  /** Asks what importing the file would do, without importing it. Cleared again when the mode or quality changes. */
+  async function previewManualImport(sourceFile: string) {
+    if (!manualImportFor) return;
+    setPreviewing(sourceFile);
+    try {
+      const result = await api.post<ManualImportPreview>(`/activity/queue/${manualImportFor.id}/manual-import`, {
+        sourceFile,
+        quality: overrideQuality || undefined,
+        mode: importMode || undefined,
+        preview: true,
+      });
+      setPreviews((prev) => ({ ...prev, [sourceFile]: result }));
+    } catch (e) {
+      setPreviews((prev) => ({ ...prev, [sourceFile]: { error: (e as Error).message } }));
+    } finally {
+      setPreviewing(null);
     }
   }
 
@@ -944,11 +982,31 @@ export default function Activity() {
             automatically.
           </p>
           <label htmlFor="activity-quality-1">Quality</label>
-          <select id="activity-quality-1" value={overrideQuality} onChange={(e) => setOverrideQuality(e.target.value)} style={{ marginBottom: 10 }}>
+          <select id="activity-quality-1" value={overrideQuality} onChange={(e) => {
+              setOverrideQuality(e.target.value);
+              setPreviews({});
+            }} style={{ marginBottom: 10 }}>
             <option value="">Auto-detected — {manualImportFor.quality ?? "unknown"}</option>
             {qualities.map((q) => (
               <option key={q.id} value={q.name}>
                 {q.name}
+              </option>
+            ))}
+          </select>
+          <label htmlFor="activity-import-mode">Import mode</label>
+          <select
+            id="activity-import-mode"
+            value={importMode}
+            onChange={(e) => {
+              setImportMode(e.target.value);
+              setPreviews({});
+            }}
+            style={{ marginBottom: 10 }}
+          >
+            <option value="">Default (the import strategy setting)</option>
+            {Object.entries(IMPORT_MODE_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
               </option>
             ))}
           </select>
@@ -968,15 +1026,48 @@ export default function Activity() {
               </thead>
               <tbody>
                 {candidates.map((c) => (
-                  <tr key={c.path}>
+                  <Fragment key={c.path}>
+                  <tr>
                     <td style={{ fontFamily: "monospace", fontSize: "0.8rem", wordBreak: "break-all" }}>{c.path}</td>
                     <td>{formatSize(c.size)}</td>
-                    <td>
+                    <td className="toolbar">
+                      <button type="button" className="secondary" disabled={previewing === c.path} onClick={() => previewManualImport(c.path)} title="Shows where the file would go and what to look out for, without importing it">
+                        {previewing === c.path ? "Checking..." : "Preview"}
+                      </button>
                       <button type="button" className="icon-button" disabled={importing === c.path} onClick={() => manualImport(c.path)} title={importing === c.path ? "Importing..." : "Import"} aria-label="Import this file">
                         <InboxIcon />
                       </button>
                     </td>
                   </tr>
+                  {previews[c.path] && (
+                    <tr>
+                      <td colSpan={3} style={{ fontSize: "0.8rem" }}>
+                        {"error" in previews[c.path] && !("mode" in previews[c.path]) ? (
+                          <span style={{ color: "var(--danger)" }}>{(previews[c.path] as { error: string }).error}</span>
+                        ) : (
+                          (() => {
+                            const p = previews[c.path] as ManualImportPreview;
+                            return (
+                              <div>
+                                <div>
+                                  {IMPORT_MODE_LABELS[p.mode] ?? p.mode}: {p.sourceKept ? "the download stays where it is" : "the download is moved out of its folder"}
+                                </div>
+                                {p.destPath && <div style={{ fontFamily: "monospace", wordBreak: "break-all" }}>to {p.destPath}</div>}
+                                {p.note && <div style={{ color: "var(--muted)" }}>{p.note}</div>}
+                                {p.error && <div style={{ color: "var(--danger)" }}>It would be refused: {p.error}</div>}
+                                {p.warnings.map((w) => (
+                                  <div key={w} style={{ color: "var(--danger)" }}>
+                                    {w}
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })()
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>

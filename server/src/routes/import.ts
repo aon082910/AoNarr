@@ -46,7 +46,7 @@ function resolveImportSource(sourcePath: string): string {
 }
 
 /** `mode` of a manual import: absent, or one of the four strategies; anything else is a mistake worth a 400, not a silent move. */
-function importModeOf(mode: unknown): string | undefined {
+export function importModeOf(mode: unknown): string | undefined {
   if (mode === undefined || mode === null || mode === "") return undefined;
   if (typeof mode !== "string" || !["move", "copy", "hardlink", "symlink"].includes(mode)) {
     throw new HttpError(400, `mode must be one of: move, copy, hardlink, symlink`);

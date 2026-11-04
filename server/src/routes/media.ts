@@ -240,6 +240,7 @@ mediaRouter.post(
     // The rows are gone by now, so a file the recycle bin couldn't take (full or read-only bin disk)
     // is reported rather than silently left behind.
     const notRecycled: string[] = [];
+    const cleanupWarnings: string[] = [];
     for (const { row, files } of toRecycle) {
       let recycledAll = true;
       for (const file of files) {
@@ -248,7 +249,7 @@ mediaRouter.post(
           recycledAll = false;
         }
       }
-      if (recycledAll) await removeLeftoverFolders(row, files);
+      if (recycledAll) cleanupWarnings.push(...folderWarnings(await removeLeftoverFolders(row, files)));
     }
     if (notRecycled.length > 0) {
       log.warn(`[media] bulk remove: ${notRecycled.length} file(s) could not be moved to the recycle bin and were left in place; first: ${notRecycled[0]}`);
@@ -263,7 +264,12 @@ mediaRouter.post(
         `${deleted} item(s) via bulk remove${deleteFiles ? (notRecycled.length > 0 ? ` — files recycled, ${notRecycled.length} left in place` : " — files recycled") : ""}`
       );
     }
-    res.json({ deleted, skipped: mediaItemIds.length - deleted, ...(notRecycled.length > 0 ? { notRecycled: notRecycled.slice(0, 20), notRecycledCount: notRecycled.length } : {}) });
+    res.json({
+      deleted,
+      skipped: mediaItemIds.length - deleted,
+      ...(notRecycled.length > 0 ? { notRecycled: notRecycled.slice(0, 20), notRecycledCount: notRecycled.length } : {}),
+      ...(cleanupWarnings.length > 0 ? { warnings: cleanupWarnings.slice(0, 20) } : {}),
+    });
   })
 );
 
@@ -2048,6 +2054,11 @@ async function addImportExclusion(row: any): Promise<void> {
     .run(row.type, row.title, row.year ?? null, externalId, externalProvider, "Excluded on delete");
 }
 
+/** What to tell the admin about folders the delete could not look at because their storage did not answer. */
+function folderWarnings(cleanup: { unresponsive: string[] }): string[] {
+  return cleanup.unresponsive.map((folder) => `The storage holding "${folder}" did not answer, so that folder was left in place; remove it by hand if it should go`);
+}
+
 /** Shared by the single-item DELETE route below, the bulk remove above and the root-folder
  * cascade-delete option (routes/rootFolders.ts) — same "untrack only by default, ?deleteFiles=1
  * also recycles the file(s)" behavior either way. With `deferRecycle`, nothing on disk is touched:
@@ -2057,7 +2068,7 @@ export async function deleteMediaItemCascade(
   row: any,
   deleteFiles: boolean,
   addExclusion = false,
-  options: { deferRecycle?: boolean } = {}
+  options: { deferRecycle?: boolean; warnings?: string[] } = {}
 ): Promise<string[]> {
   const files = deleteFiles ? await filesOfItem(row) : [];
   if (!options.deferRecycle && files.length > 0) {
@@ -2080,7 +2091,7 @@ export async function deleteMediaItemCascade(
   await db.prepare("DELETE FROM media_items WHERE id = ?").run(row.id);
   notifyDeleted(String(row.title), String(row.type), deleteFiles).catch(() => undefined);
   // The title's folder goes with its files (artwork, NFO, subtitles, extras), once the row no longer claims anything in it.
-  if (deleteFiles && !options.deferRecycle) await removeLeftoverFolders(row, files);
+  if (deleteFiles && !options.deferRecycle) options.warnings?.push(...folderWarnings(await removeLeftoverFolders(row, files)));
   return options.deferRecycle ? files : [];
 }
 
@@ -2108,7 +2119,8 @@ mediaRouter.delete(
     // also recycle the item's file(s) (CASCADE drops episodes/sub_items too, so their
     // file_paths need collecting before the row goes). ?addExclusion=1 also adds it to the Import
     // Exclusions list so an active import list doesn't just re-add it on its next sync.
-    await deleteMediaItemCascade(row, req.query.deleteFiles === "1", req.query.addExclusion === "1");
+    const warnings: string[] = [];
+    await deleteMediaItemCascade(row, req.query.deleteFiles === "1", req.query.addExclusion === "1", { warnings });
     const actor = auditActor(req);
     logAuditEvent(
       actor.userId,
@@ -2116,6 +2128,11 @@ mediaRouter.delete(
       "media_deleted",
       `${row.title} (${row.type})${req.query.deleteFiles === "1" ? " — files recycled" : ""}`
     );
+    // Removed, and its files recycled; only the clean-up of its folder could not be done. Said instead of a bare 204.
+    if (warnings.length > 0) {
+      res.json({ deleted: true, warnings });
+      return;
+    }
     res.status(204).send();
   })
 );

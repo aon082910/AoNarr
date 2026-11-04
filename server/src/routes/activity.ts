@@ -5,7 +5,8 @@ import { nowExpr } from "../db/asyncDb.js";
 import { downloadClientFromRow, mediaItemFromRow, queueItemFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter, removeQueueItemDownload, withQueueImportLock } from "../services/downloadClient.js";
-import { importQueueItem, listDownloadedFileCandidates } from "../services/importer.js";
+import { importQueueItem, listDownloadedFileCandidates, previewQueueManualImport, withImportStrategy } from "../services/importer.js";
+import { importModeOf } from "./import.js";
 import { isJobRunning, listJobs } from "../services/jobRegistry.js";
 import { clampLimit, clampOffset } from "../services/mediaQuery.js";
 import { addToBlocklist } from "../services/blocklist.js";
@@ -13,7 +14,7 @@ import { notifyQueueChanged, registerQueueStreamClient, unregisterQueueStreamCli
 import { DISCOGRAPHY_SEARCH_KEY, loadDelayProfiles, markQueueImportFailed, markQueueImportStarted, pickDelayProfile, queueClientNote, tagIdsForMediaItem } from "../services/scheduler.js";
 import { queueTargetIds } from "../services/discography.js";
 import { delayMinutesFor } from "../services/delayHold.js";
-import { loadPending, PENDING_MAX_AGE_DAYS, removePending } from "../services/pendingStore.js";
+import { forgetPending, loadPending, PENDING_MAX_AGE_DAYS, removePending } from "../services/pendingStore.js";
 import { parseReleaseTitle } from "../services/releaseParser.js";
 import { ageMinutesOf } from "../services/releaseDecision.js";
 import { manualGrab } from "./search.js";
@@ -28,6 +29,35 @@ import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const activityRouter = Router();
 activityRouter.use(requireAdmin);
+
+/** Ids per IN list: far below SQLite's variable limit, so the number of queries stays one for any realistic number of rows. */
+const IN_LIST_CHUNK = 500;
+
+/** The rows of a table with the given ids, in one query per chunk of ids. */
+async function rowsById<T extends { id: number }>(table: string, columns: string, column: string, ids: number[]): Promise<Map<number, T>> {
+  const unique = [...new Set(ids)];
+  const found = new Map<number, T>();
+  for (let i = 0; i < unique.length; i += IN_LIST_CHUNK) {
+    const chunk = unique.slice(i, i + IN_LIST_CHUNK);
+    const rows = (await db.prepare(`SELECT ${columns} FROM ${table} WHERE ${column} IN (${chunk.map(() => "?").join(", ")})`).all(...chunk)) as T[];
+    for (const row of rows) found.set(Number(row.id), row);
+  }
+  return found;
+}
+
+/** The tag ids of each of the given titles. */
+async function tagIdsByMediaItem(mediaItemIds: number[]): Promise<Map<number, number[]>> {
+  const unique = [...new Set(mediaItemIds)];
+  const byItem = new Map<number, number[]>();
+  for (let i = 0; i < unique.length; i += IN_LIST_CHUNK) {
+    const chunk = unique.slice(i, i + IN_LIST_CHUNK);
+    const rows = (await db
+      .prepare(`SELECT media_item_id, tag_id FROM media_item_tags WHERE media_item_id IN (${chunk.map(() => "?").join(", ")})`)
+      .all(...chunk)) as { media_item_id: number; tag_id: number }[];
+    for (const row of rows) byItem.set(Number(row.media_item_id), [...(byItem.get(Number(row.media_item_id)) ?? []), Number(row.tag_id)]);
+  }
+  return byItem;
+}
 
 activityRouter.get(
   "/queue",
@@ -74,20 +104,27 @@ activityRouter.get(
     const delayProfiles = await loadDelayProfiles();
     const now = Date.now();
     const items: unknown[] = [];
+    // Everything the rows refer to is read in one query per table, whatever the number of rows.
+    const mediaById = await rowsById<{ id: number; title: string; type: string }>("media_items", "id, title, type", "id", rows.map((r) => r.mediaItemId));
+    const episodesById = await rowsById<{ id: number; season_number: number; episode_number: number; title: string | null }>(
+      "episodes",
+      "id, season_number, episode_number, title",
+      "id",
+      rows.filter((r) => r.leafTable === "episodes").map((r) => r.leafId)
+    );
+    const subItemsById = await rowsById<{ id: number; title: string }>("sub_items", "id, title", "id", rows.filter((r) => r.leafTable === "sub_items").map((r) => r.leafId));
+    const tagsByItem = await tagIdsByMediaItem(rows.map((r) => r.mediaItemId));
     for (const row of rows) {
-      const media = (await db.prepare("SELECT title, type FROM media_items WHERE id = ?").get(row.mediaItemId)) as { title: string; type: string } | undefined;
+      const media = mediaById.get(row.mediaItemId);
       if (!media) continue;
       let target: string | null = null;
       if (row.leafTable === "episodes") {
-        const ep = (await db.prepare("SELECT season_number, episode_number, title FROM episodes WHERE id = ?").get(row.leafId)) as
-          | { season_number: number; episode_number: number; title: string | null }
-          | undefined;
+        const ep = episodesById.get(row.leafId);
         if (ep) target = `S${String(ep.season_number).padStart(2, "0")}E${String(ep.episode_number).padStart(2, "0")}${ep.title ? ` ${ep.title}` : ""}`;
       } else if (row.leafTable === "sub_items") {
-        const sub = (await db.prepare("SELECT title FROM sub_items WHERE id = ?").get(row.leafId)) as { title: string } | undefined;
-        target = sub?.title ?? null;
+        target = subItemsById.get(row.leafId)?.title ?? null;
       }
-      const profile = pickDelayProfile(delayProfiles, await tagIdsForMediaItem(row.mediaItemId));
+      const profile = pickDelayProfile(delayProfiles, tagsByItem.get(row.mediaItemId) ?? []);
       const protocol = row.release.protocol;
       const delay = profile && (protocol === "torrent" || protocol === "usenet") ? delayMinutesFor(profile, protocol) : 0;
       const age = ageMinutesOf(row.release.publishDate, now);
@@ -146,7 +183,11 @@ activityRouter.delete(
   asyncHandler(async (req, res) => {
     const row = (await loadPending()).find((p) => p.id === Number(req.params.id));
     if (!row) throw new HttpError(404, "That release is not waiting any more");
-    await removePending(row.id);
+    // Remembered for as long as the delay would have held it (plus a day), or the next search or RSS sync would hold it again.
+    const profile = pickDelayProfile(await loadDelayProfiles(), await tagIdsForMediaItem(row.mediaItemId));
+    const protocol = row.release.protocol;
+    const delay = profile && (protocol === "torrent" || protocol === "usenet") ? delayMinutesFor(profile, protocol) : 0;
+    await forgetPending(row, delay);
     res.status(204).send();
   })
 );
@@ -464,7 +505,22 @@ activityRouter.post(
     if (!sourceFile || typeof sourceFile !== "string") throw new HttpError(400, "sourceFile is required");
     const overrideQuality = typeof req.body?.quality === "string" && req.body.quality ? req.body.quality : undefined;
     const queueId = Number(req.params.id);
-    await runAdminImport(queueId, () => importQueueItem(queueId, sourceFile, overrideQuality), true);
+    // `mode`: "move", "copy", "hardlink" or "symlink" for this import alone, as on the other manual import; without it the
+    // import strategy setting decides. An unknown mode is a 400, not a silent move.
+    const mode = importModeOf(req.body?.mode);
+    if (req.body?.preview === true) {
+      // What would be placed where, and the warnings, without moving anything or taking the row's import lock.
+      const queueRow = Number.isInteger(queueId) ? await db.prepare("SELECT id FROM queue WHERE id = ?").get(queueId) : undefined;
+      if (!queueRow) throw new HttpError(404, "Queue item not found");
+      try {
+        const preview = await withImportStrategy(mode, () => previewQueueManualImport(queueId, sourceFile, overrideQuality));
+        res.json({ preview: true, ...preview });
+      } catch (err) {
+        throw new HttpError(422, (err as Error).message);
+      }
+      return;
+    }
+    await runAdminImport(queueId, () => withImportStrategy(mode, () => importQueueItem(queueId, sourceFile, overrideQuality)), true);
     res.json({ ok: true });
   })
 );
