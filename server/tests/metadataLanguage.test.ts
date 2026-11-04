@@ -621,3 +621,225 @@ describe("ScreenScraper in the metadata language", () => {
     expect((await metadata.searchMetadata("rom", "game", "screenscraper"))[0].overview).toBe("Résumé");
   });
 });
+
+// ---------------------------------------------------------------------------
+// The language request is bounded, and a failed one never replaces stored text (review finding L15)
+// ---------------------------------------------------------------------------
+
+describe("the TMDB language request: timeout, one retry on 429, a flag when it fails", () => {
+  let log: (typeof import("../src/services/logger.js"))["log"];
+  beforeAll(async () => {
+    ({ log } = await import("../src/services/logger.js"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const movieUrl = () => new URL("https://api.themoviedb.org/3/movie/603?api_key=secret-key");
+  const answer = (body: Body, status = 200, headers: Record<string, string> = {}) => ({ ok: status < 400, status, json: async () => body, headers: new Headers(headers) });
+
+  it("gives the request a 10 second timeout, and a request that hangs is cut off and flagged as failed", async () => {
+    setSetting("metadataLanguage", "de");
+    const timeouts: number[] = [];
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      timeouts.push(ms);
+      return realTimeout(30); // the same signal, only quicker, so the test does not sit for ten seconds
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: any) => new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))))
+    );
+    const answered = await language.fetchTmdbLocalized(movieUrl());
+    expect(timeouts).toEqual([language.LOCALIZED_REQUEST_TIMEOUT_MS]);
+    expect(language.LOCALIZED_REQUEST_TIMEOUT_MS).toBe(10_000);
+    expect(language.localizationFailed(answered)).toBe(true);
+    expect(answered?.overview).toBeUndefined();
+  });
+
+  it("a hung language request does not hold the lookup: the default-language movie comes back flagged", async () => {
+    setSetting("metadataLanguage", "de");
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => realTimeout(30));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: any) => {
+        const asked = new URL(url);
+        if (languageOf(asked)) return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
+        return Promise.resolve(answer(asked.pathname.endsWith("/release_dates") ? { results: [] } : { id: 603, title: "The Matrix", overview: "English plot", poster_path: "/en.jpg", release_date: "1999-03-31" }));
+      })
+    );
+    const movie = await metadata.fetchMovieByTmdbId("603");
+    expect(movie).toMatchObject({ title: "The Matrix", overview: "English plot", localizationFailed: true });
+  });
+
+  it.each([
+    ["2", 2000],
+    ["60", 5000],
+    ["0", 0],
+    [null, 1000],
+    ["soon", 1000],
+  ] as const)("after a 429 with Retry-After %j it asks once more, %j ms later at most", async (header, waitMs) => {
+    setSetting("metadataLanguage", "de");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls++;
+        return calls === 1 ? answer({}, 429, header === null ? {} : { "Retry-After": header }) : answer({ overview: "Deutsche Handlung" });
+      })
+    );
+    const pending = language.fetchTmdbLocalized(movieUrl());
+    if (waitMs > 0) {
+      await vi.advanceTimersByTimeAsync(waitMs - 1);
+      expect(calls, "still waiting").toBe(1);
+    }
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toEqual({ overview: "Deutsche Handlung" });
+    expect(calls).toBe(2);
+  });
+
+  it("a Retry-After given as an HTTP date is read too, and is capped at 5 seconds", async () => {
+    setSetting("metadataLanguage", "de");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-11-04T10:00:00Z"));
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls++;
+        return calls === 1 ? answer({}, 429, { "Retry-After": new Date("2026-11-04T10:05:00Z").toUTCString() }) : answer({ overview: "ok" });
+      })
+    );
+    const pending = language.fetchTmdbLocalized(movieUrl());
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toEqual({ overview: "ok" });
+  });
+
+  it("gives up after a second 429: two requests only, and the answer is the failed flag", async () => {
+    setSetting("metadataLanguage", "de");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const fetchMock = vi.fn(async () => answer({}, 429, { "Retry-After": "1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = language.fetchTmdbLocalized(movieUrl());
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(language.localizationFailed(await pending)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("an error status or a network error is a failure, and the debug line names the path but never the API key", async () => {
+    setSetting("metadataLanguage", "de");
+    const debug = vi.spyOn(log, "debug").mockImplementation(() => undefined);
+    stubFetch((url) => (languageOf(url) ? { __status: 500 } : {}));
+    expect(language.localizationFailed(await language.fetchTmdbLocalized(movieUrl()))).toBe(true);
+    stubFetch((url) => (languageOf(url) ? undefined : {}));
+    expect(language.localizationFailed(await language.fetchTmdbLocalized(movieUrl()))).toBe(true);
+    expect(debug).toHaveBeenCalledTimes(2);
+    const lines = debug.mock.calls.map((call) => String(call[0]));
+    expect(lines[0]).toContain("/3/movie/603");
+    expect(lines[0]).toContain("HTTP 500");
+    expect(lines.join("\n")).not.toContain("secret-key");
+    expect(lines.join("\n")).not.toContain("api_key");
+  });
+
+  it("English asks for nothing and has nothing to fail; a translation TMDB lacks is an ordinary answer, not a failure", async () => {
+    deleteSetting("metadataLanguage");
+    const none = stubFetch(() => ({}));
+    expect(await language.fetchTmdbLocalized(movieUrl())).toBeNull();
+    expect(none).toEqual([]);
+    setSetting("metadataLanguage", "de");
+    stubFetch(() => ({ overview: "", poster_path: null }));
+    const lacking = await language.fetchTmdbLocalized(movieUrl());
+    expect(language.localizationFailed(lacking)).toBe(false);
+    expect(language.localizationFailed(null)).toBe(false);
+    expect(language.localizationFailed("localizationFailed")).toBe(false);
+  });
+
+  it("the lookups flag a failure on the result, and only a failure", async () => {
+    setSetting("metadataLanguage", "de");
+    const detail = (url: URL, failing: boolean) => {
+      if (url.pathname.endsWith("/release_dates") || url.pathname.endsWith("/content_ratings")) return { results: [] };
+      if (languageOf(url)) return failing ? { __status: 500 } : { id: 603, overview: "" };
+      return { id: 603, title: "The Matrix", name: "The Matrix", overview: "English plot", release_date: "1999-03-31", first_air_date: "1999-03-31" };
+    };
+    stubFetch((url) => detail(url, true));
+    expect(await metadata.fetchMovieByTmdbId("603")).toMatchObject({ overview: "English plot", localizationFailed: true });
+    expect(await metadata.fetchSeriesByTmdbId("603")).toMatchObject({ overview: "English plot", localizationFailed: true });
+    stubFetch((url) => (url.pathname === "/3/search/movie" ? (languageOf(url) ? { __status: 500 } : tmdbMovieSearch(url)) : detail(url, true)));
+    const rows = await metadata.searchMetadata("movie", "matrix", "tmdb");
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.localizationFailed === true && r.title !== "Matrix (deutscher Titel)")).toBe(true);
+
+    // TMDB answering without a translation is not a failure.
+    stubFetch((url) => detail(url, false));
+    const movie = await metadata.fetchMovieByTmdbId("603");
+    expect(movie.overview).toBe("English plot");
+    expect("localizationFailed" in movie).toBe(false);
+    stubFetch((url) => tmdbMovieSearch(url));
+    expect((await metadata.searchMetadata("movie", "matrix", "tmdb")).some((r) => "localizationFailed" in r)).toBe(false);
+  });
+
+  describe("refresh", () => {
+    let refreshOneMediaItem: (typeof import("../src/services/libraryScan.js"))["refreshOneMediaItem"];
+    beforeAll(async () => {
+      ({ refreshOneMediaItem } = await import("../src/services/libraryScan.js"));
+    });
+
+    async function insertMovie(overview: string | null): Promise<number> {
+      const result = await db
+        .prepare("INSERT INTO media_items (type, title, sort_title, year, overview, external_ids, monitored, has_file, status) VALUES ('movie', 'The Matrix', 'the matrix', 1999, ?, '{\"tmdb\":\"603\"}', 1, 0, 'unknown')")
+        .run(overview);
+      return Number(result.lastInsertRowid);
+    }
+    const overviewOf = async (id: number) => ((await db.prepare("SELECT overview FROM media_items WHERE id = ?").get(id)) as { overview: string | null }).overview;
+    const tmdb = (failing: boolean, localizedOverview = "Neue deutsche Handlung") => (url: URL) => {
+      if (url.pathname.endsWith("/release_dates")) return { results: [] };
+      if (languageOf(url)) return failing ? { __status: 500 } : { id: 603, title: "Matrix (deutsch)", overview: localizedOverview, poster_path: "/de.jpg" };
+      return { id: 603, title: "The Matrix", overview: "English plot", release_date: "1999-03-31", poster_path: "/en.jpg", vote_average: 8.2, production_companies: [] };
+    };
+
+    it("a failed language request leaves the stored translation alone; the rest of the refresh still happens", async () => {
+      setSetting("metadataLanguage", "de");
+      const id = await insertMovie("Gespeicherte deutsche Handlung");
+      stubFetch(tmdb(true));
+      expect((await refreshOneMediaItem(id)).ok).toBe(true);
+      expect(await overviewOf(id)).toBe("Gespeicherte deutsche Handlung");
+      const row = (await db.prepare("SELECT rating, poster_url FROM media_items WHERE id = ?").get(id)) as { rating: number | null; poster_url: string | null };
+      expect(row.rating).toBe(8.2);
+      expect(row.poster_url).toContain("/en.jpg");
+    });
+
+    it("a language request that works replaces it, and TMDB having no translation still keeps the English text coming in", async () => {
+      setSetting("metadataLanguage", "de");
+      const id = await insertMovie("Gespeicherte deutsche Handlung");
+      stubFetch(tmdb(false));
+      await refreshOneMediaItem(id);
+      expect(await overviewOf(id)).toBe("Neue deutsche Handlung");
+      stubFetch(tmdb(false, ""));
+      await refreshOneMediaItem(id);
+      expect(await overviewOf(id)).toBe("English plot");
+    });
+
+    it("with nothing stored yet, the default-language text is better than none, even when the language request failed", async () => {
+      setSetting("metadataLanguage", "de");
+      for (const stored of [null, ""]) {
+        const id = await insertMovie(stored);
+        stubFetch(tmdb(true));
+        await refreshOneMediaItem(id);
+        expect(await overviewOf(id), String(stored)).toBe("English plot");
+      }
+    });
+
+    it("in English nothing changes: the provider's text is written as before", async () => {
+      deleteSetting("metadataLanguage");
+      const id = await insertMovie("Old text");
+      stubFetch(tmdb(true));
+      await refreshOneMediaItem(id);
+      expect(await overviewOf(id)).toBe("English plot");
+    });
+  });
+});

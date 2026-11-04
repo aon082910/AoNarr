@@ -2273,7 +2273,9 @@ async function refreshOneItem(
            WHERE id = ?`
         )
         .run(
-          best.overview,
+          // The language request failed, so this is the default language's text: a stored overview (a translation an
+          // earlier refresh put there) stays, and COALESCE keeps it. Without one the default text is better than none.
+          best.localizationFailed && item.overview ? null : best.overview,
           poster.url,
           best.year,
           best.releaseDate ?? null,

@@ -37,6 +37,27 @@ const VALID: [string | undefined | null, string][] = [
 ];
 const INVALID = ["/a b", "/a?b", "/a#b", "/a:b", "/..", "/a/../b", "/./a", ".", "/a%2Fb", "/ä", "\\aonarr", "/a;b", "/a'b", "/a\"b", "/a$b"];
 
+/** External URL -> the link for "/api/x" with URL_BASE=/aonarr, in the server helper (appUrl) and the web helper
+ * (linkOnOrigin). The base is added unless the URL's PATH already ends with it; a host name that reads like the
+ * base ("http://aonarr") is not a path (review finding L1). */
+const ORIGIN_LINKS: [string, string][] = [
+  ["", "/aonarr/api/x"],
+  ["https://media.example.com", "https://media.example.com/aonarr/api/x"],
+  ["http://aonarr", "http://aonarr/aonarr/api/x"],
+  ["http://aonarr/", "http://aonarr/aonarr/api/x"],
+  ["http://aonarr:9876", "http://aonarr:9876/aonarr/api/x"],
+  ["HTTPS://AONARR", "HTTPS://AONARR/aonarr/api/x"],
+  ["//aonarr", "//aonarr/aonarr/api/x"],
+  ["//aonarr/aonarr", "//aonarr/aonarr/api/x"],
+  ["http://aonarr/aonarr", "http://aonarr/aonarr/api/x"],
+  ["http://aonarr/aonarr/", "http://aonarr/aonarr/api/x"],
+  ["https://h.example:8443/aonarr", "https://h.example:8443/aonarr/api/x"],
+  ["https://h.example/x/aonarr", "https://h.example/x/aonarr/api/x"],
+  ["https://h.example/myaonarr", "https://h.example/myaonarr/aonarr/api/x"],
+  ["https://h.example/aonarr/extra", "https://h.example/aonarr/extra/aonarr/api/x"],
+  ["/aonarr", "/aonarr/api/x"],
+];
+
 afterEach(() => {
   delete process.env.URL_BASE;
 });
@@ -82,6 +103,18 @@ describe("links built on the URL base", () => {
     expect(appUrl("https://h.example:8443/aonarr", "/api/x")).toBe("https://h.example:8443/aonarr/api/x");
     expect(appUrl("https://h.example/aonarr/", "/api/x")).toBe("https://h.example/aonarr/api/x");
     expect(appUrl("https://h.example", "")).toBe("https://h.example/aonarr");
+  });
+
+  it.each(ORIGIN_LINKS)("appUrl(%j) -> %j: the base is judged by the URL's path, not by the end of the string (L1)", (origin, expected) => {
+    process.env.URL_BASE = "/aonarr";
+    expect(appUrl(origin, "/api/x")).toBe(expected);
+  });
+
+  it("appUrl: a two-segment base is judged the same way", () => {
+    process.env.URL_BASE = "/media/aonarr";
+    expect(appUrl("http://aonarr", "/api/x")).toBe("http://aonarr/media/aonarr/api/x");
+    expect(appUrl("http://nas/media/aonarr", "/api/x")).toBe("http://nas/media/aonarr/api/x");
+    expect(appUrl("http://nas/aonarr", "/api/x")).toBe("http://nas/aonarr/media/aonarr/api/x");
   });
 
   it("artworkUrlForClient prefixes AoNarr's own artwork paths and nothing else", () => {
@@ -139,6 +172,11 @@ describe("the web helper (web/src/utils/urlBase.ts)", () => {
     expect(web.absoluteUrl("/api/webhooks/overseerr?token=t")).toBe("http://nas:9876/aonarr/api/webhooks/overseerr?token=t");
     expect(web.linkOnOrigin("https://h.example", "/share/t")).toBe("https://h.example/aonarr/share/t");
     expect(web.linkOnOrigin("https://h.example/aonarr/", "/share/t")).toBe("https://h.example/aonarr/share/t");
+  });
+
+  it.each(ORIGIN_LINKS)("with a base: linkOnOrigin(%j) -> %j, the same table as the server's appUrl (L1)", async (origin, expected) => {
+    const web = await loadWebHelper("/aonarr");
+    expect(web.linkOnOrigin(origin, "/api/x")).toBe(expected);
   });
 
   it("with a base: artwork URLs get the prefix coming in and lose it going out, nothing else changes", async () => {
@@ -283,6 +321,119 @@ describe("web/url-base.sh (the container start-up step)", () => {
           fs.writeFileSync(conf(), rendered);
           expect(run("/aonarr").status).toBe(0);
           expect(snapshot()).toEqual(first);
+        });
+
+        /** What an image upgrade puts in the web root: a new build (new asset hashes), no base-config.js, and the
+         * stock script's freshly rendered config. The state directory is the only thing that survives. */
+        function upgradeTo(rendered: string, built: { index: string; manifest: string }) {
+          const newIndex = built.index.replace("index-AbC123.js", "index-ZZ9999.js").replace("index-DeF456.css", "index-YY8888.css");
+          const newManifest = built.manifest.replace('"short_name": "AoNarr"', '"short_name": "AoNarr 2"');
+          expect(newIndex).not.toBe(built.index);
+          expect(newManifest).not.toBe(built.manifest);
+          fs.writeFileSync(path.join(root(), "index.html"), newIndex);
+          fs.writeFileSync(path.join(root(), "manifest.json"), newManifest);
+          fs.rmSync(path.join(root(), "base-config.js"), { force: true });
+          fs.writeFileSync(conf(), rendered);
+          return { newIndex, newManifest };
+        }
+
+        it("a state directory that outlived the container never brings an older build back (L3): no base after an upgrade", () => {
+          prepare(configFile);
+          const built = snapshot();
+          run("/aonarr");
+          const { newIndex, newManifest } = upgradeTo(built.conf, built);
+          const res = run(undefined);
+          expect(res.status, res.stderr).toBe(0);
+          const after = snapshot();
+          expect(after.index).toBe(newIndex);
+          expect(after.manifest).toBe(newManifest);
+          expect(after.conf).toBe(built.conf);
+          expect(after.baseConfig).toBeNull();
+          expect(fs.existsSync(state())).toBe(false);
+        });
+
+        it("... and with the same base after an upgrade: the new build is prefixed, then comes back byte for byte", () => {
+          prepare(configFile);
+          const built = snapshot();
+          run("/aonarr");
+          const { newIndex, newManifest } = upgradeTo(built.conf, built);
+          expect(run("/aonarr").status).toBe(0);
+          const prefixed = snapshot();
+          expect(prefixed.index).toContain('src="/aonarr/assets/index-ZZ9999.js"');
+          expect(prefixed.index).toContain('href="/aonarr/assets/index-YY8888.css"');
+          expect(prefixed.index).not.toContain("AbC123");
+          expect(prefixed.index).not.toContain("DeF456");
+          expect(prefixed.index).not.toContain("/aonarr/aonarr");
+          expect(JSON.parse(prefixed.manifest).short_name).toBe("AoNarr 2");
+          expect(prefixed.conf.match(/AONARR-URL-BASE-BEGIN/g)).toHaveLength(2);
+          expect(run(undefined).status).toBe(0);
+          const after = snapshot();
+          expect(after.index).toBe(newIndex);
+          expect(after.manifest).toBe(newManifest);
+        });
+
+        it("... and when only one file is new: that one is kept, the one still as written is put back", () => {
+          prepare(configFile);
+          const built = snapshot();
+          run("/aonarr");
+          const newIndex = built.index.replace("index-AbC123.js", "index-ZZ9999.js");
+          fs.writeFileSync(path.join(root(), "index.html"), newIndex);
+          expect(run(undefined).status).toBe(0);
+          const after = snapshot();
+          expect(after.index).toBe(newIndex);
+          expect(after.manifest).toBe(built.manifest);
+          expect(fs.existsSync(state())).toBe(false);
+        });
+
+        it("a state directory with no checksum on record (a stop between saving and rewriting) treats the file as the original", () => {
+          prepare(configFile);
+          const built = snapshot();
+          run("/aonarr");
+          const first = snapshot();
+          fs.writeFileSync(path.join(root(), "index.html"), built.index);
+          fs.writeFileSync(path.join(root(), "manifest.json"), built.manifest);
+          fs.rmSync(path.join(state(), "sum"), { recursive: true, force: true });
+          expect(run("/aonarr").status).toBe(0);
+          expect(snapshot()).toEqual(first);
+          expect(run(undefined).status).toBe(0);
+          expect(snapshot().index).toBe(built.index);
+        });
+
+        it("the rewrite leaves no temporary file behind and keeps the files' mode", () => {
+          prepare(configFile);
+          fs.chmodSync(path.join(root(), "index.html"), 0o640);
+          run("/aonarr");
+          expect(fs.readdirSync(root()).sort()).toEqual(["assets", "base-config.js", "index.html", "manifest.json"]);
+          expect(fs.statSync(path.join(root(), "index.html")).mode & 0o777).toBe(0o640);
+          run(undefined);
+          expect(fs.statSync(path.join(root(), "index.html")).mode & 0o777).toBe(0o640);
+        });
+
+        it("the .. guard is a map on the path part of the address: a query holding /.. is not refused (L4)", () => {
+          prepare(configFile);
+          expect(run("/aonarr").status).toBe(0);
+          const text = snapshot().conf;
+          const found = text.match(/map \$request_uri \$aonarr_dotdot \{\s*"~([^"]+)" 1;/);
+          expect(found, "map $aonarr_dotdot").not.toBeNull();
+          const dotdot = new RegExp(found![1]);
+          for (const uri of ["/aonarr/../x", "/aonarr/%2e%2e/x", "/aonarr/.%2E/x", "/aonarr/..", "/aonarr/..?x=1", "/aonarr/a/../b", "/aonarr/%2E%2e?x", "/aonarr/a/%2e%2E"]) {
+            expect(dotdot.test(uri), uri).toBe(true);
+          }
+          for (const uri of [
+            "/aonarr/api/files?path=/media/..",
+            "/aonarr/api/x?p=/a/../b",
+            "/aonarr/api/x?p=%2e%2e",
+            "/aonarr/api/x?a=1&b=/..",
+            "/aonarr/api/files?path=..%2F",
+            "/aonarr/.../x",
+            "/aonarr/a..b",
+            "/aonarr/x..",
+            "/aonarr/..x/y",
+          ]) {
+            expect(dotdot.test(uri), uri).toBe(false);
+          }
+          expect(text).toContain("if ($aonarr_dotdot) { rewrite ^ /__aonarr_outside last; }");
+          expect(text).not.toContain("if ($request_uri ~ \"(^|/)");
         });
 
         it.each(INVALID)("refuses %j and leaves everything as it was", (value) => {

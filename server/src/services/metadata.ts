@@ -13,6 +13,7 @@ import { filterAlbumsByProfile, filterBooksByProfile, musicbrainzTypeFilter, typ
 import {
   baseLanguage,
   fetchTmdbLocalized,
+  localizationFailed,
   metadataLanguage,
   overlayTmdbRows,
   preferLocalized,
@@ -46,6 +47,10 @@ export interface MetadataSearchResult {
   /** Provider vote average (TMDB's 0-10 `vote_average`) shown as a ratings badge next to quality/
    * status. Also populated by AniList, RAWG, and IGDB, each normalized to the same 0-10 scale. */
   rating?: number | null;
+  /** TMDB only, and only when true: the request for the metadata language FAILED (a timeout, a network or HTTP error; not
+   * "TMDB has no translation"), so the overview and artwork are the default language's. A refresh keeps the overview it
+   * already stored rather than write this one over a translation. */
+  localizationFailed?: boolean;
   /** Only populated by the by-id TMDB detail lookups (search results don't carry it). */
   runtimeMinutes?: number | null;
   /** Movies only, and only from the by-id TMDB detail lookup (production_companies isn't in TMDB's
@@ -236,7 +241,9 @@ async function fetchTmdbList(url: URL, failure: string): Promise<any[]> {
   const [res, localized] = await Promise.all([fetch(url.toString()), fetchTmdbLocalized(url)]);
   if (!res.ok) throw new Error(`${failure}: HTTP ${res.status}`);
   const body: any = await res.json();
-  return overlayTmdbRows(body.results ?? [], localized?.results);
+  const rows = overlayTmdbRows(body.results ?? [], localized?.results);
+  // The language request failed (as opposed to TMDB having no translation): say so on every row, see MetadataSearchResult.localizationFailed.
+  return localizationFailed(localized) ? rows.map((row) => ({ ...row, localizationFailed: true })) : rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +267,7 @@ async function searchMoviesTmdb(query: string): Promise<MetadataSearchResult[]> 
     releaseDate: r.release_date || null,
     backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
     rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
+    ...(r.localizationFailed ? { localizationFailed: true } : {}),
   }));
 }
 
@@ -337,6 +345,7 @@ export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearch
     releaseDate: r.release_date || null,
     backdropUrl: backdropPath ? `${TMDB_BACKDROP_BASE}${backdropPath}` : null,
     rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
+    ...(localizationFailed(localized) ? { localizationFailed: true } : {}),
     runtimeMinutes: typeof r.runtime === "number" && r.runtime > 0 ? r.runtime : null,
     studio: r.production_companies?.[0]?.name ?? null,
     digitalReleaseDate: releaseDates.digitalReleaseDate,
@@ -420,6 +429,7 @@ export async function fetchSeriesByTmdbId(tmdbId: string): Promise<MetadataSearc
     externalIds: { tmdb: String(r.id) },
     backdropUrl: backdropPath ? `${TMDB_BACKDROP_BASE}${backdropPath}` : null,
     rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
+    ...(localizationFailed(localized) ? { localizationFailed: true } : {}),
     runtimeMinutes: Array.isArray(r.episode_run_time) && r.episode_run_time.length > 0 ? r.episode_run_time[0] : null,
     status: r.status || null,
     contentRating,
@@ -582,6 +592,7 @@ async function searchSeriesTmdb(query: string): Promise<MetadataSearchResult[]> 
     externalIds: { tmdb: String(r.id) },
     backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
     rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
+    ...(r.localizationFailed ? { localizationFailed: true } : {}),
   }));
 }
 

@@ -275,6 +275,13 @@ export function formatRelative(value: string | number | Date | null | undefined,
   return formatter.format(Math.trunc(seconds / (365 * 86_400)), "year");
 }
 
+/** Today as YYYY-MM-DD in the chosen time zone (the browser's own when none is chosen): the day the relative dates call
+ * "Today", so a page that marks today agrees with the labels it prints. */
+export function todayInPreferredZone(now: Date = new Date()): string {
+  const day = dayOf(now, current.timeZone);
+  return `${day.year}-${pad2(day.month)}-${pad2(day.day)}`;
+}
+
 /** The first day of the Calendar's week: 0 = Sunday, 1 = Monday, 6 = Saturday (the Date.getDay() numbering). */
 export function weekStartsOn(): 0 | 1 | 6 {
   switch (current.weekStart) {
