@@ -80,6 +80,31 @@ export async function rootFolderUnmountedReason(row: { id: number; path: string 
     : null;
 }
 
+/**
+ * Why files must not be moved into `destinationPath` (coming from `sourcePath`), or null. A share that is not mounted
+ * leaves an empty directory on the container's own file system; a new, empty destination cannot be told from that by
+ * looking at what is in it, but it shows as being on the same device as `/` while the source (a real mount) is not.
+ * Files moved there would be copied into the container's writable layer and lost with the container. Not checked on
+ * Windows (no device numbers worth comparing). A path that cannot be read gives no answer here: the move reports it.
+ */
+export async function destinationOnContainerDiskReason(
+  destinationPath: string,
+  sourcePath: string,
+  statFn: (target: string) => Promise<{ dev: number }> = statAsync,
+  platform: string = process.platform
+): Promise<string | null> {
+  if (platform === "win32") return null;
+  try {
+    const [container, source, destination] = await Promise.all([statFn("/"), statFn(sourcePath), statFn(destinationPath)]);
+    if (destination.dev === container.dev && source.dev !== container.dev) {
+      return `The destination "${destinationPath}" is on the container's own file system, not on a mount like "${sourcePath}" (is the share mounted?) — nothing is moved there`;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function isInside(parent: string, child: string): boolean {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));

@@ -120,11 +120,14 @@ export async function recycleFile(filePath: string, mediaType: string, title: st
     return !(await entryExists(filePath));
   }
 
-  let size: number;
+  // A folder's own size is its directory inode (4 KB): its entry shows what is in it, counted after the move (below) so
+  // the walk does not hold the folder in place first. Null when not known.
+  let size: number | null;
+  let isFolder = false;
   try {
     const stat = await statAsync(filePath);
-    // A folder's own size is its directory inode (4 KB): its entry shows what is in it.
-    size = stat.isDirectory() ? (await directorySizeAsync(filePath)).bytes : stat.size;
+    isFolder = stat.isDirectory();
+    size = isFolder ? null : stat.size;
   } catch (err) {
     // stat follows symlinks, so a library symlink into a debrid/rclone mount that's down fails
     // here although the link itself is fine. The link is still moved into the bin (as a link,
@@ -161,6 +164,12 @@ export async function recycleFile(filePath: string, mediaType: string, title: st
     // leaves a full copy in the bin with no row to find it by; every retry would add another.
     if (dest && (await entryExists(filePath))) await fsp.rm(dest, { recursive: true, force: true }).catch(() => {});
     return !(await entryExists(filePath));
+  }
+
+  if (isFolder) {
+    // Only a complete count is recorded: a count cut short by the bound or an unreadable part would show a low size.
+    const counted = await directorySizeAsync(dest).catch(() => null);
+    size = counted?.complete ? counted.bytes : null;
   }
 
   try {
@@ -299,20 +308,38 @@ async function mergeDirectoryInto(src: string, dest: string, id: number): Promis
   return left;
 }
 
-/** Starts the restore of every other entry whose original path is below `folder`. Each is restored on its own (an
- * entry already restoring is skipped, as are those whose file is back already: they report it on their own row). */
-async function restoreEntriesBeneath(folder: string, exceptId: number): Promise<void> {
+/** Entries recycled together (a folder and the files recycled with it in one delete) are at most this far apart. */
+const SAME_OPERATION_WINDOW_MS = 60_000;
+
+/** The time of a `deleted_at` text ("YYYY-MM-DD HH:MM:SS", UTC, on both databases), or NaN. */
+function recycledAtMs(text: unknown): number {
+  const t = String(text ?? "").trim();
+  return /^d{4}-dd-dd dd:dd:dd/.test(t) ? Date.parse(t.slice(0, 19).replace(" ", "T") + "Z") : Date.parse(t);
+}
+
+/** Restores the other entries recycled in the same operation as the folder entry just restored: whose original path is
+ * below `folder`, that belong to the same title (when it is known) and that went into the bin within a minute of it.
+ * Older entries beneath the folder are not part of it (files replaced by an upgrade, files deleted on purpose on another
+ * day) and stay in the bin. One after the other, so a many-file folder does not start hundreds of copies at once. An
+ * entry already restoring is skipped, as are those whose file is back already: they report it on their own row. */
+async function restoreEntriesBeneath(folder: string, exceptId: number, folderEntry: { media_item_id: number | null; deleted_at: string }): Promise<void> {
   const prefix = folder.endsWith(path.sep) ? folder : folder + path.sep;
-  const rows = (await db
-    .prepare("SELECT id, original_path FROM recycle_bin WHERE restoring = 0 AND id <> ? AND substr(original_path, 1, ?) = ? ORDER BY id")
-    .all(exceptId, prefix.length, prefix)) as { id: number; original_path: string }[];
+  const folderTime = recycledAtMs(folderEntry.deleted_at);
+  const candidates = (await db
+    .prepare("SELECT id, original_path, media_item_id, deleted_at FROM recycle_bin WHERE restoring = 0 AND id <> ? AND substr(original_path, 1, ?) = ? ORDER BY id")
+    .all(exceptId, prefix.length, prefix)) as { id: number; original_path: string; media_item_id: number | null; deleted_at: string }[];
+  const rows = candidates.filter((c) => {
+    const sameTitle = (c.media_item_id ?? null) === (folderEntry.media_item_id ?? null);
+    const time = recycledAtMs(c.deleted_at);
+    return sameTitle && Number.isFinite(folderTime) && Number.isFinite(time) && Math.abs(time - folderTime) <= SAME_OPERATION_WINDOW_MS;
+  });
   // The same path recycled more than once: only the most recent entry is restored, as restore-all does.
   const claimed = new Set<string>();
   for (const row of [...rows].reverse()) {
     if (claimed.has(row.original_path)) continue;
     claimed.add(row.original_path);
     try {
-      await startRestoreFromRecycleBin(row.id);
+      await (await beginRestore(row.id)).done;
     } catch (err) {
       log.warn(`[recycleBin] restoring beneath "${folder}" skipped entry ${row.id}:`, (err as Error).message);
     }
@@ -327,9 +354,15 @@ async function restoreEntriesBeneath(folder: string, exceptId: number): Promise<
  * that point resolves through the DB row instead of a thrown error, since by then the HTTP response
  * has already gone out. */
 export async function startRestoreFromRecycleBin(id: number): Promise<void> {
+  await beginRestore(id);
+}
+
+/** startRestoreFromRecycleBin, with the running restore's promise (it never rejects: a failure is on the row) for a
+ * caller that waits for it. */
+async function beginRestore(id: number): Promise<{ done: Promise<void> }> {
   await resetInterruptedRestoresOnce();
   const row = (await db.prepare("SELECT * FROM recycle_bin WHERE id = ?").get(id)) as
-    | { recycle_path: string; original_path: string; restoring: number }
+    | { recycle_path: string; original_path: string; restoring: number; media_item_id: number | null; deleted_at: string }
     | undefined;
   if (!row) throw new Error("Recycle bin entry not found");
   if (row.restoring) throw new Error("This item is already being restored");
@@ -342,7 +375,7 @@ export async function startRestoreFromRecycleBin(id: number): Promise<void> {
     throw err;
   }
 
-  (async () => {
+  const done = (async () => {
     try {
       // rename()/cp() would silently replace whatever is there now — typically a newer download of
       // the same item that landed at the same templated path after this one was recycled.
@@ -365,7 +398,7 @@ export async function startRestoreFromRecycleBin(id: number): Promise<void> {
       await db.prepare("DELETE FROM recycle_bin WHERE id = ?").run(id);
       // Restoring a folder brings back what was recycled from beneath it too (a file recycled on its own before the
       // folder went, which a restore of the folder alone would leave behind in the bin).
-      await restoreEntriesBeneath(row.original_path, id);
+      await restoreEntriesBeneath(row.original_path, id, row);
     } catch (err) {
       log.warn(`[recycleBin] restore failed for entry ${id}:`, (err as Error).message);
       await db.prepare("UPDATE recycle_bin SET restoring = 0, restore_error = ? WHERE id = ?").run((err as Error).message, id);
@@ -373,6 +406,7 @@ export async function startRestoreFromRecycleBin(id: number): Promise<void> {
       activeRestores.delete(id);
     }
   })();
+  return { done };
 }
 
 /** Restores every entry of the given media type (or every entry, if omitted) — the Recycle Bin

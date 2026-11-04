@@ -82,7 +82,7 @@ import { CONTENT_TYPES } from "../services/rangeStream.js";
 import { resetSearchBackoff, wakeLeaf } from "../services/searchBackoff.js";
 import { deleteLibraryFile, removeLeftoverFolders, rollUpParentMissing } from "../services/fileDeletion.js";
 import { queueScanAfterAdd } from "../services/scanOnAdd.js";
-import { checkTitleMove, moveTitleToRootFolder, startTitleMoveJob } from "../services/titleMove.js";
+import { checkTitleMove, isTitleMoving, moveTitleToRootFolder, startTitleMoveJob } from "../services/titleMove.js";
 import { isNewItemMode } from "../services/monitorModes.js";
 import { applyRootFolderDefaults } from "../services/rootFolderDefaults.js";
 import { addTagsToItem, checkedTagIdsColumn } from "../services/tagScope.js";
@@ -1719,7 +1719,11 @@ mediaRouter.patch(
     // With moveFiles the title's root folder changes when its files have moved (a tracked background job, below), so a
     // bad destination is refused before anything else in this request is saved.
     const movesFiles = !!b.moveFiles && b.rootFolderId !== undefined && Number(b.rootFolderId) !== Number((existing as any).root_folder_id);
-    if (movesFiles) await checkTitleMove(Number(req.params.id), Number(b.rootFolderId));
+    if (movesFiles) {
+      await checkTitleMove(Number(req.params.id), Number(b.rootFolderId));
+      // Refused here, before any column below is saved, so a refused move never leaves the edit half applied.
+      if (isTitleMoving(Number(req.params.id))) throw new HttpError(409, `"${(existing as any).title}" is already being moved`);
+    }
     // The record of which external ids were merged in from other providers is written only by the
     // server, often in the background after the page loaded. Taken from a client's copy, it was lost
     // and those ids then counted as the item's own, moving it onto another provider's numbering on

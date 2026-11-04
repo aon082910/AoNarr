@@ -54,6 +54,7 @@ import { MAX_NAME_BYTES, truncateToBytes } from "./pathNames.js";
 import { finishBackgroundJob, incrementBackgroundJobDone, isBackgroundJobRunning, startBackgroundJob } from "./backgroundJobs.js";
 import { FS_CALL_TIMEOUT_MS, guardedFsCall, statAsync, statfsAsync } from "./fsAsync.js";
 import { rootFolderUnmountedReason } from "./rootFolderCheck.js";
+import { isTitleMoving } from "./titleMoveLock.js";
 import { discographyAlbumsOf, queueTargetIds } from "./discography.js";
 import { matchAlbumFolders } from "./discographyMatch.js";
 import { addToBlocklist } from "./blocklist.js";
@@ -4096,7 +4097,7 @@ export function isOtherExistingEntry(src: string, dest: string): boolean {
 
 const SUBTITLE_SIDECAR_EXTENSIONS = new Set([".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt"]);
 // Language/flag tags between a video's name and its subtitle's extension: "en", "pt-BR", "eng", "forced", "sdh".
-const SIDECAR_TAG_RE = /^(?:[a-z]{2,3}(?:-[a-z0-9]{2,4})?|forced|sdh|cc|hi)$/i;
+export const SIDECAR_TAG_RE = /^(?:[a-z]{2,3}(?:-[a-z0-9]{2,4})?|forced|sdh|cc|hi)$/i;
 
 /** The subtitle and .nfo files named for a media file ("Movie.nfo", "Movie.srt", "Movie.en.forced.srt"),
  * each with the suffix it keeps across a rename. */
@@ -4134,6 +4135,7 @@ export async function moveItemFolder(itemId: number, newName?: string): Promise<
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
   const item = mediaItemFromRow(mediaRow);
+  if (isTitleMoving(item.id)) throw new ImportSkippedError(`"${item.title}" is being moved to another root folder — try again when the move has finished`);
   if (effectiveShape(item) !== "episodic") throw new ImportSkippedError("Only a show has a folder of its own to move");
   if (!item.rootFolderId) throw new ImportSkippedError(`"${item.title}" has no root folder configured`);
   const folderRow = await db.prepare("SELECT * FROM root_folders WHERE id = ?").get(item.rootFolderId);
@@ -4187,6 +4189,9 @@ export async function moveItemFolder(itemId: number, newName?: string): Promise<
   return { from, to, episodesUpdated };
 }
 
+/** Marks the staging name of a folder copied across file systems ("<destination>.partial-<random>"). */
+const PARTIAL_COPY_MARKER = ".partial-";
+
 /** Moves an album folder to a new place: a rename, or a copy and removal when the root folders are on different file systems. */
 export async function moveAlbumFolder(src: string, dest: string): Promise<void> {
   makeLibraryDirectory(path.dirname(dest));
@@ -4194,10 +4199,20 @@ export async function moveAlbumFolder(src: string, dest: string): Promise<void> 
     await fsp.rename(src, dest);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+    // The copy goes to a staging name and is renamed into place when it is complete, so a crash or a kill during a
+    // long copy leaves a staging folder (removed at the next try), never a partial folder under the real name.
+    const parent = path.dirname(dest);
+    const stagingPrefix = `${path.basename(dest)}${PARTIAL_COPY_MARKER}`;
+    for (const name of await fsp.readdir(parent).catch(() => [] as string[])) {
+      if (name.startsWith(stagingPrefix) && /^[0-9a-f]{8}$/.test(name.slice(stagingPrefix.length))) await fsp.rm(path.join(parent, name), { recursive: true, force: true }).catch(() => undefined);
+    }
+    const staging = path.join(parent, `${stagingPrefix}${crypto.randomBytes(4).toString("hex")}`);
     try {
-      await fsp.cp(src, dest, { recursive: true });
+      await fsp.cp(src, staging, { recursive: true });
+      await fsp.rename(staging, dest);
     } catch (copyErr) {
-      await fsp.rm(dest, { recursive: true, force: true }).catch(() => undefined);
+      // Only the staging folder: a finished destination is never touched.
+      await fsp.rm(staging, { recursive: true, force: true }).catch(() => undefined);
       throw copyErr;
     }
     // The copy is complete: callers point the database at it. A source that cannot be removed is left for the admin,
@@ -4305,6 +4320,11 @@ async function renameTrackFiles(
  * "Organize & Rename" would actually do before committing to it. */
 async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonNumber?: number, dryRun = false): Promise<void> {
   const item = mediaItemFromRow(mediaRow);
+  if (isTitleMoving(item.id)) {
+    // Its files are on the way to another root folder: renaming them now would race the move.
+    result.errors.push({ title: item.title, error: "The title is being moved to another root folder — rename it when the move has finished" });
+    return;
+  }
   const typeConfig = getMediaTypeConfig(item.type);
   const shape = effectiveShape(item);
   if (!item.rootFolderId) return;

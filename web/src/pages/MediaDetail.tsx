@@ -239,7 +239,7 @@ export default function MediaDetail() {
   const [showImport, setShowImport] = useState(false);
   const [browsePath, setBrowsePath] = useState("");
   const [showMove, setShowMove] = useState(false);
-  const { startJob } = useBackgroundJobs();
+  const { jobs, startJob } = useBackgroundJobs();
   const [showMoveFiles, setShowMoveFiles] = useState(false);
   const [moveFilesDestination, setMoveFilesDestination] = useState(0);
   const [moveFilesPlan, setMoveFilesPlan] = useState<{ moved: { kind: string; from: string; to: string }[]; skipped: { path: string; reason: string }[]; errors: { error: string }[] } | null>(null);
@@ -381,6 +381,18 @@ export default function MediaDetail() {
   }
 
   useEffect(load, [id]);
+  // "Move files" runs as a background job: the root folder and the file paths on screen are the old ones until the item
+  // is read again, so the page reloads once when this title's move job has finished.
+  const reloadedForMoveJob = useRef(new Set<string>());
+  const titleMoveJob = jobs.find((j) => j.kind === "move" && j.type === `title-${id}`);
+  useEffect(() => {
+    if (!titleMoveJob || titleMoveJob.running || titleMoveJob.finishedAt === null) return;
+    const key = `${titleMoveJob.id}:${titleMoveJob.startedAt}`;
+    if (reloadedForMoveJob.current.has(key)) return;
+    reloadedForMoveJob.current.add(key);
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [titleMoveJob?.running, titleMoveJob?.finishedAt, titleMoveJob?.startedAt]);
   useEffect(() => {
     localStorage.setItem("aonarr_season_view", seasonView);
   }, [seasonView]);

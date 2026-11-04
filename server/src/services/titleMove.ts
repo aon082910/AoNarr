@@ -1,15 +1,19 @@
-import fs from "node:fs";
+import type fs from "node:fs";
 import path from "node:path";
 import { db } from "../db/index.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { trackedFileInside } from "./fileDeletion.js";
 import { finishBackgroundJob, incrementBackgroundJobDone, startBackgroundJob, updateBackgroundJob } from "./backgroundJobs.js";
-import { isOtherExistingEntry, makeLibraryDirectory, moveAlbumFolder, moveFile, removeEmptyParents } from "./importer.js";
+import { SIDECAR_TAG_RE, isOtherExistingEntry, moveAlbumFolder, moveFile, removeEmptyParents } from "./importer.js";
 import { folderSegmentsOf, ownFolderOf } from "./libraryFolder.js";
 import { log } from "./logger.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import { namingTemplateOfType } from "./naming.js";
-import { rootFolderUnmountedReason } from "./rootFolderCheck.js";
+import { destinationOnContainerDiskReason, rootFolderUnmountedReason } from "./rootFolderCheck.js";
+import { FS_CALL_TIMEOUT_MS, StorageTimeoutError, pathExistsAsync, readdirNamesAsync, statAsync } from "./fsAsync.js";
+import { isTitleMoving, tryLockTitleMove, unlockTitleMove } from "./titleMoveLock.js";
+
+export { isTitleMoving };
 
 /**
  * Moving a title to another root folder, like Sonarr's and Radarr's "move files" on a path edit.
@@ -44,23 +48,55 @@ export interface TitleMoveResult {
 
 /** Files beside a video that carry its name: subtitles, an NFO, its own artwork. */
 const SIDECAR_EXTENSIONS = new Set([".nfo", ".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".jpg", ".jpeg", ".png", ".webp", ".tbn", ".gif"]);
+const SUBTITLE_EXTENSIONS = new Set([".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt"]);
 const ARTWORK_SUFFIX_RE = /^-(poster|fanart|thumb|banner|clearlogo|clearart|landscape|backdrop|logo|disc|discart)\.(jpg|jpeg|png|webp|tbn)$/i;
 
-/** The files in a video's folder named for it ("Movie.nfo", "Movie.en.srt", "Movie.jpg", "Movie-poster.jpg"). */
-export function sidecarsOf(mediaFile: string): string[] {
+/** Reads a directory's names once; an unreadable directory has none, a mount that does not answer is an error. */
+type DirectoryLister = (dir: string) => Promise<string[]>;
+
+function directoryLister(timeoutMs: number): DirectoryLister {
+  const listings = new Map<string, Promise<string[]>>();
+  return (dir) => {
+    const key = path.resolve(dir);
+    let listing = listings.get(key);
+    if (!listing) {
+      listing = readdirNamesAsync(dir, timeoutMs).catch((err) => {
+        if (err instanceof StorageTimeoutError) throw err;
+        return [] as string[];
+      });
+      listings.set(key, listing);
+    }
+    return listing;
+  };
+}
+
+/**
+ * The files in a video's folder named for it ("Movie.nfo", "Movie.en.srt", "Movie.jpg", "Movie-poster.jpg"). What may
+ * stand between the name and the extension follows the importer's rule (language and flag tags for subtitles, nothing
+ * for an NFO or a picture), and a file named for another video in the same folder ("Alien.Resurrection.nfo" beside
+ * "Alien.mkv" and "Alien.Resurrection.mkv") belongs to that one. `list` is shared between lookups so a folder is read once.
+ */
+export async function sidecarsOf(mediaFile: string, list: DirectoryLister = directoryLister(FS_CALL_TIMEOUT_MS)): Promise<string[]> {
   const dir = path.dirname(mediaFile);
   const mediaName = path.basename(mediaFile);
   const stem = path.basename(mediaFile, path.extname(mediaFile));
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return [];
-  }
+  const names = await list(dir);
+  // Stems of the other videos in the folder that start with this one's: their files are theirs.
+  const longerStems = names
+    .filter((name) => name !== mediaName && !SIDECAR_EXTENSIONS.has(path.extname(name).toLowerCase()))
+    .map((name) => path.basename(name, path.extname(name)))
+    .filter((other) => other.length > stem.length && (other.startsWith(stem + ".") || other.startsWith(stem + "-")));
   return names
     .filter((name) => {
       if (name === mediaName) return false;
-      if (name.startsWith(stem + ".")) return SIDECAR_EXTENSIONS.has(path.extname(name).toLowerCase());
+      if (longerStems.some((other) => name.startsWith(other + ".") || name.startsWith(other + "-"))) return false;
+      if (name.startsWith(stem + ".")) {
+        const ext = path.extname(name).toLowerCase();
+        if (!SIDECAR_EXTENSIONS.has(ext)) return false;
+        const tags = name.slice(stem.length + 1, name.length - ext.length);
+        if (SUBTITLE_EXTENSIONS.has(ext)) return tags === "" || tags.split(".").every((t) => SIDECAR_TAG_RE.test(t));
+        return tags === "";
+      }
       return name.startsWith(stem + "-") && ARTWORK_SUFFIX_RE.test(name.slice(stem.length));
     })
     .map((name) => path.join(dir, name));
@@ -152,27 +188,50 @@ interface PlannedUnit extends TitleMoveStep {
  * Works out what moves and moves it. `dryRun` returns the same steps without touching disk or rows.
  * Never throws for a problem with one piece: it is reported in `errors`.
  */
-export async function moveTitleToRootFolder(itemId: number, destinationId: number, options: { dryRun?: boolean } = {}): Promise<TitleMoveResult> {
-  const { item, source, destination } = await checkTitleMove(itemId, destinationId);
+export async function moveTitleToRootFolder(itemId: number, destinationId: number, options: TitleMoveOptions = {}): Promise<TitleMoveResult> {
   const result: TitleMoveResult = { moved: [], skipped: [], errors: [], rootFolderChanged: false };
+  try {
+    await moveTitleInto(itemId, destinationId, options, result);
+  } catch (err) {
+    // A mount that stopped answering fails the move cleanly (what moved so far stays recorded), it does not hang it.
+    if (!(err instanceof StorageTimeoutError)) throw err;
+    const row = (await db.prepare("SELECT title FROM media_items WHERE id = ?").get(itemId)) as { title: string } | undefined;
+    result.errors.push({ title: String(row?.title ?? itemId), error: err.message });
+    result.rootFolderChanged = false;
+  }
+  return result;
+}
+
+export interface TitleMoveOptions {
+  /** Report what would move and change nothing. */
+  dryRun?: boolean;
+  /** How long one disk call may take before the move fails (default: the shared storage timeout). */
+  fsTimeoutMs?: number;
+}
+
+async function moveTitleInto(itemId: number, destinationId: number, options: TitleMoveOptions, result: TitleMoveResult): Promise<void> {
+  const { item, source, destination } = await checkTitleMove(itemId, destinationId);
   const dryRun = !!options.dryRun;
   const title = String(item.title);
+  const timeoutMs = options.fsTimeoutMs ?? FS_CALL_TIMEOUT_MS;
+  const list = directoryLister(timeoutMs);
 
   if (source && Number(source.id) === Number(destination.id)) {
     result.rootFolderChanged = false;
-    return result;
+    return;
   }
 
   const destRoot = path.resolve(destination.path);
   let destStat: fs.Stats | null = null;
   try {
-    destStat = fs.statSync(destRoot);
-  } catch {
+    destStat = await statAsync(destRoot, timeoutMs);
+  } catch (err) {
+    if (err instanceof StorageTimeoutError) throw err;
     // reported below
   }
   if (!destStat?.isDirectory()) {
     result.errors.push({ title, error: `The destination root folder "${destination.path}" is not a folder on disk` });
-    return result;
+    return;
   }
 
   const tracked = await trackedPathsOf(Number(item.id), item.path ?? null, Number(item.has_file) === 1);
@@ -182,7 +241,18 @@ export async function moveTitleToRootFolder(itemId: number, destinationId: numbe
     const unmounted = await rootFolderUnmountedReason({ id: Number(source.id), path: source.path });
     if (unmounted) {
       result.errors.push({ title, error: unmounted });
-      return result;
+      return;
+    }
+  }
+
+  if (tracked.length > 0) {
+    // The same for the destination: a share that is not mounted is an empty folder on the container's own disk, and
+    // everything moved into it would be lost with the container.
+    const destUnmounted = await rootFolderUnmountedReason({ id: Number(destination.id), path: destination.path });
+    const onContainerDisk = destUnmounted ?? (source ? await destinationOnContainerDiskReason(destRoot, path.resolve(source.path), (target) => statAsync(target, timeoutMs)) : null);
+    if (onContainerDisk) {
+      result.errors.push({ title, error: onContainerDisk });
+      return;
     }
   }
 
@@ -214,7 +284,7 @@ export async function moveTitleToRootFolder(itemId: number, destinationId: numbe
       result.skipped.push({ path: entry.path, reason: "it is not inside the title's current root folder, so it stays where it is" });
       continue;
     }
-    if (!fs.existsSync(file)) {
+    if (!(await pathExistsAsync(file, timeoutMs))) {
       if (entry.hasFile) result.errors.push({ title, error: `"${entry.path}" is not on disk` });
       continue;
     }
@@ -244,12 +314,19 @@ export async function moveTitleToRootFolder(itemId: number, destinationId: numbe
     }
 
     // Only what this title tracks, from a folder it does not own alone. A tracked directory (an album) goes whole.
-    const isDirectory = fs.statSync(file).isDirectory();
+    let isDirectory: boolean;
+    try {
+      isDirectory = (await statAsync(file, timeoutMs)).isDirectory();
+    } catch (err) {
+      if (err instanceof StorageTimeoutError) throw err;
+      result.errors.push({ title, error: `"${entry.path}" could not be read: ${(err as Error).message}` });
+      continue;
+    }
     const relDir = path.relative(sourceRoot, path.dirname(file));
     units.push(
       isDirectory
         ? { kind: "folder", from: file, to: path.join(destRoot, path.relative(sourceRoot, file)), sidecars: [], label: file }
-        : { kind: "file", from: file, to: path.join(destRoot, relDir, path.basename(file)), sidecars: sidecarsOf(file), label: file }
+        : { kind: "file", from: file, to: path.join(destRoot, relDir, path.basename(file)), sidecars: await sidecarsOf(file, list), label: file }
     );
   }
 
@@ -305,7 +382,6 @@ export async function moveTitleToRootFolder(itemId: number, destinationId: numbe
     await db.prepare("UPDATE media_items SET root_folder_id = ? WHERE id = ?").run(destination.id, item.id);
     result.rootFolderChanged = true;
   }
-  return result;
 }
 
 /** Starts the move of one title as a tracked background job; answers with the job's id at once. */
@@ -313,10 +389,13 @@ export async function startTitleMoveJob(itemId: number, destinationId: number): 
   const { item, destination } = await checkTitleMove(itemId, destinationId);
   const type = `title-${item.id}`;
   const label = `Move "${item.title}" to ${String(destination.name ?? "").trim() || destination.path}`;
+  // A root folder move holding this title counts: the two must not work on one folder at the same time.
+  if (!tryLockTitleMove(Number(item.id))) throw new HttpError(409, `"${item.title}" is already being moved`);
   let jobId: string;
   try {
     jobId = startBackgroundJob("move", type, label, 1);
   } catch {
+    unlockTitleMove(Number(item.id));
     throw new HttpError(409, `"${item.title}" is already being moved`);
   }
   void (async () => {
@@ -328,6 +407,7 @@ export async function startTitleMoveJob(itemId: number, destinationId: number): 
     } catch (err) {
       error = (err as Error).message;
     } finally {
+      unlockTitleMove(Number(item.id));
       updateBackgroundJob("move", type, { done: 1 });
       finishBackgroundJob(jobId, error);
       if (error) log.warn(`[titleMove] "${item.title}" was not fully moved:`, error);
@@ -339,6 +419,8 @@ export async function startTitleMoveJob(itemId: number, destinationId: number): 
 export interface RootFolderMoveSummary {
   moved: number;
   failed: number;
+  /** Titles left alone because another move or rename held them at that moment; running the move again takes them. */
+  skipped: number;
   total: number;
 }
 
@@ -358,8 +440,15 @@ export function startRootFolderMoveJob(source: any, destination: any, items: { i
   void (async () => {
     let moved = 0;
     let failed = 0;
+    let skipped = 0;
     try {
       for (const item of items) {
+        if (!tryLockTitleMove(item.id)) {
+          skipped++;
+          log.warn(`[rootFolders] skipped "${item.title}": it is being moved or renamed right now — move the root folder again to take it`);
+          incrementBackgroundJobDone("move", type);
+          continue;
+        }
         try {
           const result = await moveTitleToRootFolder(item.id, Number(destination.id));
           if (result.errors.length > 0) {
@@ -371,14 +460,25 @@ export function startRootFolderMoveJob(source: any, destination: any, items: { i
         } catch (err) {
           failed++;
           log.warn(`[rootFolders] failed to move "${item.title}" to "${destination.path}":`, (err as Error).message);
+        } finally {
+          unlockTitleMove(item.id);
         }
         incrementBackgroundJobDone("move", type);
       }
     } finally {
-      log.info(`[rootFolders] moved ${moved}/${items.length} item(s) from "${source.path}" to "${destination.path}"`);
-      finishBackgroundJob(jobId, failed > 0 ? `${failed} of ${items.length} title(s) could not be moved — see the Logs page` : undefined);
-      onDone({ moved, failed, total: items.length });
+      log.info(`[rootFolders] moved ${moved}/${items.length} item(s) from "${source.path}" to "${destination.path}"${skipped > 0 ? `, ${skipped} skipped` : ""}`);
+      const problems = [
+        failed > 0 ? `${failed} of ${items.length} title(s) could not be moved — see the Logs page` : "",
+        skipped > 0 ? `${skipped} title(s) were being moved or renamed and were skipped — move the folder again to take them` : "",
+      ].filter(Boolean);
+      finishBackgroundJob(jobId, problems.length > 0 ? problems.join("; ") : undefined);
+      // The audit entry must not turn the end of a finished move into an unhandled rejection.
+      try {
+        onDone({ moved, failed, skipped, total: items.length });
+      } catch (err) {
+        log.warn("[rootFolders] the end-of-move callback failed:", (err as Error).message);
+      }
     }
-  })();
+  })().catch((err) => log.warn("[rootFolders] the move job ended with an error:", (err as Error).message));
   return jobId;
 }

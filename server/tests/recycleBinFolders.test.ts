@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from "vitest";
+import fsp from "node:fs/promises";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -26,6 +27,10 @@ afterAll(() => {
 
 beforeEach(async () => {
   await db.prepare("DELETE FROM recycle_bin").run();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 function write(file: string, content: string): string {
@@ -138,5 +143,109 @@ describe("restoring a file or a folder in either order (round 30c)", () => {
 
     expect(after.restore_error).toMatch(/already exists/);
     expect(fs.readFileSync(file, "utf-8")).toBe("newer");
+  });
+});
+
+/** A bin entry's recycle time, moved back by `seconds` (the table keeps UTC text, "YYYY-MM-DD HH:MM:SS"). */
+async function recycledAgo(id: number, seconds: number): Promise<void> {
+  const text = new Date(Date.now() - seconds * 1000).toISOString().slice(0, 19).replace("T", " ");
+  await db.prepare("UPDATE recycle_bin SET deleted_at = ? WHERE id = ?").run(text, id);
+}
+
+describe("restoring a folder brings back only what was recycled with it (round 30c review M5)", () => {
+  it("leaves an older file beneath the folder in the bin (an upgrade's replaced file)", async () => {
+    const folder = path.join(tmp, "lib", "Upgraded");
+    const old720 = write(path.join(folder, "Movie.720p.mkv"), "old quality");
+    await recycleFile(old720, "movie", "Upgraded", null);
+    const oldEntry = await entryFor(old720);
+    await recycledAgo(Number(oldEntry.id), 3 * 24 * 3600);
+    const current = write(path.join(folder, "Movie.1080p.mkv"), "current");
+    await recycleFile(current, "movie", "Upgraded", null);
+    write(path.join(folder, "poster.jpg"), "poster");
+    await recycleFile(folder, "movie", "Upgraded (folder)", null);
+    const folderEntry = await entryFor(folder);
+    const currentEntry = await entryFor(current);
+
+    await startRestoreFromRecycleBin(Number(folderEntry.id));
+    await settled(Number(folderEntry.id));
+    expect(await settled(Number(currentEntry.id))).toBeUndefined();
+
+    expect(fs.readFileSync(current, "utf-8")).toBe("current");
+    expect(fs.existsSync(old720)).toBe(false);
+    const stillThere = await entryFor(old720);
+    expect(stillThere).toBeTruthy();
+    expect(fs.existsSync(stillThere.recycle_path)).toBe(true);
+  });
+
+  it("leaves an entry of another title beneath the folder, even one recycled just now", async () => {
+    const a = Number((await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie', 'Mine', 'mine', 1, 0, 'unknown')").run()).lastInsertRowid);
+    const b = Number((await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('movie', 'Theirs', 'theirs', 1, 0, 'unknown')").run()).lastInsertRowid);
+    const folder = path.join(tmp, "lib", "Shared");
+    const mine = write(path.join(folder, "Mine.mkv"), "mine");
+    const theirs = write(path.join(folder, "Theirs.mkv"), "theirs");
+    await recycleFile(mine, "movie", "Mine", a);
+    await recycleFile(theirs, "movie", "Theirs", b);
+    write(path.join(folder, "poster.jpg"), "poster");
+    await recycleFile(folder, "movie", "Mine (folder)", a);
+    const folderEntry = await entryFor(folder);
+    const mineEntry = await entryFor(mine);
+
+    await startRestoreFromRecycleBin(Number(folderEntry.id));
+    await settled(Number(folderEntry.id));
+    expect(await settled(Number(mineEntry.id))).toBeUndefined();
+
+    expect(fs.existsSync(mine)).toBe(true);
+    expect(fs.existsSync(theirs)).toBe(false);
+    expect(await entryFor(theirs)).toBeTruthy();
+  });
+
+  it("restores the files recycled with the folder one after the other, not all at once", async () => {
+    const folder = path.join(tmp, "lib", "Many");
+    const files = ["a", "b", "c"].map((n) => write(path.join(folder, `${n}.mkv`), n));
+    for (const f of files) await recycleFile(f, "movie", "Many", null);
+    write(path.join(folder, "poster.jpg"), "poster");
+    await recycleFile(folder, "movie", "Many (folder)", null);
+    const folderEntry = await entryFor(folder);
+
+    let inFlight = 0;
+    let most = 0;
+    const real = fsp.rename.bind(fsp);
+    vi.spyOn(fsp, "rename").mockImplementation((async (a: any, b: any) => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      try {
+        await new Promise((r) => setTimeout(r, 15));
+        return await real(a, b);
+      } finally {
+        inFlight--;
+      }
+    }) as any);
+
+    await startRestoreFromRecycleBin(Number(folderEntry.id));
+    for (let i = 0; i < 300 && Number(((await db.prepare("SELECT COUNT(*) AS c FROM recycle_bin").get()) as any).c) > 0; i++) await new Promise((r) => setTimeout(r, 20));
+
+    for (const f of files) expect(fs.existsSync(f)).toBe(true);
+    expect(most).toBe(1);
+  });
+});
+
+describe("the size of a recycled folder (round 30c review L7)", () => {
+  it("is counted after the folder has moved, and is not recorded when the count is incomplete", async () => {
+    const folder = path.join(tmp, "lib", "Locked");
+    write(path.join(folder, "a.bin"), "12345");
+    write(path.join(folder, "locked", "b.bin"), "123");
+    const realReaddir = fsp.readdir.bind(fsp);
+    let folderStillThereAtFirstWalk: boolean | null = null;
+    vi.spyOn(fsp, "readdir").mockImplementation(((p: any, ...rest: any[]) => {
+      if (folderStillThereAtFirstWalk === null && String(p).startsWith(path.join(tmp, "bin"))) folderStillThereAtFirstWalk = fs.existsSync(folder);
+      if (String(p).endsWith(path.sep + "locked")) return Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" }));
+      return (realReaddir as any)(p, ...rest);
+    }) as any);
+
+    await recycleFile(folder, "movie", "Locked", null);
+
+    const entry = await entryFor(folder);
+    expect(folderStillThereAtFirstWalk).toBe(false);
+    expect(entry.size_bytes).toBeNull();
   });
 });

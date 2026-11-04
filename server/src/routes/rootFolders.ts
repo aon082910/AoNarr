@@ -179,8 +179,8 @@ rootFoldersRouter.post(
     }
 
     const actor = auditActor(req);
-    const jobId = startRootFolderMoveJob(source, destination, items, ({ moved, failed }) => {
-      logAuditEvent(actor.userId, actor.username, "root_folder_moved", `${source.path} → ${destination.path} (${moved} item(s)${failed > 0 ? `, ${failed} failed` : ""})`);
+    const jobId = startRootFolderMoveJob(source, destination, items, ({ moved, failed, skipped }) => {
+      logAuditEvent(actor.userId, actor.username, "root_folder_moved", `${source.path} → ${destination.path} (${moved} item(s)${failed > 0 ? `, ${failed} failed` : ""}${skipped > 0 ? `, ${skipped} skipped` : ""})`);
     });
     res.json({ started: true, itemCount: items.length, jobId });
   })

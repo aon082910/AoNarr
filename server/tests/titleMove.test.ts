@@ -339,7 +339,7 @@ describe("sidecarsOf", () => {
     const video = write(path.join(dir, "Movie.mkv"));
     for (const name of ["Movie.nfo", "Movie.srt", "Movie.pt-BR.srt", "Movie.jpg", "Movie-poster.jpg", "Movie-fanart.png", "Movie 2.nfo", "Movie-extra.jpg", "Movie.mkv.bak", "Movie.mp4", "poster.jpg"]) write(path.join(dir, name));
 
-    expect(sidecarsOf(video).map((f) => path.basename(f)).sort()).toEqual(["Movie-fanart.png", "Movie-poster.jpg", "Movie.jpg", "Movie.nfo", "Movie.pt-BR.srt", "Movie.srt"]);
+    expect((await sidecarsOf(video)).map((f) => path.basename(f)).sort()).toEqual(["Movie-fanart.png", "Movie-poster.jpg", "Movie.jpg", "Movie.nfo", "Movie.pt-BR.srt", "Movie.srt"]);
   });
 });
 
