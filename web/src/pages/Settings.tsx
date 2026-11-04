@@ -4,6 +4,7 @@ import { api, downloadFile, getApiKey, setApiKey } from "../api/client.js";
 import FolderPicker from "../components/FolderPicker.js";
 import NamingSetupModal from "../components/NamingSetupModal.js";
 import SettingsProviderTiles, { type SettingsProviderDef } from "../components/SettingsProviderTiles.js";
+import NotificationConnections, { NotificationTemplates } from "../components/NotificationConnections.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import MetadataProfilesEditor from "../components/MetadataProfilesEditor.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
@@ -309,145 +310,6 @@ interface SubtitleProvider {
   languages: string;
   enabled: 0 | 1;
 }
-
-/** Fired on grab/import/failure events (and Custom Script, run on the same events). Leaving a
- * provider's fields blank disables it; SMTP/Twilio need every listed field set, not just one. */
-const NOTIFICATION_PROVIDERS: SettingsProviderDef[] = [
-  {
-    key: "discord",
-    label: "Discord",
-    fields: [{ key: "discordWebhookUrl", label: "Webhook URL", placeholder: "https://discord.com/api/webhooks/..." }],
-    isConfigured: (s) => !!s.discordWebhookUrl,
-    eventsKey: "discordEvents",
-  },
-  {
-    key: "slack",
-    label: "Slack",
-    fields: [{ key: "slackWebhookUrl", label: "Webhook URL", placeholder: "https://hooks.slack.com/services/..." }],
-    isConfigured: (s) => !!s.slackWebhookUrl,
-    eventsKey: "slackEvents",
-  },
-  {
-    key: "generic",
-    label: "Generic Webhook",
-    description: "Receives the raw event payload as JSON — for anything without built-in support.",
-    fields: [{ key: "genericWebhookUrl", label: "Webhook URL", placeholder: "https://example.com/hooks/aonarr" }],
-    isConfigured: (s) => !!s.genericWebhookUrl,
-    eventsKey: "genericEvents",
-  },
-  {
-    key: "telegram",
-    label: "Telegram",
-    fields: [
-      { key: "telegramBotToken", label: "Bot token", placeholder: "123456:ABC-DEF..." },
-      { key: "telegramChatId", label: "Chat ID", placeholder: "-100123456789" },
-    ],
-    isConfigured: (s) => !!s.telegramBotToken && !!s.telegramChatId,
-    eventsKey: "telegramEvents",
-  },
-  {
-    key: "pushover",
-    label: "Pushover",
-    fields: [
-      { key: "pushoverApiToken", label: "API token" },
-      { key: "pushoverUserKey", label: "User key" },
-    ],
-    isConfigured: (s) => !!s.pushoverApiToken && !!s.pushoverUserKey,
-    eventsKey: "pushoverEvents",
-  },
-  {
-    key: "smtp",
-    label: "Email (SMTP)",
-    fields: [
-      { key: "smtpHost", label: "SMTP host", placeholder: "smtp.gmail.com" },
-      { key: "smtpPort", label: "SMTP port", placeholder: "587" },
-      {
-        key: "smtpSecure",
-        label: "Encryption",
-        type: "select",
-        options: [
-          { value: "0", label: "STARTTLS (587/25)" },
-          { value: "1", label: "Implicit TLS (465)" },
-        ],
-      },
-      { key: "smtpUsername", label: "Username" },
-      { key: "smtpPassword", label: "Password", type: "password" },
-      { key: "smtpFrom", label: "Send from", placeholder: "aonarr@yourdomain.com" },
-      { key: "smtpTo", label: "Send to", placeholder: "you@yourdomain.com" },
-    ],
-    isConfigured: (s) => !!s.smtpHost && !!s.smtpFrom && !!s.smtpTo,
-    eventsKey: "smtpEvents",
-  },
-  {
-    key: "ntfy",
-    label: "ntfy",
-    description: "ntfy.sh or your own ntfy server: the message goes to a topic.",
-    fields: [
-      { key: "ntfyServerUrl", label: "Server URL", placeholder: "https://ntfy.sh" },
-      { key: "ntfyTopic", label: "Topic", placeholder: "aonarr" },
-      { key: "ntfyToken", label: "Access token (only for a protected topic)", type: "password" },
-    ],
-    isConfigured: (s) => !!s.ntfyServerUrl && !!s.ntfyTopic,
-    eventsKey: "ntfyEvents",
-  },
-  {
-    key: "gotify",
-    label: "Gotify",
-    fields: [
-      { key: "gotifyServerUrl", label: "Server URL", placeholder: "https://gotify.example.com" },
-      { key: "gotifyToken", label: "Application token", type: "password" },
-    ],
-    isConfigured: (s) => !!s.gotifyServerUrl && !!s.gotifyToken,
-    eventsKey: "gotifyEvents",
-  },
-  {
-    key: "matrix",
-    label: "Matrix",
-    fields: [
-      { key: "matrixHomeserverUrl", label: "Homeserver URL", placeholder: "https://matrix.org" },
-      { key: "matrixAccessToken", label: "Access token" },
-      { key: "matrixRoomId", label: "Room ID", placeholder: "!roomid:matrix.org" },
-    ],
-    isConfigured: (s) => !!s.matrixHomeserverUrl && !!s.matrixAccessToken && !!s.matrixRoomId,
-    eventsKey: "matrixEvents",
-  },
-  {
-    key: "twilio",
-    label: "SMS (Twilio)",
-    fields: [
-      { key: "twilioAccountSid", label: "Account SID" },
-      { key: "twilioAuthToken", label: "Auth token", type: "password" },
-      { key: "twilioFromNumber", label: "From number", placeholder: "+15551234567" },
-      { key: "twilioToNumber", label: "To number", placeholder: "+15557654321" },
-    ],
-    isConfigured: (s) => !!s.twilioAccountSid && !!s.twilioAuthToken && !!s.twilioFromNumber && !!s.twilioToNumber,
-    eventsKey: "twilioEvents",
-  },
-  {
-    key: "customScript",
-    label: "Custom Script",
-    description: "Invoked directly (no shell) with event data as AONARR_* environment variables.",
-    fields: [
-      {
-        key: "customScriptEnabled",
-        label: "Enable",
-        type: "select",
-        options: [
-          { value: "0", label: "Disabled" },
-          { value: "1", label: "Enabled" },
-        ],
-      },
-      {
-        key: "customScriptPath",
-        label: "Script path (inside the container; must be executable)",
-        placeholder: "/config/scripts/on-event.sh",
-        helpText: "chmod +x it and mount it into the container (e.g. under /config).",
-      },
-    ],
-    isConfigured: (s) => s.customScriptEnabled === "1" && !!s.customScriptPath,
-    eventsKey: "customScriptEvents",
-  },
-];
 
 /** MusicBrainz/Open Library/Deezer/TVmaze need no key so aren't listed here — Add Media can
  * always fall back to them regardless of what's configured on this page. */
@@ -2216,7 +2078,7 @@ export default function Settings() {
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
           Lets you email a book/comic/audiobook file to a Kindle "Send to Kindle" address (found in
           your Amazon account's Content &amp; Devices settings) straight from its detail page.
-          Reuses the Email (SMTP) notification settings under Notifications — set your Kindle address as an
+          Reuses the mail server of your Email connection under Notifications — set your Kindle address as an
           approved sender on Amazon's side first, since Amazon only accepts mail from addresses you
           allow.
         </p>
@@ -2362,37 +2224,11 @@ export default function Settings() {
 
       </div>
       <div style={{ display: tab === "notifications" ? undefined : "none" }}>
-      <h2>Notifications</h2>
-      <SettingsProviderTiles providers={NOTIFICATION_PROVIDERS} settings={settings} saveSetting={saveSetting} />
+      <h2>Notification Connections</h2>
+      <NotificationConnections />
 
       <h2>Notification Message Templates</h2>
-      <div className="form-panel">
-        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-          Customize the message text sent to every enabled provider above. Leave blank to use the
-          default.
-        </p>
-        <label htmlFor="settings-grabbed-tokens-mediatitle-releasetitle-17">Grabbed — tokens: {"{mediaTitle}"} {"{releaseTitle}"}</label>
-        <input id="settings-grabbed-tokens-mediatitle-releasetitle-17"
-          key={settings.notifyTemplateGrabbed ?? "notify-grabbed-empty"}
-          defaultValue={settings.notifyTemplateGrabbed ?? ""}
-          placeholder={"{mediaTitle}\\n{releaseTitle}"}
-          onBlur={(e) => saveSetting("notifyTemplateGrabbed", e.target.value)}
-        />
-        <label htmlFor="settings-imported-tokens-mediatitle-filename-18">Imported — tokens: {"{mediaTitle}"} {"{fileName}"}</label>
-        <input id="settings-imported-tokens-mediatitle-filename-18"
-          key={settings.notifyTemplateImported ?? "notify-imported-empty"}
-          defaultValue={settings.notifyTemplateImported ?? ""}
-          placeholder={"{mediaTitle}\\n{fileName}"}
-          onBlur={(e) => saveSetting("notifyTemplateImported", e.target.value)}
-        />
-        <label htmlFor="settings-failed-tokens-mediatitle-reason-19">Failed — tokens: {"{mediaTitle}"} {"{reason}"}</label>
-        <input id="settings-failed-tokens-mediatitle-reason-19"
-          key={settings.notifyTemplateFailed ?? "notify-failed-empty"}
-          defaultValue={settings.notifyTemplateFailed ?? ""}
-          placeholder={"{mediaTitle}: {reason}"}
-          onBlur={(e) => saveSetting("notifyTemplateFailed", e.target.value)}
-        />
-      </div>
+      <NotificationTemplates settings={settings} saveSetting={saveSetting} />
 
       </div>
       <div style={{ display: tab === "media" ? undefined : "none" }}>

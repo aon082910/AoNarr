@@ -130,7 +130,7 @@ export async function finishWantedAdd(
     }
     // The root folder's default profile, monitor choice and tags, for what the adder left empty.
     await applyRootFolderDefaults(row.id);
-    notifyAdded(row.title, row.type).catch(() => undefined);
+    notifyAdded(row.title, row.type, { mediaItemId: Number(row.id) }).catch(() => undefined);
 
     // A title a list or a request adds may already be on disk. The delay lets the caller put in the episodes.
     queueScanAfterAdd(row.id, 20_000);

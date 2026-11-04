@@ -1,6 +1,5 @@
 import { useState } from "react";
 import Modal from "./Modal.js";
-import { api } from "../api/client.js";
 
 export interface SettingsProviderField {
   /** Settings store key this field reads/writes (passed straight to saveSetting). */
@@ -22,34 +21,12 @@ export interface SettingsProviderDef {
    * "Configured"/"Not configured" badge. Given the raw settings map so the caller can express
    * whatever "configured" means for that provider (e.g. SMTP needs 3 fields, Discord needs 1). */
   isConfigured: (settings: Record<string, string>) => boolean;
-  /** Settings key storing this provider's enabled-event subset (comma-separated, e.g.
-   * "grabbed,imported") — set only on notification providers, which is what turns on the "Events"
-   * checkbox group in the modal (see services/notifications.ts's isEventEnabledFor). Unset/empty
-   * means every event, matching the server's own default. */
-  eventsKey?: string;
 }
-
-const EVENT_OPTIONS: { key: string; label: string; optIn?: boolean }[] = [
-  { key: "grabbed", label: "Grabbed" },
-  { key: "imported", label: "Imported" },
-  { key: "upgraded", label: "Upgraded" },
-  { key: "failed", label: "Failed" },
-  { key: "duplicatesFound", label: "Duplicates found" },
-  { key: "healthIssue", label: "Health issue" },
-  { key: "healthRestored", label: "Health restored" },
-  { key: "manualInteractionRequired", label: "Manual interaction required" },
-  { key: "updateAvailable", label: "Update available" },
-  // These arrive in bulk (a list adds a hundred titles), so a connection gets one only once it is ticked.
-  { key: "added", label: "Title added", optIn: true },
-  { key: "deleted", label: "Title deleted", optIn: true },
-  { key: "renamed", label: "Files renamed", optIn: true },
-  { key: "fileDeleted", label: "File deleted", optIn: true },
-];
 
 /**
  * Tile-grid + popup-editor pattern for a settings page with many similar "providers"/integrations
  * (each with its own handful of fields) that used to be one long unbroken vertical form — Notifications
- * (Round 126) is the first page built this way; the same `SettingsProviderDef[]` shape is meant to be
+ * (Round 126) was the first page built this way (they are connections now, components/NotificationConnections.tsx); the same `SettingsProviderDef[]` shape is meant to be
  * reused for the other settings pages when the pattern is applied more broadly. Each tile shows the
  * provider's name and configured/not-configured status; clicking it opens a `Modal` with just that
  * provider's own fields, saved through the same `saveSetting` every other settings field already uses.
@@ -65,23 +42,6 @@ export default function SettingsProviderTiles({
 }) {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const openProvider = providers.find((p) => p.key === openKey) ?? null;
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null);
-
-  async function sendTest(eventsKey: string) {
-    const providerKey = eventsKey.replace(/Events$/, "");
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const result = await api.post<{ ok: boolean; error?: string }>(`/settings/notifications/${providerKey}/test`, {});
-      setTestResult(result);
-    } catch (e) {
-      setTestResult({ ok: false, error: (e as Error).message });
-    } finally {
-      setTesting(false);
-    }
-  }
-
   return (
     <>
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}>
@@ -91,10 +51,7 @@ export default function SettingsProviderTiles({
             <div
               key={p.key}
               className="card"
-              onClick={() => {
-                setOpenKey(p.key);
-                setTestResult(null);
-              }}
+              onClick={() => setOpenKey(p.key)}
               style={{ padding: 16 }}
             >
               <div style={{ fontWeight: 600 }}>{p.label}</div>
@@ -143,48 +100,6 @@ export default function SettingsProviderTiles({
               {f.helpText && <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: 2 }}>{f.helpText}</p>}
             </div>
           ))}
-          {openProvider.eventsKey && (
-            <div>
-              <label>Send on</label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginBottom: 4 }}>
-                {EVENT_OPTIONS.map((opt) => {
-                  // A key that was never saved (undefined) means "no preference — every event" —
-                  // distinct from a key explicitly saved as "" (every event deliberately
-                  // unchecked). Collapsing "all checked" into the empty string on save used to
-                  // make those two indistinguishable on read, so unchecking the very last event
-                  // snapped every checkbox straight back to checked.
-                  const raw = settings[openProvider.eventsKey!];
-                  const enabledEvents = raw === undefined ? EVENT_OPTIONS.filter((o) => !o.optIn).map((o) => o.key) : raw ? raw.split(",").map((s) => s.trim()) : [];
-                  const checked = enabledEvents.includes(opt.key);
-                  return (
-                    <label key={opt.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.85rem", margin: 0 }}>
-                      <input
-                        type="checkbox"
-                        style={{ width: "auto" }}
-                        checked={checked}
-                        onChange={() => {
-                          const next = checked ? enabledEvents.filter((e) => e !== opt.key) : [...enabledEvents, opt.key];
-                          saveSetting(openProvider.eventsKey!, next.join(","));
-                        }}
-                      />
-                      {opt.label}
-                    </label>
-                  );
-                })}
-              </div>
-              <p style={{ color: "var(--muted)", fontSize: "0.78rem", marginTop: 0 }}>
-                Which events this provider fires on. All are on by default.
-              </p>
-              <button type="button" className="secondary" disabled={testing} onClick={() => sendTest(openProvider.eventsKey!)}>
-                {testing ? "Sending..." : "Send test notification"}
-              </button>
-              {testResult && (
-                <p style={{ color: testResult.ok ? "var(--ok)" : "var(--danger)", fontSize: "0.85rem" }}>
-                  {testResult.ok ? "Sent — check that connection for the test message." : testResult.error}
-                </p>
-              )}
-            </div>
-          )}
         </Modal>
       )}
     </>

@@ -85,7 +85,9 @@ import { queueScanAfterAdd } from "../services/scanOnAdd.js";
 import { checkTitleMove, isTitleMoving, moveTitleToRootFolder, startTitleMoveJob } from "../services/titleMove.js";
 import { isNewItemMode } from "../services/monitorModes.js";
 import { applyRootFolderDefaults } from "../services/rootFolderDefaults.js";
-import { addTagsToItem, checkedTagIdsColumn } from "../services/tagScope.js";
+import { addTagsToItem, checkedTagIdsColumn, tagIdsOfItem } from "../services/tagScope.js";
+import { mediaFromRow } from "../services/notificationPayloads.js";
+import { kindleSmtpConfig } from "../services/notificationConnections.js";
 import type { MediaType } from "../types/index.js";
 
 export const mediaRouter = Router();
@@ -1611,7 +1613,7 @@ mediaRouter.post(
     // The tags the request names, then the root folder's default tags and quality profile for what it left empty.
     if (requestedTags) await addTagsToItem(result.lastInsertRowid, JSON.parse(requestedTags));
     await applyRootFolderDefaults(result.lastInsertRowid);
-    notifyAdded(String(b.title), String(b.type)).catch(() => undefined);
+    notifyAdded(String(b.title), String(b.type), { mediaItemId: Number(result.lastInsertRowid) }).catch(() => undefined);
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
     await syncPrimaryTitle(Number(result.lastInsertRowid));
     // Provider alternate titles, best effort in the background (no TMDB key or id: none stored).
@@ -2086,8 +2088,10 @@ export async function deleteMediaItemCascade(
   }
   // After the files: a delete that was refused above leaves no exclusion behind for an item that still exists.
   if (addExclusion) await addImportExclusion(row);
+  // The title's tags go with its row, and a tagged notification connection still hears of the delete: asked before.
+  const tagIds = await tagIdsOfItem(row.id);
   await db.prepare("DELETE FROM media_items WHERE id = ?").run(row.id);
-  notifyDeleted(String(row.title), String(row.type), deleteFiles).catch(() => undefined);
+  notifyDeleted(String(row.title), String(row.type), deleteFiles, { tagIds, media: mediaFromRow(row) }).catch(() => undefined);
   // The title's folder goes with its files (artwork, NFO, subtitles, extras), once the row no longer claims anything in it.
   if (deleteFiles && !options.deferRecycle) options.warnings?.push(...folderWarnings(await removeLeftoverFolders(row, files)));
   return options.deferRecycle ? files : [];
@@ -2520,7 +2524,7 @@ mediaRouter.post(
       sub.media_item_id,
       JSON.stringify({ title: sub.title, source: sourceUrl })
     );
-    notifyGrabbed(mediaItem.title, sub.title).catch((err) => log.warn("[media] notification failed:", err.message));
+    notifyGrabbed(mediaItem.title, sub.title, { mediaItemId: mediaItem.id }).catch((err) => log.warn("[media] notification failed:", err.message));
     notifyQueueChanged();
 
     const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(result.lastInsertRowid);
@@ -2702,8 +2706,8 @@ const KINDLE_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 /**
  * Emails a sub-item's downloaded file to the configured Kindle "Send to Kindle" address as an
- * attachment, reusing the same SMTP settings the notification providers use (Settings →
- * Notifications) with `to` overridden to the Kindle address instead of `smtpTo`.
+ * attachment, reusing the mail server of the Email notification connection (Settings →
+ * Notifications) with the Kindle address as the recipient.
  */
 mediaRouter.post(
   "/:id/subitems/:subItemId/send-to-kindle",
@@ -2716,9 +2720,8 @@ mediaRouter.post(
     const kindleAddress = getSetting("kindleEmailAddress");
     if (!kindleAddress) throw new HttpError(400, "No Kindle email address set — add one in Settings → General");
 
-    const smtpHost = getSetting("smtpHost");
-    const smtpFrom = getSetting("smtpFrom");
-    if (!smtpHost || !smtpFrom) throw new HttpError(400, "SMTP isn't configured — set it up in Settings → Notifications first");
+    const smtp = await kindleSmtpConfig(kindleAddress);
+    if (!smtp) throw new HttpError(400, "SMTP isn't configured — add an Email connection in Settings → Notifications first");
 
     let stat: fs.Stats;
     try {
@@ -2745,15 +2748,7 @@ mediaRouter.post(
     const filename = `${headerSafeTitle.replace(/[/\\]/g, "_")}${ext.replace(/[^A-Za-z0-9.]+/g, "")}`;
 
     await sendEmailWithAttachment(
-      {
-        host: smtpHost,
-        port: Number(getSetting("smtpPort") || 587),
-        secure: getSetting("smtpSecure") === "1",
-        username: getSetting("smtpUsername") || undefined,
-        password: getSetting("smtpPassword") || undefined,
-        from: smtpFrom,
-        to: kindleAddress,
-      },
+      smtp,
       headerSafeTitle,
       `Sent from AoNarr: ${sub.title}`,
       { filename, content: fs.readFileSync(sub.file_path), contentType: CONTENT_TYPES[ext] ?? "application/octet-stream" }

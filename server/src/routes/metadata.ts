@@ -233,7 +233,7 @@ metadataRouter.post(
     // The tags the request names, then the root folder's default tags and quality profile for what it left empty.
     if (tagIdsJson) await addTagsToItem(mediaItemId, JSON.parse(tagIdsJson));
     await applyRootFolderDefaults(mediaItemId);
-    notifyAdded(String(b.title), String(b.type)).catch(() => undefined);
+    notifyAdded(String(b.title), String(b.type), { mediaItemId: Number(mediaItemId) }).catch(() => undefined);
 
     if (getSetting("createEmptyFoldersOnAdd") === "1" && rootFolderId) {
       const rootFolderRow = (await db.prepare("SELECT path FROM root_folders WHERE id = ?").get(rootFolderId)) as

@@ -2143,8 +2143,14 @@ export async function placeFile(params: {
   } catch (err) {
     log.warn(`[importer] finishing "${destPath}" after its import failed:`, (err as Error).message);
   }
-  if (hadFileBefore) await notifyUpgraded(item.title, fileLabel, destPath);
-  else await notifyImported(item.title, fileLabel, destPath);
+  const importContext = {
+    mediaItemId: item.id,
+    episodeIds: episodicRows ? episodicRows.map((r) => r.id) : episodeId ? [episodeId] : undefined,
+    file: { path: destPath, size: sizeBytes, quality: quality ?? null, releaseGroup: releaseTitle ? parseReleaseTitle(releaseTitle).releaseGroup : null, sceneName: releaseTitle },
+    release: { title: releaseTitle },
+  };
+  if (hadFileBefore) await notifyUpgraded(item.title, fileLabel, destPath, importContext);
+  else await notifyImported(item.title, fileLabel, destPath, importContext);
   return { destPath, fileLabel };
 }
 
@@ -2722,13 +2728,13 @@ export async function placeAlbumFiles(params: {
       item.id,
       importedHistoryData({ destFolder, fileCount: movedCount, subItemId, quality: quality ?? null })
     );
-    await notifyImported(item.title, `${movedCount} file(s) into ${path.basename(destFolder)}`, destFolder);
+    await notifyImported(item.title, `${movedCount} file(s) into ${path.basename(destFolder)}`, destFolder, { mediaItemId: item.id });
   }
   log.info(`[importer] imported ${movedCount} file(s) into "${path.basename(destFolder)}" for "${item.title}"`);
   if (leftInPlace > 0) {
     const reason = `${leftInPlace} other audio file(s) were left in ${sourceDir} after importing "${subRow.title}"; import any that belong to it manually`;
     log.warn(`[importer] ${reason}`);
-    await notifyManualInteractionRequired(item.title, reason);
+    await notifyManualInteractionRequired(item.title, reason, { mediaItemId: item.id });
   }
   return { destFolder, fileCount: movedCount, leftInPlace, anchorDest, sourceFolder: sharedSourceDir ? null : albumSourceDir };
 }
@@ -3363,8 +3369,8 @@ export async function placeSeasonPackFiles(params: {
     }
   }
   const newCount = importedCount - upgradedCount;
-  if (newCount > 0) await notifyImported(item.title, `season ${seasonNumber} pack — ${newCount} episode(s)`, destFolder);
-  if (upgradedCount > 0) await notifyUpgraded(item.title, `season ${seasonNumber} pack — ${upgradedCount} episode(s) upgraded`, destFolder);
+  if (newCount > 0) await notifyImported(item.title, `season ${seasonNumber} pack — ${newCount} episode(s)`, destFolder, { mediaItemId: item.id });
+  if (upgradedCount > 0) await notifyUpgraded(item.title, `season ${seasonNumber} pack — ${upgradedCount} episode(s) upgraded`, destFolder, { mediaItemId: item.id });
   log.info(
     `[importer] imported season ${seasonNumber} pack for "${item.title}": ${importedCount} episode(s)${upgradedCount > 0 ? `, ${upgradedCount} of them upgrades` : ""}`
   );
@@ -4063,7 +4069,7 @@ export async function renameOneMediaItem(mediaItemId: number, onlySeasonNumber?:
     if (!dryRun) await recordRenames(mediaItemId, result.renamed);
   }
   // Sonarr's "On Rename": told once per title, not per file.
-  if (mediaRow && !dryRun && result.renamed.length > 0) notifyRenamed(String((mediaRow as any).title), result.renamed.length).catch(() => undefined);
+  if (mediaRow && !dryRun && result.renamed.length > 0) notifyRenamed(String((mediaRow as any).title), result.renamed.length, { mediaItemId, renamed: result.renamed.map((r) => ({ from: r.from, to: r.to })) }).catch(() => undefined);
   return result;
 }
 

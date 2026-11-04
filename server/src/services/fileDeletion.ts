@@ -322,6 +322,6 @@ export async function deleteLibraryFile(params: {
       table === "episodes" ? id : null,
       table === "sub_items" ? id : null
     );
-  notifyFileDeleted(String(item.title), path.basename(filePath)).catch(() => undefined);
+  notifyFileDeleted(String(item.title), path.basename(filePath), { mediaItemId: Number(item.id), episodeIds: table === "episodes" ? [Number(id)] : undefined, file: { path: filePath } }).catch(() => undefined);
   return { path: filePath, unmonitored: unmonitor };
 }
