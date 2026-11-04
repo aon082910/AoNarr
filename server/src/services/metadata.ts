@@ -10,6 +10,16 @@ import { getSetting } from "./settingsStore.js";
 import { MEDIA_TYPES, getMediaTypeConfig } from "./mediaTypes.js";
 import { CONTENT_RATING_ORDER } from "./contentRatings.js";
 import { filterAlbumsByProfile, filterBooksByProfile, musicbrainzTypeFilter, type MetadataProfile } from "./metadataProfiles.js";
+import {
+  baseLanguage,
+  fetchTmdbLocalized,
+  metadataLanguage,
+  overlayTmdbRows,
+  preferLocalized,
+  tmdbLanguage,
+  traktLanguage,
+  tvdbLanguage,
+} from "./metadataLanguage.js";
 import type { MediaType } from "../types/index.js";
 
 /** Keeps a provider's raw certification string only if it's an exact match for this app's own
@@ -218,6 +228,18 @@ function dateInTimeZone(timestamp: Date, timeZone: string | null | undefined): s
 }
 
 // ---------------------------------------------------------------------------
+// TMDB in the configured metadata language (see metadataLanguage.ts for why only descriptions follow it)
+// ---------------------------------------------------------------------------
+
+/** One TMDB list endpoint: the English rows (the request every install has always made) plus the language's descriptive fields. */
+async function fetchTmdbList(url: URL, failure: string): Promise<any[]> {
+  const [res, localized] = await Promise.all([fetch(url.toString()), fetchTmdbLocalized(url)]);
+  if (!res.ok) throw new Error(`${failure}: HTTP ${res.status}`);
+  const body: any = await res.json();
+  return overlayTmdbRows(body.results ?? [], localized?.results);
+}
+
+// ---------------------------------------------------------------------------
 // Movies: TMDB, OMDb
 // ---------------------------------------------------------------------------
 
@@ -227,11 +249,9 @@ async function searchMoviesTmdb(query: string): Promise<MetadataSearchResult[]> 
   url.searchParams.set("api_key", key);
   url.searchParams.set("query", query);
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`TMDB movie search failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+  const rows = await fetchTmdbList(url, "TMDB movie search failed");
 
-  return (body.results ?? []).map((r: any) => ({
+  return rows.map((r: any) => ({
     title: r.title,
     year: r.release_date ? Number(r.release_date.slice(0, 4)) : null,
     overview: r.overview || null,
@@ -293,7 +313,9 @@ async function fetchMovieReleaseDatesTmdb(
  * Jellyseerr webhook's approved request, for one) rather than a title to search for. */
 export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearchResult> {
   const key = requireSetting("tmdbApiKey", "TMDB API key");
-  const res = await fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${key}`);
+  const detailUrl = new URL(`https://api.themoviedb.org/3/movie/${tmdbId}`);
+  detailUrl.searchParams.set("api_key", key);
+  const [res, localized] = await Promise.all([fetch(detailUrl.toString()), fetchTmdbLocalized(detailUrl)]);
   if (!res.ok) throw new Error(`TMDB movie lookup failed: HTTP ${res.status}`);
   const r: any = await res.json();
   // Best-effort: a hiccup on this second call (or a movie TMDB simply has no digital/physical
@@ -304,14 +326,16 @@ export async function fetchMovieByTmdbId(tmdbId: string): Promise<MetadataSearch
     physicalReleaseDate: null,
     contentRating: null,
   }));
+  const posterPath = localized?.poster_path || r.poster_path;
+  const backdropPath = localized?.backdrop_path || r.backdrop_path;
   return {
     title: r.title,
     year: r.release_date ? Number(r.release_date.slice(0, 4)) : null,
-    overview: r.overview || null,
-    posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
+    overview: preferLocalized(r.overview, localized?.overview),
+    posterUrl: posterPath ? `${TMDB_IMAGE_BASE}${posterPath}` : null,
     externalIds: { tmdb: String(r.id) },
     releaseDate: r.release_date || null,
-    backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
+    backdropUrl: backdropPath ? `${TMDB_BACKDROP_BASE}${backdropPath}` : null,
     rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
     runtimeMinutes: typeof r.runtime === "number" && r.runtime > 0 ? r.runtime : null,
     studio: r.production_companies?.[0]?.name ?? null,
@@ -378,19 +402,23 @@ async function fetchSeriesContentRatingTmdb(tmdbId: string, apiKey: string): Pro
 
 export async function fetchSeriesByTmdbId(tmdbId: string): Promise<MetadataSearchResult> {
   const key = requireSetting("tmdbApiKey", "TMDB API key");
-  const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${key}`);
+  const detailUrl = new URL(`https://api.themoviedb.org/3/tv/${tmdbId}`);
+  detailUrl.searchParams.set("api_key", key);
+  const [res, localized] = await Promise.all([fetch(detailUrl.toString()), fetchTmdbLocalized(detailUrl)]);
   if (!res.ok) throw new Error(`TMDB series lookup failed: HTTP ${res.status}`);
   const r: any = await res.json();
   // Best-effort: a hiccup on this second call just leaves contentRating null rather than failing
   // the whole lookup.
   const contentRating = await fetchSeriesContentRatingTmdb(String(r.id), key).catch(() => null);
+  const posterPath = localized?.poster_path || r.poster_path;
+  const backdropPath = localized?.backdrop_path || r.backdrop_path;
   return {
     title: r.name,
     year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) : null,
-    overview: r.overview || null,
-    posterUrl: r.poster_path ? `${TMDB_IMAGE_BASE}${r.poster_path}` : null,
+    overview: preferLocalized(r.overview, localized?.overview),
+    posterUrl: posterPath ? `${TMDB_IMAGE_BASE}${posterPath}` : null,
     externalIds: { tmdb: String(r.id) },
-    backdropUrl: r.backdrop_path ? `${TMDB_BACKDROP_BASE}${r.backdrop_path}` : null,
+    backdropUrl: backdropPath ? `${TMDB_BACKDROP_BASE}${backdropPath}` : null,
     rating: typeof r.vote_average === "number" && r.vote_average > 0 ? r.vote_average : null,
     runtimeMinutes: Array.isArray(r.episode_run_time) && r.episode_run_time.length > 0 ? r.episode_run_time[0] : null,
     status: r.status || null,
@@ -497,6 +525,21 @@ async function traktFetch(url: string, clientId: string): Promise<Response> {
   }
 }
 
+/** The overview Trakt holds for a movie or show in the metadata language (its translations endpoint takes the two-letter code),
+ * or null for English and when Trakt has no translation. Only an overview is taken: the title is what the item is matched by. */
+async function traktTranslatedOverview(kind: "movies" | "shows", id: string, clientId: string): Promise<string | null> {
+  const language = traktLanguage();
+  if (!language) return null;
+  try {
+    const res = await traktFetch(`https://api.trakt.tv/${kind}/${encodeURIComponent(id)}/translations/${language}`, clientId);
+    if (!res.ok) return null;
+    const rows: any = await res.json();
+    return Array.isArray(rows) ? rows.find((row) => typeof row?.overview === "string" && row.overview.trim() !== "")?.overview ?? null : null;
+  } catch {
+    return null;
+  }
+}
+
 async function searchMoviesTrakt(query: string): Promise<MetadataSearchResult[]> {
   const clientId = requireSetting("traktClientId", "Trakt Client ID");
   const url = new URL("https://api.trakt.tv/search/movie");
@@ -529,11 +572,9 @@ async function searchSeriesTmdb(query: string): Promise<MetadataSearchResult[]> 
   url.searchParams.set("api_key", key);
   url.searchParams.set("query", query);
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`TMDB series search failed: HTTP ${res.status}`);
-  const body: any = await res.json();
+  const rows = await fetchTmdbList(url, "TMDB series search failed");
 
-  return (body.results ?? []).map((r: any) => ({
+  return rows.map((r: any) => ({
     title: r.name,
     year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) : null,
     overview: r.overview || null,
@@ -552,10 +593,10 @@ async function searchSeriesTmdb(query: string): Promise<MetadataSearchResult[]> 
 
 export async function fetchTrendingMovies(): Promise<MetadataSearchResult[]> {
   const key = requireSetting("tmdbApiKey", "TMDB API key");
-  const res = await fetch(`https://api.themoviedb.org/3/trending/movie/week?api_key=${key}`);
-  if (!res.ok) throw new Error(`TMDB trending movies failed: HTTP ${res.status}`);
-  const body: any = await res.json();
-  return (body.results ?? []).map((r: any) => ({
+  const url = new URL("https://api.themoviedb.org/3/trending/movie/week");
+  url.searchParams.set("api_key", key);
+  const rows = await fetchTmdbList(url, "TMDB trending movies failed");
+  return rows.map((r: any) => ({
     title: r.title,
     year: r.release_date ? Number(r.release_date.slice(0, 4)) : null,
     overview: r.overview || null,
@@ -569,10 +610,10 @@ export async function fetchTrendingMovies(): Promise<MetadataSearchResult[]> {
 
 export async function fetchTrendingSeries(): Promise<MetadataSearchResult[]> {
   const key = requireSetting("tmdbApiKey", "TMDB API key");
-  const res = await fetch(`https://api.themoviedb.org/3/trending/tv/week?api_key=${key}`);
-  if (!res.ok) throw new Error(`TMDB trending series failed: HTTP ${res.status}`);
-  const body: any = await res.json();
-  return (body.results ?? []).map((r: any) => ({
+  const url = new URL("https://api.themoviedb.org/3/trending/tv/week");
+  url.searchParams.set("api_key", key);
+  const rows = await fetchTmdbList(url, "TMDB trending series failed");
+  return rows.map((r: any) => ({
     title: r.name,
     year: r.first_air_date ? Number(r.first_air_date.slice(0, 4)) : null,
     overview: r.overview || null,
@@ -599,16 +640,21 @@ async function fetchSeriesEpisodesTmdb(tmdbId: string): Promise<MetadataEpisode[
   for (const seasonNumber of seasonNumbers) {
     const seasonUrl = new URL(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasonNumber}`);
     seasonUrl.searchParams.set("api_key", key);
-    const seasonRes = await fetch(seasonUrl.toString());
+    const [seasonRes, localizedSeason] = await Promise.all([fetch(seasonUrl.toString()), fetchTmdbLocalized(seasonUrl)]);
     if (!seasonRes.ok) continue;
     const season: any = await seasonRes.json();
+    // Episode titles stay as TMDB lists them by default: the episodes table keeps one title, which
+    // naming, release matching and the importer all read, so only the overview follows the language.
+    const localizedOverviews = new Map<number, string>(
+      (localizedSeason?.episodes ?? []).map((ep: any): [number, string] => [ep.episode_number, ep.overview])
+    );
     for (const ep of season.episodes ?? []) {
       episodes.push({
         seasonNumber,
         episodeNumber: ep.episode_number,
         title: ep.name || null,
         airDate: ep.air_date || null,
-        overview: ep.overview || null,
+        overview: preferLocalized(ep.overview, localizedOverviews.get(ep.episode_number)),
       });
     }
   }
@@ -624,12 +670,17 @@ async function fetchSeriesSeasonsTmdb(tmdbId: string): Promise<MetadataSeason[]>
   const key = requireSetting("tmdbApiKey", "TMDB API key");
   const detailUrl = new URL(`https://api.themoviedb.org/3/tv/${tmdbId}`);
   detailUrl.searchParams.set("api_key", key);
-  const detailRes = await fetch(detailUrl.toString());
+  const [detailRes, localized] = await Promise.all([fetch(detailUrl.toString()), fetchTmdbLocalized(detailUrl)]);
   if (!detailRes.ok) throw new Error(`TMDB series lookup failed: HTTP ${detailRes.status}`);
   const detail: any = await detailRes.json();
+  // A season poster in the metadata language when TMDB has one, else the default one.
+  const localizedPosters = new Map<number, string>((localized?.seasons ?? []).map((s: any): [number, string] => [s.season_number, s.poster_path]));
   return (detail.seasons ?? [])
     .filter((s: any) => s.season_number > 0)
-    .map((s: any) => ({ seasonNumber: s.season_number, posterUrl: s.poster_path ? `${TMDB_IMAGE_BASE}${s.poster_path}` : null }));
+    .map((s: any) => {
+      const posterPath = localizedPosters.get(s.season_number) || s.poster_path;
+      return { seasonNumber: s.season_number, posterUrl: posterPath ? `${TMDB_IMAGE_BASE}${posterPath}` : null };
+    });
 }
 
 /** Best-effort — a show not matched to TMDB simply gets no season artwork rather than an error. */
@@ -680,31 +731,55 @@ async function tvdbFetch(path: string, params: Record<string, string> = {}, time
 
 async function searchSeriesTvdb(query: string): Promise<MetadataSearchResult[]> {
   const body = await tvdbFetch("/v4/search", { query, type: "series" });
+  // A search hit carries its overview in every language TheTVDB has it in ("overviews", keyed by the
+  // three-letter code), so the metadata language costs no extra request here.
+  const language = tvdbLanguage();
   return (body.data ?? []).map((s: any) => ({
     title: s.name,
     year: s.year ? Number(s.year) : null,
-    overview: s.overview || null,
+    overview: preferLocalized(s.overview, language ? s.overviews?.[language] : null),
     posterUrl: s.image_url || s.thumbnail || null,
     externalIds: { tvdb: String(s.tvdb_id ?? s.id) },
   }));
 }
 
-async function fetchSeriesEpisodesTvdb(tvdbId: string): Promise<MetadataEpisode[]> {
+/** Every page of one TheTVDB episode listing. */
+async function tvdbEpisodePages(path: string): Promise<any[]> {
   // This endpoint is paged (500 episodes per page); without following links.next, a long-running
   // show's later seasons are never created. The page cap only guards against a runaway `next`.
   const episodes: any[] = [];
   for (let page = 0; page < 100; page++) {
-    const body = await tvdbFetch(`/v4/series/${tvdbId}/episodes/default`, { page: String(page) });
+    const body = await tvdbFetch(path, { page: String(page) });
     const pageEpisodes: any[] = body.data?.episodes ?? [];
     episodes.push(...pageEpisodes);
     if (!body.links?.next || pageEpisodes.length === 0) break;
+  }
+  return episodes;
+}
+
+async function fetchSeriesEpisodesTvdb(tvdbId: string): Promise<MetadataEpisode[]> {
+  const episodes = await tvdbEpisodePages(`/v4/series/${tvdbId}/episodes/default`);
+
+  // The same listing in the metadata language supplies the overviews only: the episode title stays
+  // the one the default listing gives (the episodes table keeps a single title, which naming and
+  // release matching read). A language TheTVDB has no translation for just leaves the default text.
+  const overviews = new Map<string, string>();
+  const language = tvdbLanguage();
+  if (language) {
+    try {
+      for (const e of await tvdbEpisodePages(`/v4/series/${tvdbId}/episodes/default/${language}`)) {
+        if (e.overview) overviews.set(`${e.seasonNumber}:${e.number}`, e.overview);
+      }
+    } catch {
+      // the default overviews stand
+    }
   }
   return episodes.map((e: any) => ({
     seasonNumber: e.seasonNumber,
     episodeNumber: e.number,
     title: e.name || null,
     airDate: e.aired || null,
-    overview: e.overview || null,
+    overview: preferLocalized(e.overview, overviews.get(`${e.seasonNumber}:${e.number}`)),
   }));
 }
 
@@ -2199,9 +2274,18 @@ export async function migrateScreenscraperArtwork(): Promise<number> {
 
 /** Region/language fields on ScreenScraper come back as an array of {region/langue, text} — "wor"
  * (world) is the most game-agnostic pick, falling back to whatever's first. */
-function screenscraperLocalized(entries: any[] | undefined, keyField: "region" | "langue", preferred: string): string | null {
+function screenscraperLocalized(entries: any[] | undefined, keyField: "region" | "langue", preferred: string | readonly string[]): string | null {
   if (!entries || entries.length === 0) return null;
-  return entries.find((e) => e[keyField] === preferred)?.text ?? entries[0]?.text ?? null;
+  for (const wanted of typeof preferred === "string" ? [preferred] : preferred) {
+    const match = entries.find((e) => e[keyField] === wanted);
+    if (match?.text) return match.text;
+  }
+  return entries[0]?.text ?? null;
+}
+
+/** A game's synopsis in the metadata language, else English, else whatever ScreenScraper lists first. */
+function screenscraperSynopsis(game: any): string | null {
+  return screenscraperLocalized(game.synopsis, "langue", [baseLanguage(metadataLanguage()), "en"]);
 }
 
 async function searchRomsScreenscraper(query: string): Promise<MetadataSearchResult[]> {
@@ -2218,7 +2302,7 @@ async function searchRomsScreenscraper(query: string): Promise<MetadataSearchRes
     return {
       title: screenscraperLocalized(g.noms, "region", "wor") ?? g.nom ?? "Unknown",
       year: dateStr ? Number(String(dateStr).slice(0, 4)) || null : null,
-      overview: screenscraperLocalized(g.synopsis, "langue", "en"),
+      overview: screenscraperSynopsis(g),
       posterUrl: screenscraperArtworkRef(boxart),
       externalIds: { screenscraper: String(g.id) },
     };
@@ -2241,7 +2325,7 @@ async function fetchRomDetailsScreenscraper(id: string): Promise<RomDetails> {
   // art, and it is only reachable with the ScreenScraper credentials, which a group logo (stored as
   // a plain URL, with no proxy) would expose.
   return {
-    overview: screenscraperLocalized(g.synopsis, "langue", "en"),
+    overview: screenscraperSynopsis(g),
     system,
     maker: g.developpeur?.text ?? g.editeur?.text ?? null,
     systemLogoUrl: system ? await fetchIgdbPlatformLogo(system).catch(() => null) : null,
@@ -2603,16 +2687,31 @@ export async function fetchTrailerFor(type: MediaType, externalIds: Record<strin
   const url = new URL(`https://api.themoviedb.org/3/${kind}/${externalIds.tmdb}/videos`);
   url.searchParams.set("api_key", key);
 
+  // A trailer in the metadata language when TMDB lists one (its English ones are asked for too, so
+  // asking for the language never leaves a title without a trailer it had); the plain request below
+  // is what an English install has always made, and is the fallback when the language has nothing.
+  const language = tmdbLanguage();
+  if (language) {
+    const localizedUrl = new URL(url.toString());
+    localizedUrl.searchParams.set("language", language);
+    localizedUrl.searchParams.set("include_video_language", `${baseLanguage(language)},en`);
+    const localized = await trailerFromTmdbVideos(localizedUrl, baseLanguage(language)).catch(() => null);
+    if (localized) return localized;
+  }
+  return trailerFromTmdbVideos(url, null);
+}
+
+/** The best YouTube trailer in one TMDB /videos response; a trailer in `language` wins over one in another language. */
+async function trailerFromTmdbVideos(url: URL, language: string | null): Promise<string | null> {
   const res = await fetch(url.toString());
   if (!res.ok) return null;
   const body: any = await res.json();
   const videos: any[] = body.results ?? [];
 
   const youtube = videos.filter((v) => v.site === "YouTube");
-  const best =
-    youtube.find((v) => v.type === "Trailer" && v.official) ??
-    youtube.find((v) => v.type === "Trailer") ??
-    youtube[0];
+  const inLanguage = language ? youtube.filter((v) => v.iso_639_1 === language) : [];
+  const trailerOf = (pool: any[]) => pool.find((v) => v.type === "Trailer" && v.official) ?? pool.find((v) => v.type === "Trailer");
+  const best = trailerOf(inLanguage) ?? trailerOf(youtube) ?? inLanguage[0] ?? youtube[0];
   return best ? `https://www.youtube.com/watch?v=${best.key}` : null;
 }
 
@@ -2668,10 +2767,13 @@ async function searchMangaMangadex(query: string): Promise<MetadataSearchResult[
   return (body.data ?? []).map((m: any) => {
     const title = m.attributes?.title?.en || Object.values(m.attributes?.title ?? {})[0] || "Unknown";
     const cover = m.relationships?.find((r: any) => r.type === "cover_art")?.attributes?.fileName;
+    // MangaDex keeps a description per language ("pt-br", "zh-hk", "de"): the metadata language's when it has one.
+    const descriptions = m.attributes?.description ?? {};
+    const language = metadataLanguage();
     return {
       title: String(title),
       year: m.attributes?.year ?? null,
-      overview: m.attributes?.description?.en || null,
+      overview: preferLocalized(descriptions.en, descriptions[language.toLowerCase()] ?? descriptions[baseLanguage(language)]),
       posterUrl: cover ? `https://uploads.mangadex.org/covers/${m.id}/${cover}.256.jpg` : null,
       externalIds: { mangadex: String(m.id) },
     };
@@ -2872,10 +2974,16 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
       const body = await tvdbFetch(`/v4/series/${encodeURIComponent(id)}/extended`);
       const s = body?.data;
       if (!s) throw new Error(`No TVDB series found for id "${id}"`);
+      // The overview in the metadata language, from TheTVDB's translation of the series (its name is
+      // left alone: it is what the item is matched by). Without a translation the default stays.
+      const language = tvdbLanguage();
+      const translated = language
+        ? await tvdbFetch(`/v4/series/${encodeURIComponent(id)}/translations/${language}`).catch(() => null)
+        : null;
       return {
         title: s.name,
         year: s.year ? Number(s.year) : null,
-        overview: s.overview || null,
+        overview: preferLocalized(s.overview, translated?.data?.overview),
         posterUrl: s.image || null,
         externalIds: { tvdb: String(s.id) },
         status: s.status?.name || null,
@@ -2909,7 +3017,7 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
         return {
           title: m.title,
           year: m.year ?? null,
-          overview: m.overview || null,
+          overview: preferLocalized(m.overview, await traktTranslatedOverview("movies", id, clientId)),
           posterUrl: null, // Trakt hosts no images
           externalIds: { trakt: String(m.ids.trakt), ...(m.ids.imdb ? { imdb: m.ids.imdb } : {}) },
           releaseDate: m.released || null,
@@ -2924,7 +3032,7 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
       return {
         title: s.title,
         year: s.year ?? null,
-        overview: s.overview || null,
+        overview: preferLocalized(s.overview, await traktTranslatedOverview("shows", id, clientId)),
         // Trakt's API doesn't host poster images at all — same gap searchSeriesTrakt already has.
         posterUrl: null,
         externalIds: { trakt: String(s.ids.trakt) },
@@ -3178,7 +3286,14 @@ async function fetchArtworkFanart(kind: "movies" | "tv" | "music", id: string): 
   if (!res.ok) throw new Error(`Fanart.tv lookup failed: HTTP ${res.status}`);
   const body: any = await res.json();
 
-  const urls = (arr: any[] | undefined) => (arr ?? []).map((x) => x.url).filter(Boolean);
+  // Fanart.tv tags each image with its language: the ones in the metadata language are offered first
+  // (the picker lists every image either way; English keeps fanart.tv's own order).
+  const wanted = tmdbLanguage() ? baseLanguage(metadataLanguage()) : null;
+  const urls = (arr: any[] | undefined) => {
+    const images = (arr ?? []).filter((x) => x.url);
+    const inLanguage = wanted ? images.filter((x) => x.lang === wanted) : [];
+    return [...inLanguage, ...images.filter((x) => !inLanguage.includes(x))].map((x) => x.url);
+  };
 
   if (kind === "movies") {
     return {
@@ -3367,13 +3482,17 @@ export interface CastMember {
 
 async function fetchCreditsTmdb(kind: "movie" | "tv", tmdbId: string): Promise<CastMember[]> {
   const key = requireSetting("tmdbApiKey", "TMDB API key");
-  const res = await fetch(`https://api.themoviedb.org/3/${kind}/${tmdbId}/credits?api_key=${key}`);
+  const url = new URL(`https://api.themoviedb.org/3/${kind}/${tmdbId}/credits`);
+  url.searchParams.set("api_key", key);
+  const [res, localized] = await Promise.all([fetch(url.toString()), fetchTmdbLocalized(url)]);
   if (!res.ok) throw new Error(`TMDB credits lookup failed: HTTP ${res.status}`);
   const body: any = await res.json();
+  // Only the character's name follows the language (TMDB translates some, mostly for voice roles); a person's name stays.
+  const characters = new Map<string, string>((localized?.cast ?? []).map((c: any): [string, string] => [c.credit_id, c.character]));
   return (body.cast ?? []).slice(0, 20).map((c: any) => ({
     personId: c.id,
     name: c.name,
-    character: c.character || null,
+    character: preferLocalized(c.character, characters.get(c.credit_id)),
     photoUrl: c.profile_path ? `${TMDB_IMAGE_BASE}${c.profile_path}` : null,
   }));
 }

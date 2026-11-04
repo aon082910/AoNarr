@@ -73,6 +73,7 @@ import { starrImportRouter } from "./routes/starrImport.js";
 import { mountStarrApps } from "./starr/router.js";
 import { openApiSpec } from "./openapi.js";
 import { contentRatingsRouter } from "./routes/contentRatingsRoute.js";
+import { displayPreferencesRouter } from "./routes/displayPreferences.js";
 import { changelogRouter } from "./routes/changelog.js";
 import { peopleRouter } from "./routes/people.js";
 import { remoteInstancesRouter } from "./routes/remoteInstances.js";
@@ -451,6 +452,7 @@ export async function createApp(): Promise<Express> {
   app.use("/api/irc-feeds", ircFeedsRouter);
   app.use("/api/settings/plex-auth", plexAuthRouter);
   app.use("/api/content-ratings", contentRatingsRouter);
+  app.use("/api/display-preferences", displayPreferencesRouter);
   app.use("/api/changelog", changelogRouter);
   app.use("/api/people", peopleRouter);
   app.use("/api/remote-instances", remoteInstancesRouter);

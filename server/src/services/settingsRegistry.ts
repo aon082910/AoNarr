@@ -1,6 +1,8 @@
 import { SETTING_KEY_LIST } from "./settingKeyList.js";
 import { hostPatternProblem, parseBypassFilter, proxyUrlProblem } from "./networkAddress.js";
 import { MULTI_EPISODE_STYLES, namingTemplateProblem } from "./naming.js";
+import { metadataLanguageProblem } from "./metadataLanguage.js";
+import { UI_DATE_FORMATS, UI_TIME_FORMATS, UI_WEEK_STARTS, timeZoneProblem } from "./displayPreferences.js";
 
 /**
  * What PUT /api/settings/:key accepts. Before this, any key and any value was stored and answered 200,
@@ -100,11 +102,18 @@ const RULES: Readonly<Record<string, Rule>> = {
   rejectDangerousFiles: { oneOf: ["1", "0"] },
   removeFolderOnDelete: { oneOf: ["1", "0"] },
   deleteEmptyFolders: { oneOf: ["1", "0"] },
+  // Display preferences (displayPreferences.ts); an empty value is the browser's own way.
+  uiWeekStart: { oneOf: UI_WEEK_STARTS },
+  uiDateFormat: { oneOf: UI_DATE_FORMATS },
+  uiTimeFormat: { oneOf: UI_TIME_FORMATS },
+  uiRelativeDates: { oneOf: ["1", "0"] },
 };
 
 /** Why the value is not acceptable for the key, or null. */
 export function settingValueProblem(key: string, value: string): string | null {
   if (value.trim() === "") return null;
+  if (key === "metadataLanguage") return metadataLanguageProblem(value);
+  if (key === "uiTimeZone") return timeZoneProblem(value);
   if (key === "socks5ProxyUrl") {
     const problem = proxyUrlProblem(value);
     return problem ? `"${key}" ${problem}` : null;

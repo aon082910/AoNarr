@@ -7,6 +7,7 @@ import { fetchWatchedFiles, getMediaServerConfig } from "./mediaServer.js";
 import { findWatchedMatch, buildWatchedIndex } from "./archival.js";
 import { autoSelectRootFolderId } from "./rootFolderSelect.js";
 import { fetchSeriesEpisodesFor } from "./metadata.js";
+import { fetchTmdbLocalized, overlayTmdbRows } from "./metadataLanguage.js";
 import { insertNewSeriesEpisodes } from "./seriesAdd.js";
 import { log } from "./logger.js";
 
@@ -111,10 +112,11 @@ async function existingExternalIds(type: string, provider: string): Promise<Set<
 async function tmdbSimilar(kind: "movie" | "tv", tmdbId: string, apiKey: string): Promise<any[]> {
   const url = new URL(`https://api.themoviedb.org/3/${kind}/${tmdbId}/recommendations`);
   url.searchParams.set("api_key", apiKey);
-  const res = await fetch(url.toString());
+  const [res, localized] = await Promise.all([fetch(url.toString()), fetchTmdbLocalized(url)]);
   if (!res.ok) return [];
   const body = (await res.json()) as { results?: any[] };
-  return body.results ?? [];
+  // Titles stay English (an Add from this list creates the item under that title); the overview and poster follow the metadata language.
+  return overlayTmdbRows(body.results ?? [], localized?.results);
 }
 
 async function recommendMovies(
