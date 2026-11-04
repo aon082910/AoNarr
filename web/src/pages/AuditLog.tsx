@@ -48,6 +48,7 @@ const EVENT_LABELS: Record<string, string> = {
   download_client_added: "Added download client",
   download_client_removed: "Removed download client",
   notification_connection_added: "Added notification connection",
+  notification_connection_updated: "Changed notification connection",
   notification_connection_removed: "Removed notification connection",
   corrupt_media_recycled: "Recycled flagged corrupt media",
   corrupt_media_dismissed: "Dismissed corrupt media flag",

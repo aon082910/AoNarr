@@ -7,6 +7,7 @@ import {
   ConnectionInputError,
   EVENT_KEYS,
   OPT_IN_EVENTS,
+  changedConnectionFields,
   connectionToApi,
   createNotificationConnection,
   deleteNotificationConnection,
@@ -74,8 +75,16 @@ notificationConnectionsRouter.post(
 notificationConnectionsRouter.put(
   "/:id",
   asyncHandler(async (req, res) => {
-    const updated = await checked(() => updateNotificationConnection(connectionId(req.params.id), req.body ?? {}));
+    const id = connectionId(req.params.id);
+    const before = await getNotificationConnection(id);
+    const updated = await checked(() => updateNotificationConnection(id, req.body ?? {}));
     if (!updated) throw new HttpError(404, "Notification connection not found");
+    // Names of what changed, never values: pointing a Custom Script connection at another program is the case that matters.
+    const changed = before ? changedConnectionFields(before, updated) : [];
+    if (changed.length > 0) {
+      const actor = auditActor(req);
+      logAuditEvent(actor.userId, actor.username, "notification_connection_updated", `${updated.name} (${updated.kind}): ${changed.join(", ")}`);
+    }
     res.json(connectionToApi(updated));
   })
 );

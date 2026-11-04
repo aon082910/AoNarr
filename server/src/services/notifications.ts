@@ -20,7 +20,7 @@ import {
   type EventKey,
   type NotificationConnection,
 } from "./notificationConnections.js";
-import { recordNotificationOutcome } from "./notificationStatus.js";
+import { notificationSendStarted, recordNotificationOutcome } from "./notificationStatus.js";
 import { buildStarrPayload, mediaFromRow, type NotifyContext, type NotifyEpisode, type ResolvedNotifyContext } from "./notificationPayloads.js";
 import { scopeAllows, tagIdsOfItem } from "./tagScope.js";
 
@@ -276,6 +276,9 @@ async function resolveContext(ctx: NotifyContext): Promise<ResolvedNotifyContext
 
 async function fanOut(content: NotificationContent, ctx: NotifyContext = {}): Promise<void> {
   const event = (content.payload as { event: string }).event;
+  // Noted before anything is read: a connection deleted, switched off or fixed from here until its send answers must not
+  // get its failure back into Health.
+  const startedAt = notificationSendStarted();
 
   // Notifications must never break the grab, the import or the health check that fired them.
   let connections: NotificationConnection[];
@@ -303,7 +306,7 @@ async function fanOut(content: NotificationContent, ctx: NotifyContext = {}): Pr
     if (s.status === "rejected") {
       const message = s.reason?.message ?? String(s.reason);
       log.warn("[notifications]", `${target.label}: ${message}`);
-      recordNotificationOutcome(target, false, message);
+      recordNotificationOutcome(target, false, message, startedAt);
     } else {
       recordNotificationOutcome(target, true);
     }
