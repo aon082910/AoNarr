@@ -1,6 +1,7 @@
 import { log } from "./logger.js";
 import { db } from "../db/index.js";
 import { finishWantedAdd } from "./addDefaults.js";
+import { applyRootFolderMonitor, resolveAddQualityProfileId } from "./rootFolderDefaults.js";
 import { getSetting } from "./settingsStore.js";
 import { fetchSeriesEpisodesFor } from "./metadata.js";
 import { insertNewSeriesEpisodes } from "./seriesAdd.js";
@@ -75,11 +76,6 @@ async function existingTmdbIds(type: string): Promise<Set<string>> {
   return ids;
 }
 
-async function defaultQualityProfileId(): Promise<number | null> {
-  const row = (await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined;
-  return row?.id ?? null;
-}
-
 /**
  * Adds anything new in the admin's own Plex account watchlist (the same account whose token is
  * configured for Media Server Sync in Settings) as a monitored library item — movies as single
@@ -101,7 +97,6 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
     return { added: 0, error: (err as Error).message };
   }
 
-  const qualityProfileId = await defaultQualityProfileId();
   const rootFolders = new RootFolderPicker();
   const existingMovies = await existingTmdbIds("movie");
   const existingSeries = await existingTmdbIds("series");
@@ -119,6 +114,7 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
         if (await isExcluded("movie", item.title, item.year ?? null, tmdbId, "tmdb")) continue;
         const rootFolderId = await rootFolders.pick("movie");
         if (rootFolderId == null) continue;
+        const qualityProfileId = await resolveAddQualityProfileId(null, rootFolderId);
         const inserted = await insertUnlessTmdbIdExists("movie", tmdbId, () =>
           db
             .prepare(
@@ -146,6 +142,7 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
         if (await isExcluded("series", item.title, item.year ?? null, tmdbId, "tmdb")) continue;
         const rootFolderId = await rootFolders.pick("series");
         if (rootFolderId == null) continue;
+        const qualityProfileId = await resolveAddQualityProfileId(null, rootFolderId);
         const externalIds = { tmdb: tmdbId, ...(ids.imdb ? { imdb: ids.imdb } : {}) };
         const result = await insertUnlessTmdbIdExists("series", tmdbId, () =>
           db
@@ -169,7 +166,10 @@ export async function runPlexWatchlistSync(): Promise<{ added: number; error?: s
         await finishWantedAdd(result.lastInsertRowid);
 
         const episodes = await fetchSeriesEpisodesFor(externalIds).catch(() => []);
-        if (result.lastInsertRowid != null) await insertNewSeriesEpisodes(result.lastInsertRowid, episodes);
+        if (result.lastInsertRowid != null) {
+          await insertNewSeriesEpisodes(result.lastInsertRowid, episodes);
+          await applyRootFolderMonitor(result.lastInsertRowid);
+        }
 
         added++;
       }

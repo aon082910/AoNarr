@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
-import { isMonitorMode, isNewItemMode } from "./monitorModes.js";
+import { applyEpisodeMonitorMode, applySubItemMonitorMode, COLLECTION_MONITOR_MODES, isMonitorMode, isNewItemMode, SERIES_MONITOR_MODES } from "./monitorModes.js";
 import { addTagsToItem, parseTagIds } from "./tagScope.js";
 
 /**
@@ -29,6 +29,56 @@ export async function rootFolderDefaultsOf(rootFolderId: number | null | undefin
     monitorNewItems: isNewItemMode(row.default_monitor_new_items) ? row.default_monitor_new_items : null,
     tagIds: parseTagIds(row.default_tag_ids),
   };
+}
+
+/**
+ * The quality profile a new wanted item starts with: the one the adder chose (a list's own profile, an
+ * admin's pick on a request), else the default profile of the root folder it is added into, else the
+ * first profile. A default that points at a profile deleted since is skipped. Without any profile the
+ * auto-search would apply no allowed-quality gate or cutoff at all, so the first profile is the floor.
+ */
+export async function resolveAddQualityProfileId(chosen: number | null | undefined, rootFolderId: number | null | undefined): Promise<number | null> {
+  if (chosen != null) return Number(chosen);
+  const folderDefault = (await rootFolderDefaultsOf(rootFolderId)).qualityProfileId;
+  if (folderDefault != null && (await db.prepare("SELECT id FROM quality_profiles WHERE id = ?").get(folderDefault))) return folderDefault;
+  const first = (await db.prepare("SELECT id FROM quality_profiles ORDER BY id LIMIT 1").get()) as { id: number } | undefined;
+  return first?.id ?? null;
+}
+
+/**
+ * The Monitor choice for what a title's episodes or albums start as: the one the adder chose, else the
+ * root folder's default, else "all". Only choices that fit the type count (a series mode on an artist
+ * would mean nothing), so a folder default of the wrong family reads as "all".
+ */
+export async function resolveAddMonitorMode(chosen: string | null | undefined, rootFolderId: number | null | undefined, type: string): Promise<string> {
+  if (chosen) return chosen;
+  const mode = (await rootFolderDefaultsOf(rootFolderId)).monitor;
+  if (!mode) return "all";
+  const fits = type === "series" ? (SERIES_MONITOR_MODES as readonly string[]).includes(mode) : (COLLECTION_MONITOR_MODES as readonly string[]).includes(mode);
+  return fits ? mode : "all";
+}
+
+/**
+ * Applies the root folder's default Monitor choice to a series or artist whose episodes or albums are
+ * now in (call it after they are inserted). For the adds that name no Monitor choice of their own: a
+ * Trakt or Plex watchlist, an automatic request. "none" leaves the title unmonitored, as a list does.
+ * Best effort, like the other defaults.
+ */
+export async function applyRootFolderMonitor(itemId: number | bigint | null | undefined): Promise<void> {
+  if (itemId == null) return;
+  try {
+    const row = (await db.prepare("SELECT type, root_folder_id FROM media_items WHERE id = ?").get(Number(itemId))) as
+      | { type: string; root_folder_id: number | null }
+      | undefined;
+    if (!row || row.root_folder_id == null || (row.type !== "series" && row.type !== "artist")) return;
+    const mode = await resolveAddMonitorMode(null, row.root_folder_id, row.type);
+    if (mode === "all") return;
+    if (row.type === "series") await applyEpisodeMonitorMode(itemId, mode);
+    else await applySubItemMonitorMode(itemId, mode);
+    if (mode === "none") await db.prepare("UPDATE media_items SET monitored = 0 WHERE id = ?").run(Number(itemId));
+  } catch (err) {
+    log.warn(`[rootFolderDefaults] could not apply the root folder monitor choice to item ${itemId}:`, (err as Error).message);
+  }
 }
 
 /** Fills what the item left empty from its root folder's defaults. Best effort: the item is already in the library. */
