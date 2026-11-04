@@ -109,8 +109,11 @@ export async function recycleBinFolderProblem(): Promise<string | null> {
  * (cross-filesystem, e.g. /config vs /media in Docker) copy of a multi-GB file takes. During that
  * window the whole server stops responding to every request from every user, not just the one who
  * triggered the recycle — reported as a bare 502 (nginx's upstream connection simply going
- * unresponsive) with nothing in the logs, since nothing ever threw. */
-export async function recycleFile(filePath: string, mediaType: string, title: string, mediaItemId: number | null): Promise<boolean> {
+ * unresponsive) with nothing in the logs, since nothing ever threw.
+ *
+ * `recordedPath`: the path the bin remembers as the file's own, for a file that was set aside under another name while
+ * something else took its place (a replaced library file during a script import): Restore puts it back there. */
+export async function recycleFile(filePath: string, mediaType: string, title: string, mediaItemId: number | null, recordedPath: string = filePath): Promise<boolean> {
   if (!isRecycleBinEnabled()) {
     try {
       await fsp.rm(filePath, { recursive: true, force: true });
@@ -178,7 +181,7 @@ export async function recycleFile(filePath: string, mediaType: string, title: st
         `INSERT INTO recycle_bin (media_item_id, media_type, title, original_path, recycle_path, size_bytes)
          VALUES (?, ?, ?, ?, ?, ?)`
       )
-      .run(mediaItemId, mediaType, title, filePath, dest, size);
+      .run(mediaItemId, mediaType, title, recordedPath, dest, size);
   } catch (err) {
     // Without a row the moved file would sit in the bin untracked: never listed, restorable or
     // purged by retention. Put it back where it was instead.

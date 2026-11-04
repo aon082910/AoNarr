@@ -7,7 +7,8 @@ import { getSetting, setSetting } from "./settingsStore.js";
 import { getMediaTypeConfig, isPlaceholderParent, isProbeableFile, MEDIA_TYPE_KEYS } from "./mediaTypes.js";
 import { rootFolderFromRow } from "../db/mappers.js";
 import { parseReleaseTitle, FILE_NAME, type ParsedRelease } from "./releaseParser.js";
-import { probeAudioTags, probeMediaInfo } from "./ffprobe.js";
+import { probeAudioTags } from "./ffprobe.js";
+import { probeLibraryFile } from "./mediaInfoSwitch.js";
 import { cleanEmbeddedAuthor, cleanEmbeddedTitle, firstAuthor, readBookFileMetadata } from "./bookFileMetadata.js";
 import {
   searchMetadata,
@@ -1327,7 +1328,7 @@ async function scanAndImportLibraryInner(
           episode = candidate;
         }
 
-        const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
+        const mediaInfo = isProbeableFile(filePath) ? await probeLibraryFile(filePath) : null;
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
         // Sonarr-style multi-episode file: one physical file that's actually episodes 1 and 2
         // together (a "S01E01-E02"/"S01E01E02" filename) gets the SAME file_path/quality/
@@ -1623,7 +1624,7 @@ async function scanAndImportLibraryInner(
           }
           const parsed = parseReleaseTitle(base, FILE_NAME);
           const quality = parsed.quality === "Unknown" ? null : parsed.quality;
-          const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
+          const mediaInfo = isProbeableFile(filePath) ? await probeLibraryFile(filePath) : null;
           const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
 
           const { childTitle, childMatch } = matchChildForFile(childSubItems, guessedChildTitle, identity, filePath);
@@ -1699,7 +1700,7 @@ async function scanAndImportLibraryInner(
           continue;
         }
 
-        const mediaInfo = isProbeableFile(filePath) ? await probeMediaInfo(filePath) : null;
+        const mediaInfo = isProbeableFile(filePath) ? await probeLibraryFile(filePath) : null;
         const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
         if (match) {
           await db

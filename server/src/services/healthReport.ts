@@ -21,6 +21,7 @@ import { proxyUrlProblem, redactProxyUrl } from "./networkAddress.js";
 import { failingNotificationProviders } from "./notifications.js";
 import { findRootFolderProblems } from "./rootFolderCheck.js";
 import { recycleBinFolderProblem } from "./recycleBin.js";
+import { importScriptEnabled, importScriptPath, importScriptPathProblem } from "./importScript.js";
 import { pathExistsAsync, StorageTimeoutError } from "./fsAsync.js";
 import { log } from "./logger.js";
 import { parseQualityGroups } from "./qualityGroups.js";
@@ -526,6 +527,15 @@ async function recycleBinIssues(): Promise<HealthIssue[]> {
   return problem ? [{ source: "recycle-bin", severity: "error", message: `Recycle bin: ${problem}. Deleted and replaced files cannot be kept, so nothing is deleted until this is fixed.`, transient: false }] : [];
 }
 
+/** The import script is switched on but cannot run, so every import it is meant to place fails (importScript.ts). */
+export async function importScriptIssues(): Promise<HealthIssue[]> {
+  if (!importScriptEnabled()) return [];
+  const problem = importScriptPathProblem(importScriptPath());
+  return problem
+    ? [{ source: "import-script", severity: "error", message: `Import script: ${problem}. Imports fail until it is fixed or "Use custom import script" is switched off.`, transient: true }]
+    : [];
+}
+
 let cache: { at: number; report: HealthReport } | null = null;
 let inFlight: Promise<HealthReport> | null = null;
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -673,6 +683,7 @@ async function buildHealthReport(): Promise<HealthReport> {
     safely("download-client-tags", () => clientTagIssues(downloadClients)),
     safely("root-folders", rootFolderIssues),
     safely("recycle-bin", recycleBinIssues),
+    safely("import-script", importScriptIssues),
     safely("quality-cutoff", qualityCutoffIssues),
   ]);
   issues.push(...checks.flat());

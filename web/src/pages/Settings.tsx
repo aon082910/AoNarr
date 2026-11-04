@@ -3424,7 +3424,7 @@ export default function Settings() {
           {
             key: "fileHandling",
             label: "File Handling",
-            description: "Scan on add, folders on delete, file dates, extra files, rejected files, naming style",
+            description: "Scan on add, folders on delete, file dates, extra files, rejected files, media info, import script, episode titles, naming style",
             render: () => {
               const choice = (key: string, label: string, fallback: string, options: [string, string][]) => (
                 <>
@@ -3444,6 +3444,7 @@ export default function Settings() {
                   <input id={`settings-fh-${key}`} key={settings[key] ?? `${key}-empty`} defaultValue={settings[key] ?? ""} placeholder={placeholder} onBlur={(e) => saveSetting(key, e.target.value)} />
                 </>
               );
+              const help = (note: string) => <p style={{ color: "var(--muted)", fontSize: "0.75rem", margin: "0.15rem 0 0.6rem" }}>{note}</p>;
               return (
                 <div>
                   <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
@@ -3459,6 +3460,19 @@ export default function Settings() {
                   {choice("rejectDangerousFiles", "Leave downloads that hold a program or script", "1", [["1", "On: .exe, .bat, .scr ... (default)"], ["0", "Off"]])}
                   {text("rejectedFileExtensions", "Also reject these extensions", "e.g. xyz, ass")}
                   {choice("importProbeChecks", "Leave a sample or a file with no audio", "1", [["1", "On: probe the file first (default)"], ["0", "Off"]])}
+                  {choice("enableMediaInfo", "Analyse video files", "1", [["1", "On: read each file with ffprobe on import and scan (default)"], ["0", "Off"]])}
+                  {help(
+                    "Off skips ffprobe on import and library scan, which helps on a slow network share. The media info shown for a file stays empty, the sample and no-audio checks above then rely on the file name alone, and a release with no quality in its name is judged by the name only. The corrupt-media check, Re-analyse and the other tools you start yourself still read files."
+                  )}
+                  {choice("useScriptImport", "Use a custom import script", "0", [["0", "Off (default)"], ["1", "On: the script places each video file"]])}
+                  {text("scriptImportPath", "Import script (path inside the container)", "/config/scripts/import.sh")}
+                  {help(
+                    "Runs in place of the move, copy or hardlink, with the source path and the destination AoNarr would use as its two arguments, and the title, ids, quality, release group and episodes as AONARR_* environment variables (Sonarr_* and Radarr_* names too). It must exit 0 and print [MoveStatus] MoveComplete (the default), DeferMove (AoNarr moves the file as usual) or RenameRequested (AoNarr renames the file to the destination), and may print [MediaFile] <path> when it put the file somewhere other than the destination. Any other exit code, or more than five minutes, fails the import and the download stays put. The file must be executable (chmod +x) and inside the container. Applies to movies, shows and anime, not to music or books."
+                  )}
+                  {choice("episodeTitleRequired", "Wait for an episode's title", "never", [["never", "Never: import at once (default)"], ["bulkSeasonReleases", "Only for bulk season releases"], ["always", "Always"]])}
+                  {help(
+                    "When the naming format has {Episode Title} in it, a download whose episode aired in the last two days and has no title yet (empty, TBA, or Episode N) waits instead of being named after the placeholder. It is tried again every ten minutes, and goes ahead once the title is known or two days have passed since the air date. Bulk season releases means four or more episodes of the season dated the same day. Manual imports never wait. Sonarr's own default is Always."
+                  )}
                   {choice("namingMultiEpisodeStyle", "Multi-episode file names", "range", [["range", "01-02 (default)"], ["prefixedRange", "01-E02"], ["extend", "01-02-03"], ["repeat", "01E02E03"]])}
                   {choice("namingColonReplacement", "A colon in a title becomes", "spaceDashSpace", [["spaceDashSpace", "space dash space (default)"], ["smart", "smart"], ["dash", "dash"], ["spaceDash", "space dash"], ["delete", "nothing"]])}
                   {choice("namingReplaceIllegalChars", "Characters a Windows share can't hold", "1", [["1", "Remove them (default)"], ["0", "Keep them (Linux file systems only)"]])}
