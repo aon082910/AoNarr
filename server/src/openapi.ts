@@ -102,6 +102,28 @@ export const openApiSpec = {
       get: { summary: "List download clients", responses: { "200": { description: "OK" } } },
       post: { summary: "Add a download client", responses: { "201": { description: "Created" } } },
     },
+    "/notifications/connections": {
+      get: { summary: "List notification connections (secrets show as ********)", responses: { "200": { description: "OK" } } },
+      post: {
+        summary: "Add a notification connection",
+        description:
+          "Body: name, kind (discord, slack, webhook, telegram, pushover, ntfy, gotify, matrix, twilio, email, customScript, webPush), config (the kind's fields; GET /notifications/connections/meta lists them), events (names, or omit for the defaults), tagIds, enabled. A webhook takes url, method (POST or PUT), headers, username/password and payloadStyle (aonarr or starr).",
+        responses: { "201": { description: "Created" }, "400": { description: "Unknown kind, a missing required field or a bad value, with the reason" } },
+      },
+    },
+    "/notifications/connections/meta": {
+      get: { summary: "The kinds and their fields, the events, and each message template with its default and tokens", responses: { "200": { description: "OK" } } },
+    },
+    "/notifications/connections/{id}": {
+      put: {
+        summary: "Edit a notification connection (a secret sent back as ******** keeps the stored value)",
+        responses: { "200": { description: "OK" } },
+      },
+      delete: { summary: "Delete a notification connection", responses: { "204": { description: "Deleted" } } },
+    },
+    "/notifications/connections/{id}/test": {
+      post: { summary: "Send the test message to this connection, whatever its events say", responses: { "200": { description: "{ ok } or { ok: false, error }, without any secret or full URL" } } },
+    },
     "/quality-profiles": {
       get: { summary: "List quality profiles", responses: { "200": { description: "OK" } } },
       post: { summary: "Create a quality profile", responses: { "201": { description: "Created" } } },

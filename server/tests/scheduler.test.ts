@@ -482,7 +482,16 @@ describe("grab", () => {
     expect(queueRow).toMatchObject({ download_id: "dl-1", quality: "WEBDL-1080p", status: "queued" });
     const historyRow = (await db.prepare("SELECT * FROM history WHERE media_item_id = ?").get(movie.id)) as any;
     expect(historyRow.event_type).toBe("grabbed");
-    expect(notifyGrabbed).toHaveBeenCalledWith(movie.title, fakeResult().title);
+    // The grab hands the notification its title and release, which the tag filter and the Sonarr/Radarr-shaped webhook body use.
+    expect(notifyGrabbed).toHaveBeenCalledWith(
+      movie.title,
+      fakeResult().title,
+      expect.objectContaining({
+        mediaItemId: movie.id,
+        release: expect.objectContaining({ title: fakeResult().title, quality: "WEBDL-1080p" }),
+        downloadClient: expect.objectContaining({ name: client.name, downloadId: "dl-1" }),
+      })
+    );
   });
 
   it("records the season of a full-season pack grabbed for one episode, but not of a single-episode release", async () => {

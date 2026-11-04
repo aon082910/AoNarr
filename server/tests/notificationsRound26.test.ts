@@ -13,19 +13,28 @@ let app: Express;
 let apiKey: string;
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
 let deleteSetting: (typeof import("../src/services/settingsStore.js"))["deleteSetting"];
+let connections: typeof import("../src/services/notificationConnections.js");
+let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 
-const KEYS = ["genericWebhookUrl", "genericEvents", "ntfyServerUrl", "ntfyTopic", "ntfyToken", "ntfyEvents", "gotifyServerUrl", "gotifyToken", "gotifyEvents", "pushEvents", "notifyTemplateAdded"];
-
+// Providers are connections now (Round 30e): the ones these tests used to set up through settings are made here.
 beforeAll(async () => {
-  ({ app, apiKey } = await setupTestDb());
+  ({ app, apiKey, db } = await setupTestDb());
   notifications = await import("../src/services/notifications.js");
+  connections = await import("../src/services/notificationConnections.js");
   ({ setSetting, deleteSetting } = await import("../src/services/settingsStore.js"));
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   sendPush.mockReset().mockResolvedValue(undefined);
-  for (const key of KEYS) deleteSetting(key);
+  await db.prepare("DELETE FROM notification_connections").run();
+  deleteSetting("notifyTemplateAdded");
 });
+
+const webhook = (extra: Record<string, unknown> = {}) => connections.createNotificationConnection({ name: "Hook", kind: "webhook", config: { url: "https://hook.example.com/x" }, ...extra });
+const ntfy = (config: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
+  connections.createNotificationConnection({ name: "ntfy", kind: "ntfy", config: { serverUrl: "https://ntfy.example.com", topic: "t", ...config }, ...extra });
+const gotify = (config: Record<string, unknown> = {}) =>
+  connections.createNotificationConnection({ name: "Gotify", kind: "gotify", config: { serverUrl: "https://gotify.example.com", token: "AbC123", ...config } });
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -39,25 +48,22 @@ function stubFetch() {
 
 describe("the new notification events (ST13)", () => {
   it("a connection that never saved an event list gets the events it always had, but not the new bulk ones", () => {
-    for (const event of ["grabbed", "imported", "failed", "healthIssue", "updateAvailable"]) expect(notifications.isEventEnabledFor("generic", event)).toBe(true);
-    for (const event of ["added", "deleted", "renamed", "fileDeleted"]) expect(notifications.isEventEnabledFor("generic", event)).toBe(false);
+    for (const event of ["grabbed", "imported", "failed", "healthIssue", "updateAvailable"]) expect(notifications.eventAllowed(null, event)).toBe(true);
+    for (const event of ["added", "deleted", "renamed", "fileDeleted"]) expect(notifications.eventAllowed(null, event)).toBe(false);
   });
 
   it("a connection gets a new event once its list names it", () => {
-    setSetting("genericEvents", "grabbed,added");
-    expect(notifications.isEventEnabledFor("generic", "added")).toBe(true);
-    expect(notifications.isEventEnabledFor("generic", "deleted")).toBe(false);
+    expect(notifications.eventAllowed("grabbed,added", "added")).toBe(true);
+    expect(notifications.eventAllowed("grabbed,added", "deleted")).toBe(false);
   });
 
   it("an event list saved empty still means no events", () => {
-    setSetting("genericEvents", "");
-    expect(notifications.isEventEnabledFor("generic", "grabbed")).toBe(false);
+    expect(notifications.eventAllowed("", "grabbed")).toBe(false);
   });
 
   it("sends added, deleted, renamed and file-deleted with their own payloads", async () => {
     const fetchMock = stubFetch();
-    setSetting("genericWebhookUrl", "https://hook.example.com/x");
-    setSetting("genericEvents", "added,deleted,renamed,fileDeleted");
+    await webhook({ events: ["added", "deleted", "renamed", "fileDeleted"] });
 
     await notifications.notifyAdded("Arrival", "movie");
     await notifications.notifyDeleted("Arrival", "movie", true);
@@ -75,16 +81,14 @@ describe("the new notification events (ST13)", () => {
 
   it("sends nothing for an event a connection did not ask for", async () => {
     const fetchMock = stubFetch();
-    setSetting("genericWebhookUrl", "https://hook.example.com/x");
+    await webhook();
     await notifications.notifyAdded("Arrival", "movie");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("a message template can be set for the new events", async () => {
     const fetchMock = stubFetch();
-    setSetting("ntfyServerUrl", "https://ntfy.example.com");
-    setSetting("ntfyTopic", "media");
-    setSetting("ntfyEvents", "added");
+    await ntfy({ topic: "media" }, { events: ["added"] });
     setSetting("notifyTemplateAdded", "New: {mediaTitle}");
     await notifications.notifyAdded("Heat", "movie");
     expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBe("New: Heat");
@@ -94,9 +98,7 @@ describe("the new notification events (ST13)", () => {
 describe("ntfy (ST13)", () => {
   it("posts the message to the topic with the title as a header and the token as a bearer", async () => {
     const fetchMock = stubFetch();
-    setSetting("ntfyServerUrl", "https://ntfy.example.com/");
-    setSetting("ntfyTopic", "my topic");
-    setSetting("ntfyToken", "tk_secret");
+    await ntfy({ serverUrl: "https://ntfy.example.com/", topic: "my topic", token: "tk_secret" });
 
     await notifications.notifyGrabbed("Heat", "Heat.1995.1080p");
 
@@ -108,30 +110,27 @@ describe("ntfy (ST13)", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer tk_secret");
   });
 
-  it("is not used until both the server and the topic are set, and honors its event list", async () => {
+  it("needs both the server and the topic to exist at all, and honors its event list", async () => {
     const fetchMock = stubFetch();
-    setSetting("ntfyServerUrl", "https://ntfy.example.com");
+    await expect(connections.createNotificationConnection({ name: "ntfy", kind: "ntfy", config: { serverUrl: "https://ntfy.example.com" } })).rejects.toThrow("ntfy: Topic is required");
     await notifications.notifyGrabbed("Heat", "x");
     expect(fetchMock).not.toHaveBeenCalled();
-    setSetting("ntfyTopic", "t");
-    setSetting("ntfyEvents", "failed");
+    await ntfy({}, { events: ["failed"] });
     await notifications.notifyGrabbed("Heat", "x");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("the test button works and names a missing setting", async () => {
-    await expect(notifications.sendTestNotification("ntfy")).rejects.toThrow(/server URL and topic/);
+  it("the test button works and names a missing connection", async () => {
+    await expect(notifications.sendTestNotification("ntfy")).rejects.toThrow(/There is no ntfy connection yet/);
     const fetchMock = stubFetch();
-    setSetting("ntfyServerUrl", "https://ntfy.example.com");
-    setSetting("ntfyTopic", "t");
+    await ntfy();
     await notifications.sendTestNotification("ntfy");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("an error names the host and not the topic", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 403 }));
-    setSetting("ntfyServerUrl", "https://ntfy.example.com");
-    setSetting("ntfyTopic", "private-topic-name");
+    await ntfy({ topic: "private-topic-name" });
     const error = await notifications.sendTestNotification("ntfy").then(
       () => null,
       (err: Error) => err
@@ -144,8 +143,7 @@ describe("ntfy (ST13)", () => {
 describe("Gotify (ST13)", () => {
   it("posts a JSON message with the application token in a header, not in the URL", async () => {
     const fetchMock = stubFetch();
-    setSetting("gotifyServerUrl", "https://gotify.example.com");
-    setSetting("gotifyToken", "AbC123");
+    await gotify();
 
     await notifications.notifyFailed("Heat", "no seeders");
 
@@ -155,14 +153,21 @@ describe("Gotify (ST13)", () => {
     expect(JSON.parse(String(init.body))).toEqual({ title: "Failed", message: "Heat: no seeders", priority: 5 });
   });
 
-  it("the test button names a missing setting", async () => {
-    await expect(notifications.sendTestNotification("gotify")).rejects.toThrow(/server URL and application token/);
+  it("the test button names a missing connection", async () => {
+    await expect(notifications.sendTestNotification("gotify")).rejects.toThrow(/There is no Gotify connection yet/);
   });
+
+  // The API refuses a server typed without its scheme; one that came over from the old settings is stored as it was,
+  // and the send names the problem without echoing the address or the token.
+  async function withBadServerUrl(kind: "gotify" | "ntfy", serverUrl: string): Promise<void> {
+    const conn = kind === "gotify" ? await gotify({ token: "SECRET-TOKEN" }) : await ntfy();
+    const row = (await db.prepare("SELECT config FROM notification_connections WHERE id = ?").get(conn.id)) as { config: string };
+    await db.prepare("UPDATE notification_connections SET config = ? WHERE id = ?").run(JSON.stringify({ ...JSON.parse(row.config), serverUrl }), conn.id);
+  }
 
   it("a server typed without its scheme is refused with a message that does not carry the token", async () => {
     stubFetch();
-    setSetting("gotifyServerUrl", "gotify.lan:8080");
-    setSetting("gotifyToken", "SECRET-TOKEN");
+    await withBadServerUrl("gotify", "gotify.lan:8080");
     const error = await notifications.sendTestNotification("gotify").then(
       () => null,
       (err: Error) => err
@@ -174,8 +179,7 @@ describe("Gotify (ST13)", () => {
 
   it("the same for ntfy", async () => {
     stubFetch();
-    setSetting("ntfyServerUrl", "192.168.1.5:8080");
-    setSetting("ntfyTopic", "t");
+    await withBadServerUrl("ntfy", "192.168.1.5:8080");
     await expect(notifications.sendTestNotification("ntfy")).rejects.toThrow(/must start with http/);
   });
 });
@@ -183,8 +187,7 @@ describe("Gotify (ST13)", () => {
 describe("the library fires them (ST13)", () => {
   it("tells a connection that asked for it when a title is added and when it is deleted", async () => {
     const fetchMock = stubFetch();
-    setSetting("genericWebhookUrl", "https://hook.example.com/x");
-    setSetting("genericEvents", "added,deleted");
+    await webhook({ events: ["added", "deleted"] });
 
     const created = await request(app as any).post("/api/media").set("X-Api-Key", apiKey).send({ type: "movie", title: "Fired Film", year: 2022, confirmDuplicate: true });
     expect(created.status).toBe(201);

@@ -190,7 +190,8 @@ export const CONNECTION_KINDS: ConnectionKindSpec[] = [
   },
   {
     kind: "email",
-    label: "Email (SMTP)",
+    label: "Email",
+    description: "Sends through your own SMTP server.",
     fields: [
       { key: "host", label: "SMTP host", type: "text", required: true, placeholder: "smtp.gmail.com" },
       { key: "port", label: "SMTP port", type: "number", default: 587, placeholder: "587" },

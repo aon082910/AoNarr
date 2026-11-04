@@ -12,6 +12,8 @@ let getHealthReport: (typeof import("../src/services/healthReport.js"))["getHeal
 let setHealthTimeouts: typeof SetTimeouts;
 let clearHealthReportCache: (typeof import("../src/services/healthReport.js"))["clearHealthReportCache"];
 let registerJob: (typeof import("../src/services/jobRegistry.js"))["registerJob"];
+let createNotificationConnection: (typeof import("../src/services/notificationConnections.js"))["createNotificationConnection"];
+let updateNotificationConnection: (typeof import("../src/services/notificationConnections.js"))["updateNotificationConnection"];
 let setSetting: (key: string, value: string) => void;
 let notifyGrabbed: (typeof import("../src/services/notifications.js"))["notifyGrabbed"];
 let resetNotificationFailures: (typeof import("../src/services/notifications.js"))["__resetNotificationFailuresForTests"];
@@ -25,6 +27,7 @@ beforeAll(async () => {
   ({ registerJob } = await import("../src/services/jobRegistry.js"));
   ({ setSetting } = await import("../src/services/settingsStore.js"));
   ({ notifyGrabbed, __resetNotificationFailuresForTests: resetNotificationFailures } = await import("../src/services/notifications.js"));
+  ({ createNotificationConnection, updateNotificationConnection } = await import("../src/services/notificationConnections.js"));
   ({ config } = await import("../src/config.js"));
   baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-health-"));
 });
@@ -307,16 +310,18 @@ describe("getHealthReport — review fixes", () => {
   });
 });
 
-describe("getHealthReport — notification providers that keep failing", () => {
+describe("getHealthReport — notification connections that keep failing", () => {
   const DISCORD = "https://discord.example/api/webhooks/123/super-secret-token";
+  let connectionId: number;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetNotificationFailures();
-    setSetting("discordWebhookUrl", DISCORD);
+    await db.prepare("DELETE FROM notification_connections").run();
+    connectionId = (await createNotificationConnection({ name: "Discord", kind: "discord", config: { webhookUrl: DISCORD } })).id;
   });
 
-  afterEach(() => {
-    setSetting("discordWebhookUrl", "");
+  afterEach(async () => {
+    await db.prepare("DELETE FROM notification_connections").run();
     resetNotificationFailures();
   });
 
@@ -332,9 +337,10 @@ describe("getHealthReport — notification providers that keep failing", () => {
     const issues = await issuesOf("notification:");
 
     expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ source: "notification:discord", severity: "warning", transient: true });
+    // Each connection is its own issue (its id is the source), and the message names it.
+    expect(issues[0]).toMatchObject({ source: `notification:${connectionId}`, severity: "warning", transient: true });
     expect(issues[0].message).toMatch(
-      /^Notifications to discord have failed 2 times in a row since \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC \(last error: Webhook POST to discord\.example failed: HTTP 500\)\.$/
+      /^Notifications to Discord have failed 2 times in a row since \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC \(last error: Webhook POST to discord\.example failed: HTTP 500\)\.$/
     );
   });
 
@@ -375,7 +381,7 @@ describe("getHealthReport — notification providers that keep failing", () => {
     expect(await issuesOf("notification:")).toEqual([]);
   });
 
-  it("stops reporting a provider nothing has been sent to for a day, such as one the admin switched off", async () => {
+  it("stops reporting a connection nothing has been sent to for a day, and one the admin switches off at once", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const start = Date.parse("2026-03-01T10:00:00.000Z");
@@ -387,8 +393,13 @@ describe("getHealthReport — notification providers that keep failing", () => {
       vi.setSystemTime(start + 23 * 60 * 60 * 1000);
       expect(await issuesOf("notification:")).toHaveLength(1);
 
-      setSetting("discordWebhookUrl", "");
       vi.setSystemTime(start + 25 * 60 * 60 * 1000);
+      expect(await issuesOf("notification:")).toEqual([]);
+
+      // A new failure brings it back, and switching the connection off ends the report without waiting a day.
+      await notifyGrabbed("Movie", "Release");
+      expect(await issuesOf("notification:")).toHaveLength(1);
+      await updateNotificationConnection(connectionId, { enabled: false });
       expect(await issuesOf("notification:")).toEqual([]);
     } finally {
       vi.useRealTimers();
