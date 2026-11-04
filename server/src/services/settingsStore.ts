@@ -27,6 +27,14 @@ function isSensitiveSettingKey(key: string): boolean {
  */
 let cache: Map<string, string> | null = null;
 
+/** Settings whose stored value could not be decrypted (the encryption key does not match): they read as empty. */
+const undecryptable = new Set<string>();
+
+/** Whether the setting is stored but could not be decrypted, so its empty value is not the same as "not set". */
+export function isSettingUndecryptable(key: string): boolean {
+  return undecryptable.has(key);
+}
+
 export async function loadSettingsCache(): Promise<void> {
   const rows = (await db.prepare("SELECT key, value FROM settings").all()) as { key: string; value: string }[];
   cache = new Map();
@@ -37,6 +45,7 @@ export async function loadSettingsCache(): Promise<void> {
   // without needing a person to re-enter every credential by hand.
   const toReencrypt: { key: string; value: string }[] = [];
   const failedToDecrypt: string[] = [];
+  undecryptable.clear();
   for (const row of rows) {
     if (isEncryptedValue(row.value)) {
       try {
@@ -48,6 +57,7 @@ export async function loadSettingsCache(): Promise<void> {
         // load entirely, but is loud about exactly which setting needs re-entering by hand.
         cache.set(row.key, "");
         failedToDecrypt.push(row.key);
+        undecryptable.add(row.key);
       }
     } else {
       cache.set(row.key, row.value);
@@ -82,6 +92,7 @@ export function getAllSettings(): Record<string, string> {
 export function setSetting(key: string, value: string): void {
   if (!cache) throw new Error("settings cache accessed before loadSettingsCache() completed — check startup ordering in index.ts");
   cache.set(key, value); // cache always holds plaintext — see loadSettingsCache's comment
+  undecryptable.delete(key); // a value written now is the admin's own
   const stored = value && isSensitiveSettingKey(key) ? encryptValue(value) : value;
   db.prepare(
     `INSERT INTO settings (key, value) VALUES (?, ?)
@@ -94,6 +105,7 @@ export function setSetting(key: string, value: string): void {
 export function deleteSetting(key: string): void {
   if (!cache) throw new Error("settings cache accessed before loadSettingsCache() completed — check startup ordering in index.ts");
   cache.delete(key);
+  undecryptable.delete(key);
   db.prepare("DELETE FROM settings WHERE key = ?")
     .run(key)
     .catch((err) => log.error(`[settingsStore] failed to delete "${key}":`, (err as Error).message));

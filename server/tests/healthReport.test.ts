@@ -513,7 +513,7 @@ describe("getHealthReport — the outbound proxy", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({ source: "proxy", severity: "error", transient: false });
     expect(issues[0].message).toBe(
-      'The outbound proxy "ftp://***@proxy.local:21" must start with socks5://, socks4://, http:// or https://, so requests go out without a proxy.'
+      'The outbound proxy "ftp://***@proxy.local:21" must start with socks5://, socks4://, http:// or https://, so requests that need it are refused instead of going out directly.'
     );
     expect(connect).not.toHaveBeenCalled();
   });

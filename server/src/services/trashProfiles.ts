@@ -1,6 +1,7 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
 import { parseQualityGroups } from "./qualityGroups.js";
+import { normalizeProfileLanguage } from "./profileLanguage.js";
 
 type TrashApp = "radarr" | "sonarr";
 
@@ -28,6 +29,8 @@ export interface TrashProfileFile {
   minFormatScore?: number;
   cutoffFormatScore?: number;
   minUpgradeFormatScore?: number;
+  /** "Any", "Original" (Radarr: the film's own language) or a language name such as "English". */
+  language?: string;
   items: TrashProfileItem[];
   /** Custom format name -> trash_id. */
   formatItems?: Record<string, string>;
@@ -68,12 +71,34 @@ export interface TrashProfileTranslation {
   minFormatScore: number;
   cutoffFormatScore: number;
   minUpgradeFormatScore: number;
+  /** The fixed language the profile asks for, or null for any (see languageFromTrash). */
+  language: string | null;
+  /** True when TRaSH names a language AoNarr can hold: only then is an existing profile's own language replaced. */
+  languageNamed: boolean;
+  /** Why the profile's language is not carried over, or null. */
+  languageNote: string | null;
   scoreSet: string;
   scores: TrashProfileScore[];
   /** Formats the profile lists that are not in AoNarr (never synced, or not translatable). */
   missingFormats: string[];
   /** Formats that are in AoNarr but carry no score for the chosen set (synced before scores were kept: sync again). */
   unscoredFormats: string[];
+}
+
+/**
+ * TRaSH's `language` of a profile as an AoNarr profile language. "Any" is any. "Original" (the language the film was made
+ * in) has no equivalent in a profile that holds one fixed language, so it is left as any, with a note. A language name
+ * AoNarr knows is taken; one it does not know is left as any, with a note.
+ */
+export function languageFromTrash(value: unknown): { language: string | null; named: boolean; note: string | null } {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text || /^any$/i.test(text)) return { language: null, named: false, note: null };
+  if (/^original$/i.test(text)) {
+    return { language: null, named: false, note: 'TRaSH asks for the original language of each title; an AoNarr profile holds one fixed language or any, so the language is left as "any"' };
+  }
+  const language = normalizeProfileLanguage(text.toLowerCase());
+  if (language) return { language, named: true, note: null };
+  return { language: null, named: false, note: `TRaSH asks for the language "${text}", which AoNarr cannot tell from a release name; the language is left as "any"` };
 }
 
 function wholeNumber(value: unknown, fallback: number): number {
@@ -134,6 +159,7 @@ export function translateTrashProfile(
   }
   if (!cutoff && allowed.length > 0) cutoff = allowed.reduce((best, n) => (rankByName.get(n)! > rankByName.get(best)! ? n : best));
 
+  const wantedLanguage = languageFromTrash(profile.language);
   const scoreSet = scoreSetOverride || (typeof profile.trash_score_set === "string" && profile.trash_score_set ? profile.trash_score_set : "default");
   const scores: TrashProfileScore[] = [];
   const missingFormats: string[] = [];
@@ -162,6 +188,9 @@ export function translateTrashProfile(
     minFormatScore: wholeNumber(profile.minFormatScore, 0),
     cutoffFormatScore: wholeNumber(profile.cutoffFormatScore, 0),
     minUpgradeFormatScore: wholeNumber(profile.minUpgradeFormatScore, 1),
+    language: wantedLanguage.language,
+    languageNamed: wantedLanguage.named,
+    languageNote: wantedLanguage.note,
     scoreSet,
     scores,
     missingFormats,
@@ -274,15 +303,17 @@ export async function importTrashProfile(app: TrashApp, file: string, options: {
              cutoff_format_score = ?, min_upgrade_format_score = ?, quality_groups = ? WHERE id = ?`
         )
         .run(...values, profileId);
+      // A language TRaSH names replaces the profile's; "Any" and "Original" leave the admin's own choice alone.
+      if (t.languageNamed) await db.prepare("UPDATE quality_profiles SET language = ? WHERE id = ?").run(t.language, profileId);
     } else {
       created = true;
       // prefer_cutoff_quality is 0: the cutoff only stops upgrading, as in Radarr and Sonarr.
       const result = await db
         .prepare(
-          `INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups)
-           VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)`
+          `INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups, language)
+           VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`
         )
-        .run(t.name, ...values);
+        .run(t.name, ...values, t.language);
       profileId = Number(result.lastInsertRowid);
     }
     for (const s of t.scores) {

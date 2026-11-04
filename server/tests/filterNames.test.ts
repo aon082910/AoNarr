@@ -31,9 +31,9 @@ describe("host list parsing details (review F10)", () => {
   it("hands every entry it cannot use to the caller", () => {
     const dropped: string[] = [];
 
-    const entries = parseBypassFilter("fd00::/8, 192.0.2.0/99, ok.example.com", (item) => dropped.push(item));
+    const entries = parseBypassFilter("fd00::/200, 192.0.2.0/99, ok.example.com", (item) => dropped.push(item));
 
-    expect(dropped).toEqual(["fd00::/8", "192.0.2.0/99"]);
+    expect(dropped).toEqual(["fd00::/200", "192.0.2.0/99"]);
     expect(matchesBypassFilter("ok.example.com", entries)).toBe(true);
   });
 

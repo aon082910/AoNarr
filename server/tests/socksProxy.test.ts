@@ -59,7 +59,7 @@ describe("applySocksProxySetting", () => {
     expect(getGlobalDispatcher()).not.toBe(before);
   });
 
-  it("doesn't throw for an unparseable proxy URL, and falls back to no proxy rather than keeping the old one (review F5)", () => {
+  it("doesn't throw for an unparseable proxy URL, and does not keep the old proxy: it fails closed instead (review F5, round 30d)", () => {
     setSetting("socks5ProxyUrl", uniqueProxyUrl());
     applySocksProxySetting();
     expect(getGlobalDispatcher()).not.toBe(originalDispatcher);
@@ -67,7 +67,8 @@ describe("applySocksProxySetting", () => {
     setSetting("socks5ProxyUrl", "not a url at all " + uniqueProxyUrl());
 
     expect(() => applySocksProxySetting()).not.toThrow();
-    expect(getGlobalDispatcher()).toBe(originalDispatcher);
+    // A proxy that is set but cannot be used is not "no proxy": requests that need it are refused (see socksProxyFailClosed.test.ts).
+    expect(getGlobalDispatcher()).not.toBe(originalDispatcher);
   });
 
   it("doesn't throw for a URL with the wrong protocol, and still applies the certificate setting (review F5)", () => {

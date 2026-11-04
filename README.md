@@ -750,6 +750,17 @@ integrations (curl, webhooks, other *arr apps) send no `Origin` and never need i
   still scans and plays it, but never downloads for it, imports into it, renames or moves its files.
 - **Health** adds checks for failing notification services, an unreachable proxy, and unexpected
   errors that no code handled; `/metrics` has `aonarr_uncaught_errors_total`.
+- **Network security** — a proxy address that is set but cannot be used (it does not parse, or it could not be
+  decrypted after a restore with another encryption key) no longer lets requests go out directly: requests that
+  would have used the proxy are refused, with the reason in the log and Health, and clearing the setting
+  switches the proxy off. Hosts on your own network and the bypass list still go direct. The bypass list takes
+  IPv6 addresses and ranges, a name treated as local is checked in the DNS lookup (a name that leads only to a
+  public address is refused, never connected without a certificate check), and Health says when `fetch` does
+  not use the dispatcher that carries these settings. "Local networks" (Settings → Authentication) lists the
+  addresses that count as your home network for "disabled for local addresses"; "Allowed host names" lists the
+  names a login-free visit may use (besides addresses, short and LAN names, the external URL and the CORS
+  origins), which stops DNS rebinding. Health warns when a reverse proxy hides where visitors come from. A
+  TRaSH quality profile now sets the profile language when it names one.
 - **Download clients** — clients of the same type and priority share the grabs in turn (set a lower
   priority number to prefer one). A torrent is always added started, even when the client is set to
   add torrents stopped, and a `.torrent` link is fetched by AoNarr and uploaded to qBittorrent. A

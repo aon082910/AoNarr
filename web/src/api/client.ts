@@ -76,6 +76,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   const res = await fetch(`${BASE}${path}`, { headers, ...options });
   if (res.status === 401) {
+    // A 401 that names the host (the no-login setting refused it) is not an expired session: keep the credentials and show why.
+    const refusal = await res.clone().json().catch(() => ({}));
+    if (typeof refusal?.error === "string" && /host name/i.test(refusal.error)) throw new ApiError(401, refusal, refusal.error);
     clearCredentials();
     window.location.reload();
     throw new Error("Unauthorized");

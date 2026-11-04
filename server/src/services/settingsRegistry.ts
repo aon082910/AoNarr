@@ -1,5 +1,5 @@
 import { SETTING_KEY_LIST } from "./settingKeyList.js";
-import { proxyUrlProblem } from "./networkAddress.js";
+import { hostPatternProblem, parseBypassFilter, proxyUrlProblem } from "./networkAddress.js";
 import { MULTI_EPISODE_STYLES, namingTemplateProblem } from "./naming.js";
 
 /**
@@ -108,6 +108,27 @@ export function settingValueProblem(key: string, value: string): string | null {
   if (key === "socks5ProxyUrl") {
     const problem = proxyUrlProblem(value);
     return problem ? `"${key}" ${problem}` : null;
+  }
+  if (key === "localNetworks") {
+    // Addresses and ranges only (a.b.c.d, a.b.c.d/n, IPv6 and its ranges): a host name cannot say where a request came from.
+    const dropped: string[] = [];
+    const entries = parseBypassFilter(value, (item) => dropped.push(item));
+    const names = entries.some((entry) => entry.kind === "name");
+    if (dropped.length > 0) return `"${key}" has entries that are not addresses or ranges: ${dropped.join(", ")}`;
+    if (names) return `"${key}" takes IP addresses and ranges such as 192.168.1.0/24 or fd00::/8, not host names`;
+    // A range this wide is almost always a typo, and it would make most of the internet "local".
+    const wide = entries.some((entry) => (entry.kind === "net" ? entry.end - entry.start + 1 > 2 ** 24 : entry.kind === "net6" && entry.end - entry.start + 1n > 2n ** 121n));
+    if (wide) return `"${key}" has a range that is too wide (larger than a /8 for IPv4 or a /7 for IPv6): list your own network, such as 192.168.1.0/24`;
+    return null;
+  }
+  if (key === "allowedHosts") {
+    const bad = value.split(/[,;\s]+/).filter((item) => item && !/^[A-Za-z0-9._*-]+(:\d+)?$|^\[[0-9a-fA-F:.]+\](:\d+)?$/.test(item));
+    if (bad.length > 0) return `"${key}" takes host names such as aonarr.example.com (a port is allowed): ${bad.join(", ")}`;
+    for (const item of value.split(/[,;\s]+/)) {
+      const problem = item ? hostPatternProblem(item.replace(/:\d+$/, "")) : null;
+      if (problem) return `"${key}" entry "${item}" ${problem}`;
+    }
+    return null;
   }
   const template = /^naming([A-Z][A-Za-z]*)Template$/.exec(key);
   if (template) {

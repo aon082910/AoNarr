@@ -6,7 +6,7 @@ import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { invalidateQualityRankCache, parseQualityGroups } from "../services/quality.js";
 import { buildOtpauthUrl, generateBase32Secret, verifyTotp } from "../services/totp.js";
 import { getSetting, setSetting, deleteSetting, getAllSettings } from "../services/settingsStore.js";
-import { applySocksProxySetting } from "../services/socksProxy.js";
+import { applySocksProxySetting, verifyOutboundDispatcher } from "../services/socksProxy.js";
 import { isKnownSettingKey, settingValueProblem, suggestSettingKey } from "../services/settingsRegistry.js";
 import { sendTestNotification } from "../services/notifications.js";
 import { fetchWatchedFiles, getMediaServerConfig } from "../services/mediaServer.js";
@@ -52,7 +52,10 @@ settingsRouter.put(
     const problem = settingValueProblem(key, value);
     if (problem) throw new HttpError(400, problem);
     setSetting(key, value);
-    if (NETWORK_SETTING_KEYS.has(key)) applySocksProxySetting();
+    if (NETWORK_SETTING_KEYS.has(key)) {
+      applySocksProxySetting();
+      void verifyOutboundDispatcher();
+    }
     res.json({ key, value });
   })
 );

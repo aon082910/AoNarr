@@ -11,6 +11,8 @@ import { getFailingJobs } from "./jobRegistry.js";
 import { UNCAUGHT_WARN_PER_HOUR, uncaughtErrorStats } from "./uncaughtErrors.js";
 import { onHealthChange } from "./healthEvents.js";
 import { readRolledBackNotice } from "../restoreGuard.js";
+import { openAccessObservations } from "../middleware/auth.js";
+import { outboundDispatcherCheck, proxyBlockedReason } from "./socksProxy.js";
 import { config } from "../config.js";
 import { ENCRYPTION_KEY_PATH } from "./encryption.js";
 import net from "node:net";
@@ -314,7 +316,8 @@ async function proxyIssues(): Promise<HealthIssue[]> {
   if (!raw || !raw.trim()) return [];
   const problem = proxyUrlProblem(raw);
   if (problem) {
-    return [{ source: "proxy", severity: "error", message: `The outbound proxy "${redactProxyUrl(raw)}" ${problem}, so requests go out without a proxy.`, transient: false }];
+    // networkSecurityIssues leaves this case to this check, so it is reported once.
+    return [{ source: "proxy", severity: "error", message: `The outbound proxy "${redactProxyUrl(raw)}" ${problem}, so requests that need it are refused instead of going out directly.`, transient: false }];
   }
   const url = new URL(raw.trim());
   const port = Number(url.port) || (url.protocol.startsWith("socks") ? 1080 : url.protocol === "https:" ? 443 : 80);
@@ -356,6 +359,65 @@ async function pausedQueueIssues(): Promise<HealthIssue[]> {
       transient: false,
     },
   ];
+}
+
+/**
+ * The outbound network settings and the login-free modes: a proxy that is set but unusable (requests that need it are refused,
+ * never sent out directly), a fetch() that bypasses the dispatcher carrying those settings, and the signs that the "disabled for
+ * local addresses" mode lets in people it should not (a reverse proxy that hides where visitors come from; a host name
+ * refused because it is not the server's own).
+ */
+export async function networkSecurityIssues(): Promise<HealthIssue[]> {
+  const issues: HealthIssue[] = [];
+  const blocked = proxyBlockedReason();
+  // An address that is set but invalid is reported by the proxy check; this one covers a value that could not be decrypted.
+  if (blocked && !(getSetting("socks5ProxyUrl") ?? "").trim()) {
+    issues.push({
+      source: "outbound-proxy-unusable",
+      severity: "error",
+      message: `The outbound proxy cannot be used: ${blocked}. Requests that need it are refused instead of going out directly, so indexers, metadata and notifications fail until the proxy setting is fixed or cleared.`,
+      transient: false,
+    });
+  }
+  const dispatcher = outboundDispatcherCheck();
+  if (dispatcher && !dispatcher.ok) {
+    issues.push({
+      source: "outbound-dispatcher",
+      severity: "error",
+      message: "fetch() on this Node version does not use the dispatcher that carries the proxy, bypass list and certificate settings, so none of them is in force. Run AoNarr on the Node version it ships with.",
+      transient: false,
+    });
+  }
+  const mode = getSetting("authRequired");
+  const seen = openAccessObservations();
+  if (mode === "local") {
+    const external = (getSetting("externalUrl") ?? "").trim();
+    const networks = (getSetting("localNetworks") ?? "").trim();
+    if (seen.proxiedWithoutChain > 0) {
+      issues.push({
+        source: "local-auth-proxy",
+        severity: "warning",
+        message: `${seen.proxiedWithoutChain} request(s) were let in without a login as "local" although they carried reverse-proxy headers and no chain of client addresses. A proxy in front of AoNarr may hide where visitors come from, so visitors from the internet would look local. Make the proxy send X-Forwarded-For, list your home network under Local networks, or turn "disabled for local addresses" off.`,
+        transient: false,
+      });
+    } else if (external && !networks) {
+      issues.push({
+        source: "local-auth-external",
+        severity: "warning",
+        message: "Login is disabled for local addresses while an external URL is set. If that URL reaches AoNarr through a reverse proxy on your network, list the home network under Local networks so that only it skips the login.",
+        transient: false,
+      });
+    }
+  }
+  if ((mode === "local" || mode === "0") && seen.hostRefused > 0) {
+    issues.push({
+      source: "open-access-host",
+      severity: "warning",
+      message: `${seen.hostRefused} visit(s) were refused a login-free entry because of the host name they used (last: "${seen.lastHostRefused}"). Only the server's address, short and LAN names, the external URL and Allowed host names are accepted without a login (this stops DNS rebinding). Add your own name under Allowed host names if it was you.`,
+      transient: false,
+    });
+  }
+  return issues;
 }
 
 /** A restore that failed to start twice was rolled back at start-up (restoreGuard.ts): the admin must hear of it. */
@@ -602,6 +664,7 @@ async function buildHealthReport(): Promise<HealthReport> {
     safely("jobs", failingJobIssues),
     safely("uncaught-errors", uncaughtErrorIssues),
     safely("restore-rolled-back", restoreRolledBackIssues),
+    safely("network-security", networkSecurityIssues),
     safely("paused-downloads", pausedQueueIssues),
     safely("notifications", notificationIssues),
     safely("proxy", proxyIssues),

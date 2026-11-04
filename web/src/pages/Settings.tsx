@@ -1179,8 +1179,13 @@ export default function Settings() {
         missingFormats: string[];
         unscoredFormats: string[];
         unmappedQualities: string[];
+        language: string | null;
+        languageNamed: boolean;
+        languageNote: string | null;
       }>("/custom-formats/trash-profiles/import", { app: trashProfileApp, file });
       const notes: string[] = [];
+      if (result.languageNamed && result.language) notes.push(`the profile language is set to ${result.language}, as TRaSH asks`);
+      if (result.languageNote) notes.push(result.languageNote);
       if (result.missingFormats.length > 0) notes.push(`${result.missingFormats.length} format(s) are not synced yet (${result.missingFormats.slice(0, 4).join(", ")}${result.missingFormats.length > 4 ? ", ..." : ""}); sync the formats, then import again`);
       if (result.unscoredFormats.length > 0) notes.push(`${result.unscoredFormats.length} synced format(s) have no TRaSH score stored; sync the formats again`);
       if (result.unmappedQualities.length > 0) notes.push(`no AoNarr tier for ${result.unmappedQualities.join(", ")}`);
@@ -1978,6 +1983,38 @@ export default function Settings() {
           When fully disabled, every request is treated as an authenticated admin — no API key, session
           login, or 2FA required. Only turn this off if AoNarr sits on a network you fully trust
           (e.g. behind your own VPN) and is never exposed directly to the internet.
+        </p>
+
+        <label htmlFor="settings-local-networks">Local networks</label>
+        <input id="settings-local-networks"
+          key={settings.localNetworks ?? "local-networks-empty"}
+          defaultValue={settings.localNetworks ?? ""}
+          placeholder="empty — every private address counts (10.x, 172.16–31.x, 192.168.x, fd00::/8)"
+          onBlur={(e) => saveSetting("localNetworks", e.target.value)}
+        />
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+          Which addresses "Disabled for local addresses" lets in without a login: addresses and ranges such as{" "}
+          <code>192.168.1.0/24, fd12:3456::/48</code>, separated by commas. Set it when a reverse proxy runs on your
+          network, so that only your own devices skip the login. A list here replaces the built-in private ranges, so
+          add every network your devices use, and <code>127.0.0.1</code> if you open AoNarr on the server itself. The
+          proxy in front of AoNarr does not need to be on the list. A range larger than a /8 is refused.
+        </p>
+
+        <label htmlFor="settings-allowed-host-names">Allowed host names</label>
+        <input id="settings-allowed-host-names"
+          key={settings.allowedHosts ?? "allowed-hosts-empty"}
+          defaultValue={settings.allowedHosts ?? ""}
+          placeholder="aonarr.example.com, *.home.example.com"
+          onBlur={(e) => saveSetting("allowedHosts", e.target.value)}
+        />
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+          A visit without a login (either "Disabled" mode) is accepted only under the server's address, a short or LAN name
+          (<code>unraid</code>, <code>aonarr.lan</code>), the External URL, the allowed CORS origins or a name listed here.
+          This stops a web page on another site from reaching AoNarr through your browser under its own domain name (DNS
+          rebinding). A visit with an API key or a login is not affected. A port is ignored. A wildcard must stand for
+          whole labels in front of a domain you own (<code>*.home.example.com</code>); <code>*.com</code> and domains
+          anyone can register a name under (<code>*.duckdns.org</code>) are refused. Behind a proxy that rewrites the
+          Host header to an address, this check sees the address, not your name.
         </p>
 
         <label htmlFor="settings-metrics-token">Metrics token</label>

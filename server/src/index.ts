@@ -1,6 +1,7 @@
 // First: before anything opens the database, a second AoNarr on the same /config stops here.
 import { RESTORE_FILES } from "./startupGuard.js";
 import { confirmRestoreStarted, uncountRestoreStart } from "./restoreGuard.js";
+import { verifyOutboundDispatcher } from "./services/socksProxy.js";
 import { closeLogStream, log } from "./services/logger.js";
 import { recordUncaughtError } from "./services/uncaughtErrors.js";
 import { config } from "./config.js";
@@ -58,6 +59,8 @@ const ALBUM_BACKFILL_DELAY_MS = 30 * 1000;
 
 const onListening = () => {
   log.info(`AoNarr server listening on ${config.bindAddress ?? "all interfaces"}, port ${config.port}`);
+  // fetch() must really go through the dispatcher that carries the proxy, bypass and certificate settings.
+  setTimeout(() => void verifyOutboundDispatcher(), 3000).unref();
   // A restored database that got this far works: the swap-back that waited on two failed starts is no longer needed.
   confirmRestoreStarted(RESTORE_FILES);
   startScheduler();
