@@ -86,7 +86,8 @@ import {
   qualityProfileFromRow,
   queueItemFromRow,
 } from "../db/mappers.js";
-import { downloadsFolderHasEntries, importQueueItem, ImportSkippedError, ReleaseFaultError } from "./importer.js";
+import { downloadsFolderHasEntries, EpisodeTitleHoldError, importQueueItem, ImportSkippedError, ReleaseFaultError } from "./importer.js";
+import { EPISODE_TITLE_HOLD_PREFIX } from "./episodeTitleRule.js";
 import { notifyFailed, notifyGrabbed, notifyHealthIssue, notifyHealthRestored, notifyManualInteractionRequired, notifyUpdateAvailable } from "./notifications.js";
 import { getHealthReport, inHealthStartupGrace } from "./healthReport.js";
 import { checkForUpdate } from "./updateCheck.js";
@@ -3640,6 +3641,8 @@ async function importCompletedDownload(
           : `Couldn't place the file: ${message}`;
         log.info(`[scheduler] import skipped for "${match.title}": ${reason}`);
         await db.prepare(`UPDATE queue SET import_started_at = NULL, import_skipped_reason = ?, updated_at = ${nowExpr(db)} WHERE id = ?`).run(reason, match.id);
+        // A recent episode waiting for its title is Sonarr's "import pending": it sorts itself out, so nobody is told.
+        if (err instanceof EpisodeTitleHoldError) return;
         // A retry that ends with the reason the admin was already told about is not news.
         if (reason === match.importSkippedReason) return;
         const mediaRow = (await db.prepare("SELECT title FROM media_items WHERE id = ?").get(match.mediaItemId)) as
@@ -3828,6 +3831,54 @@ async function retryTransientParkedImports(ctx: PollContext = INLINE_POLL): Prom
   }
 }
 
+/** When each queue row held for an episode title was last looked at again (in memory: a restart allows one more look, which is harmless). */
+const titleHoldTriedAt = new Map<number, number>();
+/** How often a download that waits for an episode title is tried again. */
+let titleHoldRetryMs = 10 * 60_000;
+
+/** Test-only: how often held downloads are tried again. */
+export function __setEpisodeTitleRetryMsForTests(ms: number): void {
+  titleHoldRetryMs = ms;
+}
+
+/**
+ * An automatic import held because a recent episode has no title yet (episodeTitleRequired) is tried again every ten
+ * minutes: a metadata refresh may have named the episode by then, or two days have passed since it aired, or the admin
+ * has switched the setting off. The import itself decides again; a row still waiting is held with a fresh message and
+ * no notification, and one that now imports is cleared like any other.
+ */
+async function retryHeldForEpisodeTitles(ctx: PollContext = INLINE_POLL): Promise<void> {
+  const rows = (
+    (await db
+      .prepare("SELECT * FROM queue WHERE status = 'completed' AND import_started_at IS NULL AND import_skipped_reason LIKE ? ORDER BY id")
+      .all(`${EPISODE_TITLE_HOLD_PREFIX}%`)) as any[]
+  ).map(queueItemFromRow) as QueueItem[];
+  const heldIds = new Set(rows.map((r) => r.id));
+  for (const id of titleHoldTriedAt.keys()) if (!heldIds.has(id)) titleHoldTriedAt.delete(id);
+  for (const match of rows) {
+    if (ctx.background && importLaneIds.has(match.id)) continue;
+    const last = titleHoldTriedAt.get(match.id) ?? sqlTimeToMs(match.updatedAt);
+    // A time that cannot be read starts the wait now, rather than trying the import again on every poll.
+    if (!Number.isFinite(last)) {
+      titleHoldTriedAt.set(match.id, Date.now());
+      continue;
+    }
+    if (Date.now() - last < titleHoldRetryMs) continue;
+    titleHoldTriedAt.set(match.id, Date.now());
+    const attempt = async () => {
+      const claimed = await db
+        .prepare(`UPDATE queue SET import_started_at = ${nowExpr(db)} WHERE id = ? AND status = 'completed' AND import_started_at IS NULL`)
+        .run(match.id);
+      if (claimed.changes === 0) return;
+      notifyQueueChanged();
+      log.info(`[scheduler] trying the import of "${match.title}" again, which was waiting for an episode title`);
+      await importCompletedDownload(match, false, true, "tried again");
+    };
+    if (ctx.background) enqueueImport([match.id], attempt);
+    else await attempt();
+  }
+}
+
 /** Parked because the file was already at its destination and no library entry owned it (importer.ts destinationRefusedMessage). */
 const UNTRACKED_DESTINATION_REASON = "%no library entry tracks it%";
 /** The full scan each such row was last retried after (in memory: a restart allows one more retry, which is harmless). */
@@ -3928,6 +3979,11 @@ export async function pollQueue(options: { background?: boolean } = {}) {
     await retryParkedAfterScan(ctx);
   } catch (err) {
     log.warn("[scheduler] retrying imports parked until a library scan failed:", (err as Error).message);
+  }
+  try {
+    await retryHeldForEpisodeTitles(ctx);
+  } catch (err) {
+    log.warn("[scheduler] retrying imports held for an episode title failed:", (err as Error).message);
   }
 
   const clients = await rowsToDownloadClients();

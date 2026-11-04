@@ -1,6 +1,7 @@
 import { db } from "../db/index.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
+import { EPISODE_TITLE_HOLD_PREFIX } from "../services/episodeTitleRule.js";
 import { callNative } from "./native.js";
 import { type StarrApp, typeFilter } from "./apps.js";
 import {
@@ -45,6 +46,10 @@ function trackedStateOf(row: any): { status: string; state: string; trackedStatu
   switch (row.status) {
     case "completed":
       if (row.import_started_at) return { status: "completed", state: "importing", trackedStatus: "ok", message: null };
+      // Waiting for an episode's title is Starr's "import pending" with a note; every other reason needs someone to look.
+      if (row.import_skipped_reason && String(row.import_skipped_reason).startsWith(EPISODE_TITLE_HOLD_PREFIX)) {
+        return { status: "completed", state: "importPending", trackedStatus: "warning", message: String(row.import_skipped_reason) };
+      }
       if (row.import_skipped_reason) return { status: "completed", state: "importBlocked", trackedStatus: "warning", message: String(row.import_skipped_reason) };
       return { status: "completed", state: "importPending", trackedStatus: "ok", message: null };
     case "failed":

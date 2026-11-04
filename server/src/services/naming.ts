@@ -198,6 +198,12 @@ function tokensIn(template: string): { name: string; key: string }[] {
   return Array.from(template.matchAll(/\{([A-Za-z][\w .-]*?)(?::(0+))?\}/g), (m) => ({ name: m[1], key: tokenKey(m[1]) }));
 }
 
+/** Whether a template has the token, in any spelling of it (`{Episode Title}`, `{episode_title}`) and under Starr's names for it. */
+export function templateUsesToken(template: string, token: string): boolean {
+  const wanted = tokenKey(token);
+  return tokensIn(template).some((t) => t.key === wanted || (TOKEN_ALIASES[t.key] !== undefined && tokenKey(TOKEN_ALIASES[t.key]) === wanted));
+}
+
 /**
  * Why a naming template cannot be saved, or null. Checked on save because a bad template only failed later: a
  * template with no episode token gives every episode the same name, and the second import of a season was refused.

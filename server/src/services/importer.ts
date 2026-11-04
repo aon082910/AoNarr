@@ -32,7 +32,7 @@ import { categoryForType } from "./clientCategory.js";
 import { parseCategoryByType } from "../db/mappers.js";
 import { queueHistoryFields } from "./queueHistory.js";
 import { syncSubtitleToVideo } from "./subtitleSync.js";
-import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, episodeLabel, multiEpisodeStyleOf, ownFolderDepth, providerIdVars, releaseVars, renderTemplate, titleVars } from "./naming.js";
+import { DEFAULT_SHAPE_TEMPLATES, DEFAULT_TRACK_TEMPLATE, episodeLabel, multiEpisodeStyleOf, ownFolderDepth, providerIdVars, releaseVars, renderTemplate, templateUsesToken, titleVars } from "./naming.js";
 import { rememberItemFolder, withItemFolder } from "./libraryFolder.js";
 import { trackedFileInside } from "./fileDeletion.js";
 import { importReserveBytes } from "./freeSpace.js";
@@ -45,7 +45,9 @@ import { romSetCompanions } from "./romSets.js";
 import { releaseRecordFor } from "./fileRelease.js";
 import { propersMode, revisionUpgrade } from "./upgradeRules.js";
 import { getSetting } from "./settingsStore.js";
-import { probeMediaInfo } from "./ffprobe.js";
+import { probeLibraryFile } from "./mediaInfoSwitch.js";
+import { ImportScriptError, importScriptEnabled, importScriptPath, importScriptPathProblem, runImportScript, scriptEnvironment, type ScriptFacts } from "./importScript.js";
+import { episodeTitleHoldReason, episodeTitleRequiredMode, type TitleRuleEpisode } from "./episodeTitleRule.js";
 import { recordGroupSuccess } from "./releaseGroupStats.js";
 import { detectSeasonEpisode, guessTitleFromText } from "./libraryScan.js";
 import { convertComicImagesBestEffort } from "./comicImageConvert.js";
@@ -318,7 +320,7 @@ async function assertFileIsWorthImporting(sourceFile: string, mediaType: string,
     if (bad) throw new ImportSkippedError(`Not importing: the download holds "${path.basename(bad)}", a file type that is rejected — left in the download for a manual import`);
   }
   if (probe && VIDEO_EXTENSIONS.has(path.extname(sourceFile).toLowerCase()) && isProbeableFile(sourceFile)) {
-    const reason = probeVerdict(await probeMediaInfo(sourceFile), expectedMinutes);
+    const reason = probeVerdict(await probeLibraryFile(sourceFile), expectedMinutes);
     if (reason) throw new ImportSkippedError(`Not importing "${path.basename(sourceFile)}": ${reason} — left in the download for a manual import`);
   }
 }
@@ -1279,6 +1281,210 @@ async function placeAtDestination(
   }
 }
 
+/** What the import script made of one file. */
+interface ScriptPlacement {
+  /** Where the file is now: the destination, or the path the script reported. */
+  finalPath: string;
+  /** The script asked for the release's subtitles not to be copied beside the file. */
+  preventExtras: boolean;
+}
+
+function parseExternalIds(raw: string | null | undefined): Record<string, string> {
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function removeEmptyFolderQuietly(dir: string): void {
+  try {
+    fs.rmdirSync(dir);
+  } catch {
+    // not empty, or already gone
+  }
+}
+
+/** Whether `file` (followed through its links) lies inside `dir`. */
+function resolvesInto(file: string, dir: string): boolean {
+  try {
+    const real = fs.realpathSync(file);
+    const root = fs.realpathSync(dir);
+    return real === root || real.startsWith(root + path.sep);
+  } catch {
+    return false;
+  }
+}
+
+/** Whether `file` has no other name (a hardlink to a seeding download would share its date with it). */
+function hasNoOtherLink(file: string): boolean {
+  try {
+    return fs.statSync(file).nlink === 1;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Hands the placing of `src` to the admin's import script (importScript.ts) when one is switched on, in place of
+ * placeAtDestination. Null when there is none, or when the script left the move to AoNarr (DeferMove): the caller then
+ * places the file as usual. The rest of the import's safety stays in force:
+ * - a destination that holds a file no row owns is refused before the script runs, as for any import;
+ * - the library file this import replaces is set aside first (a script that overwrites its destination would destroy it)
+ *   and goes to the recycle bin once the new file is in place; a script that fails gets it put back;
+ * - folders created for a run that failed are removed again;
+ * - the source is never deleted here: moving it is the script's job, and only after it has said it did and the file it
+ *   named exists inside the root folder does this return.
+ * A script that fails, times out, or names a file that is not there throws ImportScriptError.
+ */
+async function placeViaImportScript(params: {
+  src: string;
+  dest: string;
+  item: { id: number; type: MediaType; title: string };
+  ownPaths: (string | null | undefined)[];
+  rootFolderPath: string;
+  /** Whether a file at this path is another entry's (the script may have put the file somewhere of its own choosing). */
+  isOtherEntrysFile: (file: string) => Promise<boolean>;
+  facts: Pick<ScriptFacts, "shape" | "item" | "season" | "episodes" | "quality" | "releaseTitle">;
+}): Promise<ScriptPlacement | null> {
+  if (!importScriptEnabled()) return null;
+  const { src, dest, item, ownPaths } = params;
+  const destDir = path.dirname(dest);
+
+  const verdict = destinationVerdict(src, dest, ownPaths);
+  if (verdict === "refuse") throw new ImportSkippedError(destinationRefusedMessage(dest));
+  const problem = importScriptPathProblem(importScriptPath());
+  if (problem) throw new ImportScriptError(`the import script cannot run: ${problem}`);
+
+  const createdFrom = firstMissingAncestor(destDir);
+  makeLibraryDirectory(destDir);
+  applyConfiguredPermissions(destDir, true);
+
+  // The file being replaced waits in a folder of its own beside the destination, under its own name.
+  let aside: { dir: string; file: string } | null = null;
+  if (verdict === "replace") {
+    const dir = path.join(destDir, `.aonarr-replaced-${crypto.randomBytes(4).toString("hex")}`);
+    fs.mkdirSync(dir);
+    const file = path.join(dir, path.basename(dest));
+    try {
+      fs.renameSync(dest, file);
+    } catch (err) {
+      removeEmptyFolderQuietly(dir);
+      removeCreatedFolders(destDir, createdFrom);
+      throw err;
+    }
+    aside = { dir, file };
+  }
+  /** Puts the set-aside file back; the path it is still at when something now holds its place (never overwritten), else null. */
+  const putBack = (): string | null => {
+    if (!aside) return null;
+    try {
+      try {
+        fs.lstatSync(dest);
+        return aside.file;
+      } catch {
+        // nothing at the destination: free to put the old file back
+      }
+      fs.renameSync(aside.file, dest);
+      fs.rmdirSync(aside.dir);
+      return null;
+    } catch {
+      return aside.file;
+    }
+  };
+  const failWith = (err: unknown): never => {
+    const kept = putBack();
+    removeCreatedFolders(destDir, createdFrom);
+    if (kept && err instanceof ImportScriptError) throw new ImportScriptError(`${err.message}; the file it replaces was set aside at "${kept}"`);
+    throw err;
+  };
+
+  const downloadFacts = importHistoryContext.getStore() ?? {};
+  const parsedGroup = params.facts.releaseTitle ? parseReleaseTitle(params.facts.releaseTitle).releaseGroup : null;
+  const strategy = currentImportStrategy();
+  let result: Awaited<ReturnType<typeof runImportScript>>;
+  try {
+    result = await runImportScript({
+      sourcePath: src,
+      destinationPath: dest,
+      rootFolderPath: params.rootFolderPath,
+      mediaExtensions: getMediaTypeConfig(item.type).extensions,
+      env: scriptEnvironment({
+        ...params.facts,
+        sourcePath: src,
+        destinationPath: dest,
+        transferMode: strategy,
+        mediaType: item.type,
+        releaseGroup: parsedGroup ?? null,
+        downloadId: typeof downloadFacts.downloadId === "string" ? downloadFacts.downloadId : null,
+        downloadClientId: typeof downloadFacts.clientId === "number" ? downloadFacts.clientId : null,
+        deletedPaths: ownPaths.filter((p): p is string => !!p),
+      }),
+    });
+  } catch (err) {
+    return failWith(err);
+  }
+
+  if (result.status === "DeferMove") {
+    const kept = putBack();
+    if (kept) return failWith(new ImportScriptError(`the import script left the move to AoNarr, but "${dest}" is now taken`));
+    removeCreatedFolders(destDir, createdFrom);
+    return null;
+  }
+
+  let finalPath = result.finalPath!;
+  try {
+    if (result.status === "RenameRequested" && path.resolve(finalPath) !== path.resolve(dest)) {
+      // The script filed the file under a name of its own and asks for AoNarr's: a plain move to the destination.
+      await strategyOverride.run("move", () => placeAtDestination(finalPath, dest, item, ownPaths));
+      finalPath = dest;
+    } else if (path.resolve(finalPath) !== path.resolve(dest) && (await params.isOtherEntrysFile(finalPath))) {
+      throw new ImportSkippedError(anotherEntrysFileMessage(finalPath));
+    }
+  } catch (err) {
+    return failWith(err);
+  }
+  // A move-style import clears the download afterwards: a link into the downloads folder would dangle when it does.
+  if (strategyDeletesSourceData() && resolvesInto(finalPath, config.downloadsDir)) {
+    return failWith(new ImportScriptError(`the import script made "${finalPath}" a link into the downloads folder, which is cleared after the import; it should copy or hardlink the file`));
+  }
+  applyConfiguredPermissions(finalPath, false);
+
+  if (aside) {
+    if (await recycleFile(aside.file, item.type, item.title, item.id, dest)) {
+      removeEmptyFolderQuietly(aside.dir);
+      log.info(`[importer] recycled "${dest}" to replace it with a newer file for "${item.title}"`);
+    } else {
+      log.warn(`[importer] couldn't move the replaced file "${dest}" to the recycle bin; it was left at "${aside.file}" for "${item.title}"`);
+    }
+  }
+  log.info(`[importer] the import script placed "${path.basename(finalPath)}" for "${item.title}"`);
+  return { finalPath, preventExtras: !result.importExtraFiles };
+}
+
+/** A row's episode as the title rule reads it. */
+function titleRuleEpisodeOf(row: any): TitleRuleEpisode {
+  return { seasonNumber: Number(row.season_number), episodeNumber: Number(row.episode_number), title: row.title ?? null, airDate: row.air_date ?? null };
+}
+
+/**
+ * `episodeTitleRequired` (episodeTitleRule.ts): an automatic import waits when the naming format has the episode's title
+ * in it and a recent episode the file covers has none yet, rather than putting "TBA" in the library's file names. Throws
+ * EpisodeTitleHoldError, which leaves the download alone and is tried again by the scheduler.
+ */
+async function assertEpisodeTitlesKnown(item: { id: number; type: MediaType }, template: string, episodeRows: any[]): Promise<void> {
+  const mode = episodeTitleRequiredMode();
+  if (mode === "never" || episodeRows.length === 0) return;
+  const requiresTitle = getNamingEnabled(item.type) && templateUsesToken(template, "episodeTitle");
+  if (!requiresTitle) return;
+  const seasonRows =
+    mode === "bulkSeasonReleases"
+      ? ((await db.prepare("SELECT season_number, episode_number, title, air_date FROM episodes WHERE media_item_id = ? AND season_number = ?").all(item.id, episodeRows[0].season_number)) as any[])
+      : [];
+  const reason = episodeTitleHoldReason({ mode, requiresTitle, episodes: episodeRows.map(titleRuleEpisodeOf), seasonEpisodes: seasonRows.map(titleRuleEpisodeOf) });
+  if (reason) throw new EpisodeTitleHoldError(reason);
+}
+
 /** What placing `src` at `dest` would do to what is there: "free" (nothing there, the very same
  * file, or a link whose target is gone, an expired debrid mount: nothing to lose, and the plain move
  * replaces a dangling link as it always did), "replace" (the library file one of the import's own rows
@@ -1484,6 +1690,10 @@ async function qualityGroupsOfProfile(profileId: number | null | undefined): Pro
 
 export class ImportSkippedError extends Error {}
 
+/** An automatic import that waits for a recent episode's title (episodeTitleRequired): the download stays where it is and
+ * the scheduler tries again, without the notification a skip that needs the admin sends. */
+export class EpisodeTitleHoldError extends ImportSkippedError {}
+
 /** The release itself is at fault: nothing importable in the folder the client reported, or no file of
  * it found at all. The only import failure that fails the download, blocklists the release and grabs
  * another (scheduler.ts importCompletedDownload); every other error leaves the completed download for a
@@ -1547,7 +1757,7 @@ async function probedResolutionBeats(sourceFile: string, existingQuality: string
   const have = resolutionOfQualityName(existingQuality);
   if (have === null || !isProbeableFile(sourceFile)) return false;
   try {
-    const info = await probeMediaInfo(sourceFile);
+    const info = await probeLibraryFile(sourceFile);
     const found = info ? resolutionOfFrame(info.width, info.height) : null;
     return found !== null && found > have;
   } catch {
@@ -1812,6 +2022,8 @@ export async function placeFile(params: {
   let folderSegments: string[] | null = null;
   // The day the file is dated by when `fileDate` is set: the episode's air date, or a film's release date.
   let fileDay: string | null = null;
+  // The episode rows the file covers, for the title rule (episodeTitleRequired) and for the import script.
+  let titleCheckRows: any[] | null = null;
 
   if (shape === "single") {
     if (item.hasFile) {
@@ -1879,6 +2091,7 @@ export async function placeFile(params: {
       siblingEpRows = siblingEpRows.filter((e) => Number(e.episode_number) > claimedBelow && Number(e.episode_number) < claimedAbove);
     }
     const allEpRows = [epRow, ...siblingEpRows];
+    titleCheckRows = allEpRows;
     if (allEpRows.length > 1) episodicRows = allEpRows.map((e) => ({ id: e.id }));
     replacedPaths = allEpRows.filter((e: any) => e.has_file).map((e: any) => e.file_path);
     existingFiles = allEpRows.filter((e: any) => e.has_file).map((e: any) => ({ quality: e.quality ?? null, filePath: e.file_path ?? null }));
@@ -1979,6 +2192,8 @@ export async function placeFile(params: {
     const mismatch = fileContradictsTarget(sourceFile, verify, await importTargetFor(item));
     if (mismatch) throw new ImportIdentityMismatchError(`Not importing: ${mismatch} — left in the download for a manual import`);
     await assertFileIsWorthImporting(sourceFile, item.type, mediaRow.runtime_minutes, verify, shape === "single" || shape === "episodic");
+    // Last of the checks, so that a download that would be refused anyway is not also reported as waiting.
+    if (titleCheckRows) await assertEpisodeTitlesKnown(item, template, titleCheckRows);
   }
   if (refuseDowngrade) await assertNotADowngrade(item.type, quality, sourceFile, existingFiles, await qualityGroupsOfProfile(item.qualityProfileId));
   const claimKeys =
@@ -2025,7 +2240,40 @@ export async function placeFile(params: {
       throw new ImportSkippedError(`"${target}" already exists — not overwriting it with a track of "${path.basename(sourceFile)}"`);
     }
   }
-  await placeAtDestination(sourceFile, destPath, item, replacedPaths);
+  const plannedDest = destPath;
+  // The admin's import script, when one is switched on, places a video file in place of the move (importScript.ts).
+  const scripted =
+    (shape === "single" || shape === "episodic") && VIDEO_EXTENSIONS.has(ext.toLowerCase())
+      ? await placeViaImportScript({
+          src: sourceFile,
+          dest: destPath,
+          item,
+          ownPaths: replacedPaths,
+          rootFolderPath: rootFolder.path,
+          isOtherEntrysFile: (file) => isFileOfAnotherRow(file, item.id, ownEpisodeIds, subItemId),
+          facts: {
+            shape: shape === "episodic" ? "episodic" : "single",
+            item: {
+              id: item.id,
+              title: item.title,
+              year: item.year ?? null,
+              folder: folderSegments ? path.join(rootFolder.path, ...folderSegments) : path.dirname(destPath),
+              externalIds: parseExternalIds(item.externalIds),
+              seriesType: shape === "episodic" ? item.seriesType ?? null : null,
+            },
+            season: titleCheckRows ? Number(titleCheckRows[0].season_number) : null,
+            episodes: (titleCheckRows ?? []).map((e) => ({ id: Number(e.id), number: Number(e.episode_number), airDate: e.air_date ?? null, title: e.title ?? null })),
+            quality,
+            releaseTitle: releaseTitle ?? null,
+          },
+        })
+      : null;
+  if (scripted) {
+    destPath = scripted.finalPath;
+    fileLabel = path.basename(destPath);
+  } else {
+    await placeAtDestination(sourceFile, destPath, item, replacedPaths);
+  }
   for (const track of romTracks) await moveFile(track, path.join(path.dirname(destPath), path.basename(track)));
   for (const key of claimKeys) batchClaims?.add(key);
 
@@ -2055,11 +2303,13 @@ export async function placeFile(params: {
   }
   if (shape !== "single") await markParentHasFile(item.id);
   // The show's folder is the one its first file went to: a later title change keeps using it.
-  if (folderSegments) await rememberItemFolder(item.id, folderSegments);
-  // Not on a hardlink or symlink: the date would land on the seeding source too.
-  if (currentImportStrategy() !== "hardlink" && currentImportStrategy() !== "symlink") await applyFileDate(destPath, fileDay);
+  // (Not when the script filed the video somewhere of its own: that folder is not where the name template puts the show.)
+  if (folderSegments && path.resolve(destPath) === path.resolve(plannedDest)) await rememberItemFolder(item.id, folderSegments);
+  // Not on a hardlink or symlink: the date would land on the seeding source too. After a script, whatever it made of the
+  // file: dated only when it has no other name.
+  if (scripted ? hasNoOtherLink(destPath) : currentImportStrategy() !== "hardlink" && currentImportStrategy() !== "symlink") await applyFileDate(destPath, fileDay);
   // The subtitles that came with the release (`importExtraFiles`), named for the file, before the release folder goes.
-  if (VIDEO_EXTENSIONS.has(ext.toLowerCase()) && (shape === "single" || shape === "episodic")) {
+  if (VIDEO_EXTENSIONS.has(ext.toLowerCase()) && (shape === "single" || shape === "episodic") && !scripted?.preventExtras) {
     await copyReleaseExtras(sourceFile, destPath).catch((err) =>
       log.warn(`[importer] could not copy the extra files of "${path.basename(sourceFile)}":`, (err as Error).message)
     );
@@ -2127,7 +2377,7 @@ export async function placeFile(params: {
       const imageQuality = Number(getSetting("comicImageQuality") ?? "82") || 82;
       await convertComicImagesBestEffort(destPath, format, imageQuality);
     }
-    const mediaInfo = isProbeableFile(destPath) ? await probeMediaInfo(destPath) : null;
+    const mediaInfo = isProbeableFile(destPath) ? await probeLibraryFile(destPath) : null;
     const mediaInfoJson = mediaInfo ? JSON.stringify(mediaInfo) : null;
     const finalSize = await fsp.stat(destPath).then((s) => s.size).catch(() => sizeBytes);
     // Matched on the path too: a later import may have replaced the file on this row meanwhile.
@@ -2195,8 +2445,19 @@ export async function manualImportWarnings(params: {
   const bad = sourceDir === path.resolve(config.downloadsDir) ? null : findRejectedFile(sourceDir, item.type);
   if (bad) warnings.push(`The folder holds "${path.basename(bad)}", a file type that is rejected for automatic imports`);
   if ((shape === "single" || shape === "episodic") && VIDEO_EXTENSIONS.has(path.extname(params.sourceFile).toLowerCase()) && isProbeableFile(params.sourceFile)) {
-    const reason = probeVerdict(await probeMediaInfo(params.sourceFile), mediaRow.runtime_minutes);
+    const reason = probeVerdict(await probeLibraryFile(params.sourceFile), mediaRow.runtime_minutes);
     if (reason) warnings.push(`This file: ${reason}`);
+  }
+  if (shape === "episodic" && params.episodeId) {
+    const epRow = await db.prepare("SELECT * FROM episodes WHERE id = ?").get(params.episodeId);
+    if (epRow) {
+      try {
+        await assertEpisodeTitlesKnown(item, namingTemplateFor(item), [epRow]);
+      } catch (err) {
+        if (err instanceof EpisodeTitleHoldError) warnings.push(`${err.message} (an automatic import would wait; a manual one goes ahead)`);
+        else throw err;
+      }
+    }
   }
   return warnings;
 }
@@ -2265,6 +2526,9 @@ export async function previewQueueManualImport(queueItemId: number, sourceFile: 
     preview.fileLabel = placed.fileLabel;
   } catch (err) {
     preview.error = err instanceof Error ? err.message : String(err);
+  }
+  if (importScriptEnabled() && (shape === "single" || shape === "episodic") && VIDEO_EXTENSIONS.has(path.extname(resolved).toLowerCase())) {
+    preview.note = "The import script is switched on: it places the file in place of this move, so the destination may differ";
   }
   return preview;
 }
@@ -2703,7 +2967,7 @@ export async function placeAlbumFiles(params: {
   }
 
   // Probe the anchor at wherever it actually landed (the track template may have renamed it).
-  const mediaInfo = anchorDest && isProbeableFile(anchorDest) ? await probeMediaInfo(anchorDest) : null;
+  const mediaInfo = anchorDest && isProbeableFile(anchorDest) ? await probeLibraryFile(anchorDest) : null;
   // One file added to an album is not the album's size: the whole folder's is.
   const sizeBytes = movedCount === 0 ? null : onlyAnchor ? mediaBytesUnder(destFolder, typeConfig.extensions) : totalMovedBytes;
 
@@ -3237,6 +3501,12 @@ export async function placeSeasonPackFiles(params: {
     throw new NoPackFileMatchedError(`No files in this download could be matched to a known episode of season ${seasonNumber}`);
   }
 
+  // A pack with a recent episode that has no title yet waits as a whole (episodeTitleRequired); half a season is not filed.
+  if (verify) {
+    const titleTemplate = getNamingTemplate(item.type);
+    for (const { episodes: targets } of toPlace) await assertEpisodeTitlesKnown(item, titleTemplate, targets);
+  }
+
   await assertEnoughFreeSpaceForImport(toPlace.map((p) => p.src), rootFolder.path, rootFolder.minFreeSpaceGb);
 
   let importedCount = 0;
@@ -3247,6 +3517,8 @@ export async function placeSeasonPackFiles(params: {
   const packFinishing: { dest: string; ext: string; rowIds: number[] }[] = [];
   const usedDestinations = new Set<string>();
   let packFolderSegments: string[] | null = null;
+  // An import script filed a video somewhere of its own: the show's folder is not remembered from the name template.
+  let packRedirected = false;
   for (const { src, episodes: targetEpisodes } of toPlace) {
     // A Sonarr-style multi-episode file within the pack (e.g. "S01E01-E02.mkv") resolves to every
     // one of this season's own episode rows it actually covers, not just the first.
@@ -3288,7 +3560,7 @@ export async function placeSeasonPackFiles(params: {
     const segments = placedFolder.segments;
     packFolderSegments ??= segments.slice(0, placedFolder.folderLength);
     const ext = path.extname(src);
-    const { destPath: dest, fileLabel } = resolveDest(rootFolder.path, segments, ext, src, getNamingEnabled(item.type));
+    let { destPath: dest, fileLabel } = resolveDest(rootFolder.path, segments, ext, src, getNamingEnabled(item.type));
     const destKey = path.resolve(dest).toLowerCase();
     if (usedDestinations.has(destKey)) {
       log.warn(`[importer] "${path.basename(src)}" would land on "${dest}", which another file of this pack just took — left in place`);
@@ -3307,7 +3579,41 @@ export async function placeSeasonPackFiles(params: {
       continue;
     }
     destFolder = path.dirname(dest);
-    await placeAtDestination(src, dest, item, covered.map((e) => e.file_path));
+    const packOwnPaths = covered.map((e) => e.file_path);
+    const plannedDest = dest;
+    const scripted = VIDEO_EXTENSIONS.has(ext.toLowerCase())
+      ? await placeViaImportScript({
+          src,
+          dest,
+          item,
+          ownPaths: packOwnPaths,
+          rootFolderPath: rootFolder.path,
+          isOtherEntrysFile: (file) => isFileOfAnotherRow(file, item.id, covered.map((e) => Number(e.id)), null),
+          facts: {
+            shape: "episodic",
+            item: {
+              id: item.id,
+              title: item.title,
+              year: item.year ?? null,
+              folder: path.join(rootFolder.path, ...segments.slice(0, placedFolder.folderLength)),
+              externalIds: parseExternalIds(item.externalIds),
+              seriesType: item.seriesType ?? null,
+            },
+            season: seasonNumber,
+            episodes: covered.map((e) => ({ id: Number(e.id), number: Number(e.episode_number), airDate: e.air_date ?? null, title: e.title ?? null })),
+            quality,
+            releaseTitle: releaseTitle ?? null,
+          },
+        })
+      : null;
+    if (scripted) {
+      dest = scripted.finalPath;
+      fileLabel = path.basename(dest);
+      destFolder = path.dirname(dest);
+      if (path.resolve(dest) !== path.resolve(plannedDest)) packRedirected = true;
+    } else {
+      await placeAtDestination(src, dest, item, packOwnPaths);
+    }
     placedPaths.push(src, dest);
 
     // The rows are written first and the slow steps (subtitle provider, ffprobe) follow, as in placeFile.
@@ -3343,15 +3649,15 @@ export async function placeSeasonPackFiles(params: {
     }
     importedCount += covered.length;
     // The same two steps as a single file's import: the air date as the file's date, the release's subtitles beside it.
-    if (currentImportStrategy() !== "hardlink" && currentImportStrategy() !== "symlink") await applyFileDate(dest, primary.air_date ?? null);
-    if (VIDEO_EXTENSIONS.has(ext.toLowerCase())) {
+    if (scripted ? hasNoOtherLink(dest) : currentImportStrategy() !== "hardlink" && currentImportStrategy() !== "symlink") await applyFileDate(dest, primary.air_date ?? null);
+    if (VIDEO_EXTENSIONS.has(ext.toLowerCase()) && !scripted?.preventExtras) {
       await copyReleaseExtras(src, dest).catch((err) => log.warn(`[importer] could not copy the extra files of "${path.basename(src)}":`, (err as Error).message));
     }
     packFinishing.push({ dest, ext, rowIds: covered.map((e) => Number(e.id)) });
   }
 
   await markParentHasFile(item.id);
-  if (packFolderSegments && importedCount > 0) await rememberItemFolder(item.id, packFolderSegments);
+  if (packFolderSegments && importedCount > 0 && !packRedirected) await rememberItemFolder(item.id, packFolderSegments);
   await recycleReplacedFiles(replacedPaths, placedPaths, item);
   // Best effort, now that every row is written: a subtitle provider that stalls cannot hold the rows back.
   for (const { dest, ext, rowIds } of packFinishing) {
@@ -3359,7 +3665,7 @@ export async function placeSeasonPackFiles(params: {
       if (VIDEO_EXTENSIONS.has(ext.toLowerCase())) {
         await withinTimeout(tryDownloadSubtitle(dest, item.id), POST_IMPORT_STEP_TIMEOUT_MS, `subtitle download for "${dest}"`);
       }
-      const probed = await probeMediaInfo(dest);
+      const probed = await probeLibraryFile(dest);
       if (!probed) continue;
       for (const rowId of rowIds) {
         await db.prepare("UPDATE episodes SET media_info = ? WHERE id = ? AND file_path = ?").run(JSON.stringify(probed), rowId, dest);

@@ -3,6 +3,7 @@ import { hostPatternProblem, parseBypassFilter, proxyUrlProblem } from "./networ
 import { MULTI_EPISODE_STYLES, namingTemplateProblem } from "./naming.js";
 import { metadataLanguageProblem } from "./metadataLanguage.js";
 import { UI_DATE_FORMATS, UI_TIME_FORMATS, UI_WEEK_STARTS, timeZoneProblem } from "./displayPreferences.js";
+import { importScriptPathProblem } from "./importScript.js";
 
 /**
  * What PUT /api/settings/:key accepts. Before this, any key and any value was stored and answered 200,
@@ -99,6 +100,9 @@ const RULES: Readonly<Record<string, Rule>> = {
   fileDate: { oneOf: ["none", "localAirDate", "utcAirDate"] },
   importExtraFiles: { oneOf: ["1", "0"] },
   importProbeChecks: { oneOf: ["1", "0"] },
+  enableMediaInfo: { oneOf: ["1", "0"] },
+  useScriptImport: { oneOf: ["1", "0"] },
+  episodeTitleRequired: { oneOf: ["always", "bulkSeasonReleases", "never"] },
   rejectDangerousFiles: { oneOf: ["1", "0"] },
   removeFolderOnDelete: { oneOf: ["1", "0"] },
   deleteEmptyFolders: { oneOf: ["1", "0"] },
@@ -138,6 +142,11 @@ export function settingValueProblem(key: string, value: string): string | null {
       if (problem) return `"${key}" entry "${item}" ${problem}`;
     }
     return null;
+  }
+  if (key === "scriptImportPath") {
+    // The script is run by the server, so it is looked for where the server runs: the container, not the host.
+    const problem = importScriptPathProblem(value);
+    return problem ? `"${key}": ${problem}` : null;
   }
   const template = /^naming([A-Z][A-Za-z]*)Template$/.exec(key);
   if (template) {
