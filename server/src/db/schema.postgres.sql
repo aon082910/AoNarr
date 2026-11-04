@@ -797,6 +797,21 @@ CREATE TABLE IF NOT EXISTS rss_sync_state (
   PRIMARY KEY (indexer_id, feed_key)
 );
 
+-- The newest releases the RSS sync judged and what it decided about each (services/rssDecisions.ts).
+CREATE TABLE IF NOT EXISTS rss_decisions (
+  id SERIAL PRIMARY KEY,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+  indexer_id INTEGER REFERENCES indexers(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  protocol TEXT,
+  outcome TEXT NOT NULL, -- grabbed | held | rejected | unmatched | skipped
+  reason TEXT,
+  media_item_id INTEGER REFERENCES media_items(id) ON DELETE SET NULL,
+  episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL,
+  sub_item_id INTEGER REFERENCES sub_items(id) ON DELETE SET NULL,
+  release TEXT -- the release as the feed listed it (JSON), so one mapped by hand can be judged again
+);
+
 -- One row per run of a scheduled job, so the Jobs page keeps its last result across a restart, a run
 -- missed while the app was down can be caught up, and a job that keeps failing shows in Health.
 -- Trimmed to 30 days by the housekeeping job.

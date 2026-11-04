@@ -64,6 +64,7 @@ import { backfillProviderAliases } from "./aliasBackfill.js";
 import { backfillAnilistSeasons } from "./anilistSeasons.js";
 import {
   groupedRank,
+  isUnderCutoff,
   groupRankOfRank,
   knownReleaseSize,
   parseQualityGroups,
@@ -76,6 +77,7 @@ import {
   type QualityGroups,
 } from "./quality.js";
 import { indexerInfoOf, scoreRelease } from "./customFormatScoring.js";
+import { mapLimit } from "./mapLimit.js";
 import { getMediaTypeConfig, MEDIA_TYPES } from "./mediaTypes.js";
 import {
   downloadClientFromRow,
@@ -508,10 +510,15 @@ export interface ChooseOptions {
    * passes judgeDiscography against these albums is taken, and the one adding the most missing albums comes first
    * among releases of the same format. */
   discography?: { albums: DiscographyAlbum[]; minWanted: number; minShare?: number };
+  /** Told of every release the call turns away, with the reason it is logged with (the first one for a release counts). */
+  onRejected?: (result: SearchResult, reason: string) => void;
   /** Human-readable "media title" (plus episode/season where relevant) for this call's log lines
    * only — has no effect on matching/scoring. Omitted = log lines drop the "for ..." suffix. */
   label?: string | null;
 }
+
+/** How many season packs are scored at once when a search judges them (customFormatScoring.scoreRelease). */
+export const PACK_SCORING_CONCURRENCY = 8;
 
 /** indexers.priority's column default. */
 const DEFAULT_INDEXER_PRIORITY = 25;
@@ -873,6 +880,12 @@ export async function chooseBestResult(
   // The edition a provider adds to a title ("Thriller - Remastered") is not in the plain album's releases (N26).
   const name =
     wantedName && (mediaType === "artist" || mediaType === "author" || mediaType === "audiobook") ? { ...wantedName, title: editionlessTitle(wantedName.title) } : wantedName;
+  // Every release turned away is logged with its reason, and handed to the caller that asked to hear them (the RSS sync keeps
+  // them for its list of recent releases). The first reason a release gets is the one kept.
+  const noteRejected = (r: SearchResult, reason: string) => {
+    log.info(`[scheduler] rejected "${r.title}": ${reason}`);
+    options.onRejected?.(r, reason);
+  };
   const revisionMode = propersMode();
   // Same-quality releases that could still replace the file by their custom-format score, which is only known
   // once they are scored.
@@ -915,14 +928,14 @@ export async function chooseBestResult(
   const withParsed = results
     .filter((r) => {
       if (isBlockedRelease(blocklisted, r)) {
-        log.info(`[scheduler] rejected "${r.title}": blocklisted`);
+        noteRejected(r, `blocklisted`);
         return false;
       }
       return true;
     })
     .filter((r) => {
       if (clients && pickClientForProtocol(clients, r.protocol, { itemTags: titleTags }) === null) {
-        log.info(`[scheduler] rejected "${r.title}": no configured download client handles its protocol (${r.protocol})`);
+        noteRejected(r, `no configured download client handles its protocol (${r.protocol})`);
         return false;
       }
       return true;
@@ -930,7 +943,7 @@ export async function chooseBestResult(
     .map((r) => ({ result: r, parsed: applyAliasSeason(parseReleaseTitle(r.title), aliasSeasons, aliasSeasonCounts), size: knownReleaseSize(r.size) }))
     .filter(({ result, parsed }) => {
       if (parsed.rejected) {
-        log.info(`[scheduler] rejected "${result.title}": its name is a hash, so there is no title to check it against`);
+        noteRejected(result, `its name is a hash, so there is no title to check it against`);
         return false;
       }
       return true;
@@ -940,14 +953,14 @@ export async function chooseBestResult(
       // hard-coded subtitles: refused before any quality or title decision, as Sonarr/Radarr do.
       const rejection = releaseRejection(parsed, { title: result.title, size }, mediaType);
       if (rejection) {
-        log.info(`[scheduler] rejected "${result.title}": ${rejection.reason}`);
+        noteRejected(result, `${rejection.reason}`);
         return false;
       }
       return true;
     })
     .filter(({ result, size }) => {
       const reason = availabilityRejection(result, minimumSeedersById) ?? freeSpaceReason(size, freeBytes, reserveBytes);
-      if (reason) log.info(`[scheduler] rejected "${result.title}": ${reason}`);
+      if (reason) noteRejected(result, `${reason}`);
       return !reason;
     });
 
@@ -956,14 +969,15 @@ export async function chooseBestResult(
     : "airDate" in target
     ? withParsed.filter(({ result, parsed }) => {
         const ok = releaseMatchesAirDate(parsed, target.airDate) || (target.season != null && target.episode != null && releaseMatchesEpisode(parsed, target.season, target.episode));
-        if (!ok) log.info(`[scheduler] rejected "${result.title}": doesn't match the target air date (${target.airDate})`);
+        if (!ok) noteRejected(result, `doesn't match the target air date (${target.airDate})`);
         return ok;
       })
     : withParsed.filter(({ result, parsed }) => {
         const ok = releaseMatchesEpisode(parsed, target.season, target.episode, target.sceneSeason, target.sceneEpisode, target.absoluteEpisode, target.sceneIndex);
         if (!ok) {
-          log.info(
-            `[scheduler] rejected "${result.title}": doesn't match the target episode (S${String(target.season).padStart(2, "0")}E${String(target.episode).padStart(2, "0")})`
+          noteRejected(
+            result,
+            `doesn't match the target episode (S${String(target.season).padStart(2, "0")}E${String(target.episode).padStart(2, "0")})`
           );
         }
         return ok;
@@ -979,17 +993,24 @@ export async function chooseBestResult(
     // release, as for a single episode: a later revision (PROPER, REPACK, v2) and a score gain count too.
     const upgradeProfile = upgradeProfileOf(await getQualityProfile(qualityProfileId));
     packFiltered = [];
+    // The pack's own score matters only while a format cutoff is set (otherwise no score rule can apply). Each pack is
+    // scored on its own, so many are scored at once (a few at a time: scoring is several queries) and the verdicts
+    // below are given in the order of the results, as before.
+    const packEntries = episodeFiltered.filter((entry) => entry.parsed.isFullSeason);
+    const packScores =
+      upgradeProfile.cutoffFormatScore > 0
+        ? await mapLimit(packEntries, PACK_SCORING_CONCURRENCY, async ({ result, size }) =>
+            (await scoreRelease(result.title, size, qualityProfileId, mediaType, indexerInfoOf(result), mediaItemId, result.indexerId ?? null)).totalScore
+          )
+        : [];
+    const packScoreOf = new Map(packEntries.map((entry, i) => [entry, packScores[i] as number | undefined]));
     for (const entry of episodeFiltered) {
-      const { result, parsed, size } = entry;
+      const { result, parsed } = entry;
       if (!parsed.isFullSeason) {
         packFiltered.push(entry);
         continue;
       }
-      // The pack's own score matters only while a format cutoff is set (otherwise no score rule can apply).
-      const packScore =
-        upgradeProfile.cutoffFormatScore > 0
-          ? (await scoreRelease(result.title, size, qualityProfileId, mediaType, indexerInfoOf(result), mediaItemId, result.indexerId ?? null)).totalScore
-          : undefined;
+      const packScore = packScoreOf.get(entry);
       const verdict = judgeSeasonPack({
         parsed,
         season: parsed.seasonNumber ?? packContext.season,
@@ -1001,7 +1022,7 @@ export async function chooseBestResult(
         settings,
         upgrade: { profile: upgradeProfile, mode: revisionMode, packTitle: result.title, packScore },
       });
-      if (!verdict.ok) log.info(`[scheduler] rejected "${result.title}": ${verdict.reason}`);
+      if (!verdict.ok) noteRejected(result, `${verdict.reason}`);
       else packFiltered.push(entry);
     }
   }
@@ -1051,11 +1072,11 @@ export async function chooseBestResult(
     if (!tiered) {
       if (options.discography) {
         if (!parsed.discography) {
-          log.info(`[scheduler] rejected "${result.title}": it is not a discography`);
+          noteRejected(result, `it is not a discography`);
           return false;
         }
         if (!name || !releaseNamesArtist(result.title, name.title)) {
-          log.info(`[scheduler] rejected "${result.title}": it is not a discography of "${name?.title ?? "the artist"}"`);
+          noteRejected(result, `it is not a discography of "${name?.title ?? "the artist"}"`);
           return false;
         }
         const verdict = judgeDiscography(result.title, options.discography.albums, {
@@ -1064,7 +1085,7 @@ export async function chooseBestResult(
           isUnreleased: isNotYetReleased,
         });
         if (!verdict.ok) {
-          log.info(`[scheduler] rejected "${result.title}": ${verdict.reason}`);
+          noteRejected(result, `${verdict.reason}`);
           return false;
         }
         discographyVerdicts.set(result, verdict);
@@ -1073,9 +1094,9 @@ export async function chooseBestResult(
       if (!name) return true;
       const match = releaseNameMatch(result.title, name, mediaType);
       if (match === "main") namesMainTitleOnly.add(result);
-      if (match === null) log.info(`[scheduler] rejected "${result.title}": title doesn't match "${name.title}"`);
+      if (match === null) noteRejected(result, `title doesn't match "${name.title}"`);
       if (match !== null && options.nonVideoUpgradeFrom != null && nonVideoPreference(result.title, mediaType) < options.nonVideoUpgradeFrom + FORMAT_UPGRADE_STEP) {
-        log.info(`[scheduler] rejected "${result.title}": its format is no better than the file's`);
+        noteRejected(result, `its format is no better than the file's`);
         return false;
       }
       return match !== null;
@@ -1085,36 +1106,36 @@ export async function chooseBestResult(
       verdicts.set(result, verdict);
       if (!verdict.ok) {
         if (identityMode === "enforce") {
-          log.info(`[scheduler] rejected "${result.title}": ${verdict.detail}`);
+          noteRejected(result, `${verdict.detail}`);
           return false;
         }
         log.info(`[scheduler] identity gate (log-only) would reject "${result.title}": ${verdict.detail}`);
       }
     }
     if (allowed.size > 0 && !allowed.has(parsed.quality)) {
-      log.info(`[scheduler] rejected "${result.title}": quality "${parsed.quality}" isn't allowed by this quality profile`);
+      noteRejected(result, `quality "${parsed.quality}" isn't allowed by this quality profile`);
       return false;
     }
     if (existing) {
       const verdict = judgeUpgrade(existing.profile, revisionMode, existing.file, { quality: parsed.quality, title: result.title });
       if (verdict === "no") {
-        log.info(`[scheduler] rejected "${result.title}": it isn't an upgrade over what's already on disk`);
+        noteRejected(result, `it isn't an upgrade over what's already on disk`);
         return false;
       }
       if (verdict === "needs-score") needsScore.add(result);
     } else if (!(options.packJudgesUpgrades && parsed.isFullSeason) && upgradeFromGroupRank !== null && groupedRank(parsed.quality, qualityGroups) <= upgradeFromGroupRank) {
-      log.info(`[scheduler] rejected "${result.title}": quality "${parsed.quality}" isn't an upgrade over what's already on disk`);
+      noteRejected(result, `quality "${parsed.quality}" isn't an upgrade over what's already on disk`);
       return false;
     }
     // Drop releases whose size doesn't fit their claimed quality's configured size range — usually
     // a mislabeled or fake release (e.g. a 200MB file claiming to be 1080p).
     if (!sizeWithinQualityBounds(parsed.quality, size, runtimeOf(parsed))) {
-      log.info(`[scheduler] rejected "${result.title}": size doesn't fit this quality's configured size range`);
+      noteRejected(result, `size doesn't fit this quality's configured size range`);
       return false;
     }
     const wrongLanguage = languageRejection(wantedLanguage, parsed.languages);
     if (wrongLanguage) {
-      log.info(`[scheduler] rejected "${result.title}": ${wrongLanguage}`);
+      noteRejected(result, `${wrongLanguage}`);
       return false;
     }
     return true;
@@ -1155,10 +1176,10 @@ export async function chooseBestResult(
     }
   }
   for (const { result } of delay.disabled) {
-    log.info(`[scheduler] rejected "${result.title}": its protocol (${result.protocol}) is turned off in the delay profile`);
+    noteRejected(result, `its protocol (${result.protocol}) is turned off in the delay profile`);
   }
   for (const { result } of delay.held) {
-    log.info(`[scheduler] rejected "${result.title}": not yet eligible under the configured delay profile`);
+    noteRejected(result, `not yet eligible under the configured delay profile`);
   }
   if (delay.kept.length === 0) {
     log.info(`[scheduler] no eligible releases among ${results.length} result(s)${forLabel}`);
@@ -1226,6 +1247,9 @@ export async function chooseBestResult(
     if (candidates.length > 0) break;
   }
   if (candidates.length === 0) {
+    for (const { result } of eligible) {
+      options.onRejected?.(result, "its custom-format score is under the profile's minimum, a release profile refused it, or it adds too little over the file");
+    }
     log.info(`[scheduler] ${eligible.length} eligible release(s)${forLabel}, but none met the minimum format score`);
     return null;
   }
@@ -2498,8 +2522,7 @@ interface BulkSearchContext {
 }
 
 export function isBelowCutoff(quality: string | null, cutoff: string, groups?: QualityGroups): boolean {
-  const rank = groupedRank(quality, groups);
-  return rank >= 0 && rank < groupedRank(cutoff, groups);
+  return isUnderCutoff(quality, cutoff, groups);
 }
 
 /** Sonarr/Radarr's "existing file meets cutoff": with lower tiers filtered out, the profile's best

@@ -23,6 +23,7 @@ import { vacuumSqliteInWorker } from "./backupZip.js";
 export const DEFAULT_RETENTION_DAYS = 365;
 export const MIN_RETENTION_DAYS = 30;
 const JOB_RUN_RETENTION_DAYS = 30;
+const RSS_DECISION_RETENTION_DAYS = 14;
 const DELETE_CHUNK = 5000;
 const LEFTOVER_FILE_DAYS = 7;
 const VACUUM_EVERY_DAYS = 30;
@@ -191,6 +192,8 @@ export async function runHousekeeping(signal?: AbortSignal): Promise<Housekeepin
     { table: "watch_events", column: "watched_at", days: retentionDays("housekeepingWatchEventDays"), keepWhere: notTheLatestWatch },
     { table: "audit_log", column: "created_at", days: retentionDays("housekeepingAuditDays") },
     { table: "job_runs", column: "started_at", days: JOB_RUN_RETENTION_DAYS, keepWhere: notTheLatestRun },
+    // The RSS sync keeps the newest few hundred decisions itself; a quiet feed would leave old ones for ever.
+    { table: "rss_decisions", column: "created_at", days: RSS_DECISION_RETENTION_DAYS },
   ];
   for (const { table, column, days, keepWhere } of plan) {
     if (days <= 0 || signal?.aborted) continue;

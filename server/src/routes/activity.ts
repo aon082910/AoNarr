@@ -20,6 +20,11 @@ import { manualGrab } from "./search.js";
 import { getSetting } from "../services/settingsStore.js";
 import { wakeLeaf, wakeSeason } from "../services/searchBackoff.js";
 import { queueHistoryFields } from "../services/queueHistory.js";
+import { getRssDecision, listRssDecisions, updateRssDecision } from "../services/rssDecisions.js";
+import { judgeMappedRelease } from "../services/rssSync.js";
+import { storeAliases } from "../services/releaseAliases.js";
+import { resetSearchBackoff } from "../services/searchBackoff.js";
+import { auditActor, logAuditEvent } from "../services/audit.js";
 
 export const activityRouter = Router();
 activityRouter.use(requireAdmin);
@@ -143,6 +148,58 @@ activityRouter.delete(
     if (!row) throw new HttpError(404, "That release is not waiting any more");
     await removePending(row.id);
     res.status(204).send();
+  })
+);
+
+const RSS_OUTCOMES = ["grabbed", "held", "rejected", "unmatched", "skipped"];
+
+/**
+ * The newest releases the RSS sync judged, with what it decided and why (Starr's release list with no search behind
+ * it). Query: limit, offset, outcome (one of grabbed, held, rejected, unmatched, skipped). Never returns a release's
+ * download link, which can carry an indexer key.
+ */
+activityRouter.get(
+  "/rss-decisions",
+  asyncHandler(async (req, res) => {
+    const outcome = typeof req.query.outcome === "string" && RSS_OUTCOMES.includes(req.query.outcome) ? req.query.outcome : null;
+    res.json(await listRssDecisions({ limit: clampLimit(req.query.limit, 50, 200), offset: clampOffset(req.query.offset), outcome }));
+  })
+);
+
+/**
+ * The "map to" step for a release the RSS sync could not place (Starr's override of what a release maps to). Body:
+ * { mediaItemId, episodeId?, subItemId? }. The name the release goes by is taught to that title as an alias, so the
+ * feeds' next releases of it are placed by themselves, and this one release is judged again at once, as a sync would
+ * (grabbed when it passes, else the reason it does not); an episode or sub-item holds the release to that target
+ * whatever its numbering says. Answers the release's new row.
+ */
+activityRouter.post(
+  "/rss-decisions/:id/map",
+  asyncHandler(async (req, res) => {
+    const found = await getRssDecision(Number(req.params.id));
+    if (!found) throw new HttpError(404, "That release is not in the list any more");
+    if (!found.release) throw new HttpError(409, "That release was not kept, so it cannot be judged again");
+    const mediaItemId = Number(req.body?.mediaItemId);
+    const item = Number.isInteger(mediaItemId) ? ((await db.prepare("SELECT id, title FROM media_items WHERE id = ?").get(mediaItemId)) as { id: number; title: string } | undefined) : undefined;
+    if (!item) throw new HttpError(404, "Media item not found");
+    const episodeId = req.body?.episodeId == null ? null : Number(req.body.episodeId);
+    const subItemId = req.body?.subItemId == null ? null : Number(req.body.subItemId);
+    if (episodeId != null && subItemId != null) throw new HttpError(400, "Give an episode or a sub-item, not both");
+    if (episodeId != null && !(await db.prepare("SELECT id FROM episodes WHERE id = ? AND media_item_id = ?").get(episodeId, item.id))) throw new HttpError(404, "Episode not found for that title");
+    if (subItemId != null && !(await db.prepare("SELECT id FROM sub_items WHERE id = ? AND media_item_id = ?").get(subItemId, item.id))) throw new HttpError(404, "Sub-item not found for that title");
+
+    const parsed = parseReleaseTitle(found.release.title);
+    if (parsed.rejected || !parsed.title) throw new HttpError(400, "The release name has no title to teach");
+    const added = await storeAliases(item.id, [parsed.title], "user");
+    if (added > 0) {
+      await resetSearchBackoff(item.id);
+      const actor = auditActor(req);
+      logAuditEvent(actor.userId, actor.username, "media_alias_added", `"${item.title}" ← "${parsed.title}" (mapped from a feed release)`);
+    }
+    const judged = await judgeMappedRelease(found.release, { mediaItemId: item.id, episodeId, subItemId });
+    await updateRssDecision(found.row.id, judged);
+    const updated = await getRssDecision(found.row.id);
+    res.json({ ...updated!.row, aliasAdded: added > 0 });
   })
 );
 

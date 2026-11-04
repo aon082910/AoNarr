@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { api, openEventStream } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
@@ -40,6 +40,27 @@ interface PendingRelease {
   readyInMinutes: number | null;
   expiresAt: string | null;
   release: { title: string; size: number | null; protocol: string; indexerName: string; publishDate: string | null; seeders: number | null; quality: string };
+}
+
+/** A release the RSS sync judged, with what it decided (GET /activity/rss-decisions). */
+interface RssDecision {
+  id: number;
+  createdAt: string;
+  indexerName: string | null;
+  title: string;
+  protocol: string | null;
+  outcome: "grabbed" | "held" | "rejected" | "unmatched" | "skipped";
+  reason: string | null;
+  mediaItemId: number | null;
+  mediaTitle: string | null;
+}
+
+/** What a library search offers to map a release to. */
+interface MapCandidate {
+  id: number;
+  title: string;
+  type: string;
+  year: number | null;
 }
 
 const SOURCE_LABELS: Record<string, string> = { interactive: "Manual", auto: "Automatic search", rss: "RSS sync", irc: "IRC announce" };
@@ -127,6 +148,13 @@ export default function Activity() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [pending, setPending] = useState<PendingRelease[]>([]);
   const [pendingBusy, setPendingBusy] = useState<number | null>(null);
+  const [rssOpen, setRssOpen] = useState(false);
+  const [rssDecisions, setRssDecisions] = useState<RssDecision[]>([]);
+  const [rssTotal, setRssTotal] = useState(0);
+  const [rssBusy, setRssBusy] = useState<number | null>(null);
+  const [mapFor, setMapFor] = useState<number | null>(null);
+  const [mapQuery, setMapQuery] = useState("");
+  const [mapResults, setMapResults] = useState<MapCandidate[]>([]);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [indexers, setIndexers] = useState<Indexer[]>([]);
   const [downloadClients, setDownloadClients] = useState<DownloadClient[]>([]);
@@ -243,6 +271,34 @@ export default function Activity() {
     }
   }
 
+  function loadRssDecisions() {
+    api
+      .get<{ items: RssDecision[]; total: number }>("/activity/rss-decisions?limit=50")
+      .then((data) => {
+        setRssDecisions(data.items);
+        setRssTotal(data.total);
+      })
+      .catch(() => {});
+  }
+
+  /** Teaches the title the release's name and judges that release again (POST /activity/rss-decisions/:id/map). */
+  async function mapRelease(row: RssDecision, item: MapCandidate) {
+    setRssBusy(row.id);
+    try {
+      const done = await api.post<RssDecision>(`/activity/rss-decisions/${row.id}/map`, { mediaItemId: item.id });
+      if (done.outcome === "grabbed") notify.success(`Mapped to "${item.title}" and sent to the download client.`);
+      else notify.info(`Mapped to "${item.title}": ${done.reason ?? done.outcome}`);
+      setMapFor(null);
+      setMapQuery("");
+      loadRssDecisions();
+      loadRef.current();
+    } catch (e) {
+      notify.error(`Mapping failed: ${(e as Error).message}`);
+    } finally {
+      setRssBusy(null);
+    }
+  }
+
   function loadHistory() {
     const params = new URLSearchParams();
     params.set("limit", String(historyPageSize));
@@ -256,6 +312,7 @@ export default function Activity() {
   function load() {
     loadQueue();
     loadPending();
+    if (rssOpen) loadRssDecisions();
     loadHistory();
   }
 
@@ -268,6 +325,23 @@ export default function Activity() {
 
   useEffect(loadQueue, [queuePage, queuePageSize]);
   useEffect(loadPending, []);
+  useEffect(() => {
+    if (rssOpen) loadRssDecisions();
+  }, [rssOpen]);
+  // The picker of the "map to" step: a library search as the admin types.
+  useEffect(() => {
+    if (mapFor == null || mapQuery.trim().length < 2) {
+      setMapResults([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      api
+        .get<{ items: MapCandidate[] }>(`/media?q=${encodeURIComponent(mapQuery.trim())}&limit=8`)
+        .then((data) => setMapResults(data.items))
+        .catch(() => setMapResults([]));
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [mapFor, mapQuery]);
   useEffect(loadHistory, [historyPage, historyPageSize]);
 
   useEffect(() => {
@@ -574,6 +648,74 @@ export default function Activity() {
           </table>
         </>
       )}
+
+      <details onToggle={(e) => setRssOpen((e.currentTarget as HTMLDetailsElement).open)} style={{ margin: "12px 0" }}>
+        <summary style={{ cursor: "pointer" }}>Recent RSS releases{rssOpen ? ` (${rssTotal})` : ""}</summary>
+        <p style={{ color: "var(--muted)", marginTop: 4, fontSize: "0.85rem" }}>
+          The newest releases the RSS sync judged and what it decided. A release that names nothing the library wants can be mapped to a title: the title learns
+          the release's name, and that release is judged again at once.
+        </p>
+        {rssDecisions.length === 0 && <p className="empty">No releases judged yet.</p>}
+        {rssDecisions.length > 0 && (
+          <table>
+            <thead>
+              <tr>
+                <th>Release</th>
+                <th>Item</th>
+                <th>Decision</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rssDecisions.map((d) => (
+                <Fragment key={d.id}>
+                  <tr>
+                    <td>
+                      {d.title}
+                      <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+                        {d.indexerName ?? "indexer removed"}
+                        {d.protocol ? ` · ${d.protocol}` : ""} · {formatServerTimestamp(d.createdAt)}
+                      </div>
+                    </td>
+                    <td>{d.mediaTitle ?? "-"}</td>
+                    <td>
+                      {d.outcome}
+                      {d.reason && d.outcome !== "grabbed" && <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>{d.reason}</div>}
+                    </td>
+                    <td className="toolbar">
+                      {(d.outcome === "unmatched" || d.outcome === "rejected" || d.outcome === "skipped") && (
+                        <button
+                          type="button"
+                          disabled={rssBusy === d.id}
+                          onClick={() => {
+                            setMapFor(mapFor === d.id ? null : d.id);
+                            setMapQuery("");
+                          }}
+                        >
+                          Map to...
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {mapFor === d.id && (
+                    <tr>
+                      <td colSpan={4}>
+                        <input type="search" autoFocus placeholder="Search the library for the title this release is" value={mapQuery} onChange={(e) => setMapQuery(e.target.value)} aria-label="Search the library" />
+                        {mapResults.map((m) => (
+                          <button key={m.id} type="button" style={{ display: "block", margin: "4px 0" }} disabled={rssBusy === d.id} onClick={() => mapRelease(d, m)}>
+                            {m.title}
+                            {m.year ? ` (${m.year})` : ""} · {m.type}
+                          </button>
+                        ))}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </details>
 
       {queue.length === 0 && <p className="empty">Nothing in the queue.</p>}
       {queue.length > 0 && visibleQueue.length === 0 && <p className="empty">No queue items match this filter.</p>}

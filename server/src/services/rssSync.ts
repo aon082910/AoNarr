@@ -4,7 +4,7 @@ import { log } from "./logger.js";
 import { config } from "../config.js";
 import { getSetting } from "./settingsStore.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
-import { usesQualityTiers, qualityRank, groupedRank } from "./quality.js";
+import { usesQualityTiers, qualityRank } from "./quality.js";
 import { mediaItemFromRow } from "../db/mappers.js";
 import { fetchRecentReleases, rssFeedGroups, type RssMarker } from "./indexerClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type ParsedRelease } from "./releaseParser.js";
@@ -20,6 +20,7 @@ import { existingFileRecord } from "./fileRelease.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { airedFrontierFor, episodeNotAired, episodePlanFor, seasonPlanFor } from "./searchPlan.js";
 import { scopeAllows } from "./tagScope.js";
+import { RSS_UNMATCHED_PER_RUN, recordRssDecisions, strongerDecision, type RssDecisionInput, type RssOutcome } from "./rssDecisions.js";
 import { recordLeafOutcome, recordSeasonSearch, wakeLeaf, wakeSeason } from "./searchBackoff.js";
 import {
   chooseBestResult,
@@ -69,6 +70,9 @@ import type { DownloadClient, Indexer, MediaItem, MediaType, SearchResult } from
  * (A release that is simply refused, for its quality, size or name, wakes nothing.) Where a feed was
  * read to is kept only once the releases above it were judged: a run cut short (aborted, or a
  * download client down) reads them again, since a feed does not list a release twice.
+ *
+ * Every release judged is written to rss_decisions (rssDecisions.ts) with what was decided and why, for the "Recent
+ * RSS releases" list; a release that names nothing wanted can be mapped by hand there (judgeMappedRelease below).
  *
  * Plain RSS indexers are read here only (an automatic search leaves them out, as Sonarr's TorrentRss
  * is). Upgrades are grabbed too when `autoUpgradeEnabled` is on, the same switch as the upgrade job.
@@ -238,22 +242,26 @@ export async function runRssSync(signal?: AbortSignal): Promise<RssSyncSummary> 
   }
 
   // 2. the target each release names
-  const groups = await matchReleases(releases, wanted);
+  const { groups, unmatched } = await matchReleases(releases, wanted);
+  // What was decided about each release, kept for the list of recent releases (never lets the sync fail).
+  const decisions = new Map<SearchResult, RssDecisionInput>();
+  const note = (input: RssDecisionInput) => decisions.set(input.release, strongerDecision(decisions.get(input.release), input));
+  for (const u of unmatched.slice(0, RSS_UNMATCHED_PER_RUN)) note({ release: u.release, outcome: "unmatched", reason: u.reason, mediaItemId: u.mediaItemId ?? null });
+  const saveDecisions = async () => {
+    try {
+      await recordRssDecisions([...decisions.values()]);
+    } catch (err) {
+      log.warn("[rss] couldn't keep the decisions about the new releases:", (err as Error).message);
+    }
+  };
   if (groups.size === 0) {
+    await saveDecisions();
     await keepMarkers();
     return summary;
   }
 
   // 3. for each target, the best of its releases, grabbed
-  const env: DecideEnv = {
-    indexers,
-    clients,
-    delayProfiles: await loadDelayProfiles(),
-    directBudget: await directDownloadBudget(clients),
-    unavailable: new Map(),
-    upgrades,
-    grabbedUrls: new Set(),
-  };
+  const env = await buildDecideEnv(indexers, clients, upgrades);
   let complete = true;
   for (const group of groups.values()) {
     if (signal?.aborted || clients.every((c) => env.unavailable.has(c.id))) {
@@ -261,7 +269,9 @@ export async function runRssSync(signal?: AbortSignal): Promise<RssSyncSummary> 
       break;
     }
     try {
-      const result = await decide(group, env);
+      const decided = await decide(group, env);
+      for (const input of decisionsFor(group, decided)) note(input);
+      const result = decided.result;
       if (result === "grabbed") summary.grabbed++;
       else if (result === "held") {
         summary.woken++;
@@ -272,6 +282,7 @@ export async function runRssSync(signal?: AbortSignal): Promise<RssSyncSummary> 
       log.warn(`[rss] couldn't process "${group.item.title}":`, (err as Error).message);
     }
   }
+  await saveDecisions();
   // A client that went down during the run turned its releases away: they are judged again next time.
   if (complete && env.unavailable.size === 0) await keepMarkers();
   if (summary.grabbed > 0 || summary.woken > 0) {
@@ -280,21 +291,40 @@ export async function runRssSync(signal?: AbortSignal): Promise<RssSyncSummary> 
   return summary;
 }
 
+/** A release that names nothing the library wants, and why. */
+interface Unmatched {
+  release: SearchResult;
+  reason: string;
+  /** The item the release names when that is known (a pack of a season nothing is wanted of). */
+  mediaItemId?: number;
+}
+
 /** Maps each release to the single item, episode or season it names among what is wanted. */
-async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<Map<string, Group>> {
+async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<{ groups: Map<string, Group>; unmatched: Unmatched[] }> {
   const groups = new Map<string, Group>();
+  const placed = new Set<SearchResult>();
+  const unmatched: Unmatched[] = [];
   const add = (group: Group) => {
+    for (const r of group.releases) placed.add(r);
     const existing = groups.get(group.key);
     if (existing) existing.releases.push(...group.releases);
     else groups.set(group.key, group);
   };
+  /** A release that is in no group (yet): said once, whichever way it fell through. */
+  const unmatch = (release: SearchResult, reason: string, mediaItemId?: number) => {
+    if (!placed.has(release) && !unmatched.some((u) => u.release === release)) unmatched.push({ release, reason, mediaItemId });
+  };
+  const nameOf = (parsed: ParsedRelease) => `"${parsed.title}"`;
   const aliasesOf = await aliasTitlesByItem([...wanted.singles, ...wanted.shows].map((i) => i.id));
   const sceneIndexes = new Map<number, Awaited<ReturnType<typeof sceneIndexFor>>>();
   const absolutes = new Map<number, number>();
 
   for (const release of releases) {
     const parsed = parseReleaseTitle(release.title);
-    if (parsed.rejected || !parsed.title) continue;
+    if (parsed.rejected || !parsed.title) {
+      unmatch(release, "its name is a hash or has no title to match");
+      continue;
+    }
     const episodeShaped = parsed.seasonNumber != null || (parsed.episodeNumbers?.length ?? 0) > 0 || parsed.isFullSeason || !!parsed.airDate || parsed.absoluteEpisode != null;
 
     // An album, book or comic issue that the name could be: the parent is named in the release and the sub-item passes the
@@ -329,19 +359,28 @@ async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<
       const candidates = wanted.singles.filter((item) => parsed.titleYear != null || parsed.year == null || item.year == null || Math.abs(parsed.year - item.year) <= 1);
       const resolved = await resolveReleaseItemInLibrary({ title: release.title }, parsed, candidates, aliasesOf);
       if (resolved.kind === "one") add({ kind: "single", key: `item:${resolved.item.id}`, item: resolved.item, releases: [release] });
+      else unmatch(release, resolved.kind === "ambiguous" ? `${nameOf(parsed)} could be more than one wanted title` : `no wanted title is named ${nameOf(parsed)}`);
       continue;
     }
 
     const resolved = await resolveReleaseItemInLibrary({ title: release.title }, parsed, wanted.shows, aliasesOf);
-    if (resolved.kind !== "one") continue;
+    if (resolved.kind !== "one") {
+      unmatch(release, resolved.kind === "ambiguous" ? `${nameOf(parsed)} could be more than one show with wanted episodes` : `no show with wanted episodes is named ${nameOf(parsed)}`);
+      continue;
+    }
     const show = resolved.item;
     const episodes = wanted.episodes.get(show.id) ?? [];
     if (parsed.isFullSeason) {
-      if (!packsPossibleFor(show)) continue;
+      if (!packsPossibleFor(show)) {
+        unmatch(release, "packs are not taken for this show", show.id);
+        continue;
+      }
       // A pack, by the season a release calls it: the wanted episodes of that scene season.
       const season = parsed.seasonNumber == null ? null : seasonGroupsOf(episodes).find((g) => g.scene === parsed.seasonNumber);
       if (season) {
         add({ kind: "season", key: `season:${show.id}:${season.aired}:${season.scene}`, item: show, season, episodes: episodes.filter((e) => season.ids.includes(e.id)), releases: [release] });
+      } else {
+        unmatch(release, parsed.seasonNumber == null ? "a pack that names no season" : `nothing is wanted of season ${parsed.seasonNumber} of "${show.title}"`, show.id);
       }
       continue;
     }
@@ -350,8 +389,9 @@ async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<
       if (!(await releaseNamesEpisode(parsed, show, ep, sceneIndexes.get(show.id), absolutes))) continue;
       add({ kind: "episode", key: `episode:${ep.id}`, item: show, ep, releases: [release] });
     }
+    unmatch(release, `it names no wanted episode of "${show.title}"`, show.id);
   }
-  return groups;
+  return { groups, unmatched };
 }
 
 async function releaseNamesEpisode(
@@ -370,6 +410,52 @@ async function releaseNamesEpisode(
   return releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, absolute, sceneIndex);
 }
 
+async function buildDecideEnv(indexers: Indexer[], clients: DownloadClient[], upgrades: boolean): Promise<DecideEnv> {
+  return {
+    indexers,
+    clients,
+    delayProfiles: await loadDelayProfiles(),
+    directBudget: await directDownloadBudget(clients),
+    unavailable: new Map(),
+    upgrades,
+    grabbedUrls: new Set(),
+  };
+}
+
+type DecideResult = "grabbed" | "held" | "none" | "skipped" | "unavailable";
+
+/** What decide() learned about a group of releases besides its verdict. */
+interface DecideTrace {
+  reason: string;
+  /** The release that was sent to a client. */
+  chosen?: SearchResult;
+  /** Why each release was turned away (the reason a search logs for it), by its link. */
+  rejections: Map<string, string>;
+}
+
+interface Decided {
+  result: DecideResult;
+  reason: string;
+  chosen?: SearchResult;
+  rejections: Map<string, string>;
+}
+
+/** What is kept about each release of a judged group. */
+function decisionsFor(group: Group, decided: Decided): RssDecisionInput[] {
+  const base = { mediaItemId: group.item.id, episodeId: group.kind === "episode" ? group.ep.id : null, subItemId: group.kind === "sub" ? group.sub.id : null };
+  return group.releases.map((release): RssDecisionInput => {
+    if (decided.result === "grabbed" && decided.chosen && release.downloadUrl === decided.chosen.downloadUrl) return { release, outcome: "grabbed", reason: "grabbed", ...base };
+    const rejection = decided.rejections.get(release.downloadUrl);
+    if (rejection) return { release, outcome: rejection.startsWith("not yet eligible") ? "held" : "rejected", reason: rejection, ...base };
+    if (decided.result === "grabbed") return { release, outcome: "rejected", reason: `another release of this target was taken: ${decided.chosen?.title ?? ""}`, ...base };
+    const outcome: RssOutcome = decided.result === "held" ? "held" : decided.result === "skipped" || decided.result === "unavailable" ? "skipped" : "rejected";
+    return { release, outcome, reason: decided.reason, ...base };
+  });
+}
+
+const HAS_FILE_NO_UPGRADE = "it already has a file and this release is no upgrade of it (or upgrades are off)";
+const UNAVAILABLE_REASON = "no download client could take it just now; it is judged again at the next run";
+
 interface DecideEnv {
   indexers: Indexer[];
   clients: DownloadClient[];
@@ -386,9 +472,19 @@ interface DecideEnv {
  * is a target that could not be served because a download client was down: its releases are judged
  * again by the next run.
  */
-async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" | "none" | "skipped" | "unavailable"> {
+async function decide(group: Group, env: DecideEnv): Promise<Decided> {
+  const trace: DecideTrace = { reason: "", rejections: new Map() };
+  const result = await decideGroup(group, env, trace);
+  return { result, reason: trace.reason || "no release of this target could be taken", chosen: trace.chosen, rejections: trace.rejections };
+}
+
+async function decideGroup(group: Group, env: DecideEnv, trace: DecideTrace): Promise<DecideResult> {
   const { item } = group;
-  if (await isRootFolderOverQuota(item.rootFolderId)) return "skipped";
+  const skip = (reason: string): "skipped" => {
+    trace.reason = reason;
+    return "skipped";
+  };
+  if (await isRootFolderOverQuota(item.rootFolderId)) return skip("its root folder is over its quota");
   const profile = await getQualityProfile(item.qualityProfileId);
   const cutoff = profile?.cutoff ?? "";
 
@@ -400,7 +496,7 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
   let upgradeFromRank: number | null = null;
   let existing: { file: ExistingFile; profile: UpgradeProfile } | undefined;
   let results = group.releases.filter((r) => !env.grabbedUrls.has(r.downloadUrl));
-  if (results.length === 0) return "skipped";
+  if (results.length === 0) return skip("already sent to a download client in this run");
 
   /** A file the target has: replaced only when upgrades are switched on and the profile allows them. At the
    * cutoff (quality and format score) only a later revision of the file's own release can still replace it. */
@@ -419,18 +515,18 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
   };
 
   if (group.kind === "single") {
-    if (await isAlreadyQueued(item.id, null, null)) return "skipped";
+    if (await isAlreadyQueued(item.id, null, null)) return skip("already queued");
     const onDisk = await existingFileQuality(item, null, null);
-    if (onDisk !== undefined && !(await considerUpgrade(onDisk, null))) return "skipped";
+    if (onDisk !== undefined && !(await considerUpgrade(onDisk, null))) return skip(HAS_FILE_NO_UPGRADE);
   } else if (group.kind === "sub") {
     // A missing album, book or issue: a search's name tests judge it, and nothing is on disk to upgrade.
-    if (await isAlreadyQueued(item.id, null, group.sub.id)) return "skipped";
+    if (await isAlreadyQueued(item.id, null, group.sub.id)) return skip("already queued");
     subItemName = { title: group.sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, group.sub.id), ...(await yearFieldsOf(item, group.sub)) };
   } else if (group.kind === "episode") {
     episodeId = group.ep.id;
-    if (await isAlreadyQueued(item.id, group.ep.id, null)) return "skipped";
+    if (await isAlreadyQueued(item.id, group.ep.id, null)) return skip("already queued");
     const onDisk = await existingFileQuality(item, group.ep.id, null);
-    if (onDisk !== undefined && !(await considerUpgrade(onDisk, group.ep.id))) return "skipped";
+    if (onDisk !== undefined && !(await considerUpgrade(onDisk, group.ep.id))) return skip(HAS_FILE_NO_UPGRADE);
     const plan = await episodePlanFor(item, group.ep);
     target = plan.target;
     pack = packContextFor(item, plan);
@@ -438,9 +534,9 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
     seasonNumber = group.season.aired;
     let uncovered = false;
     for (const e of group.episodes) if (!(await isAlreadyQueued(item.id, e.id, null))) uncovered = true;
-    if (!uncovered) return "skipped";
-    const withFiles = group.episodes.filter((e) => Number(e.has_file));
-    if (withFiles.length === group.episodes.length) upgradeFromRank = Math.min(...withFiles.map((e) => groupedRank(e.quality ?? null, profile?.qualityGroups)));
+    if (!uncovered) return skip("every episode of the season is already queued");
+    // Whether a pack upgrades the files the season has is for the pack guards to say, by the upgrade rules (a PROPER or
+    // REPACK of the files' own release counts at the same quality), as in a search; no minimum-rank gate applies to it.
     pack = packContextFor(item, await seasonPlanFor(item, group.season.scene));
     results = results.filter((r) => {
       const parsed = parseReleaseTitle(r.title);
@@ -453,12 +549,18 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
   const delayProfile = pickDelayProfile(env.delayProfiles, itemTags);
   // An indexer scoped to tags is for titles that carry one of them, as in a search.
   results = results.filter((r) => scopeAllows(env.indexers.find((i) => i.id === r.indexerId)?.tagIds, itemTags));
-  if (results.length === 0) return "none";
+  if (results.length === 0) {
+    trace.reason = "its indexer is limited to tags this title does not carry";
+    return "none";
+  }
   const usable = env.directBudget.usableClients().filter((c) => !env.unavailable.has(c.id));
   // Every client that could take these releases is waiting out a back-off: nothing was judged, so the feed is not marked as
   // read past them (they are looked at again once a client is back).
   const takesAny = (ignoreBackoff: boolean) => results.some((r) => pickClientForProtocol(usable, r.protocol, { itemTags, ignoreBackoff }) !== null);
-  if (!takesAny(false) && takesAny(true)) return "unavailable";
+  if (!takesAny(false) && takesAny(true)) {
+    trace.reason = UNAVAILABLE_REASON;
+    return "unavailable";
+  }
   const choose = (remaining: SearchResult[], delay: DelayProfile | null) =>
     chooseBestResult(
       remaining,
@@ -472,7 +574,20 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
       delay,
       targetIdentityOf(item),
       item.id,
-      { clients: usable, upgradeFromRank, existing, name: subItemName ?? { title: item.title }, indexers: env.indexers, label: item.title, pack }
+      {
+        clients: usable,
+        upgradeFromRank,
+        existing,
+        name: subItemName ?? { title: item.title },
+        indexers: env.indexers,
+        label: item.title,
+        pack,
+        // A season pack is judged by the pack guards, which count what it upgrades by the upgrade rules.
+        packJudgesUpgrades: group.kind === "season",
+        onRejected: (r, reason) => {
+          if (!trace.rejections.has(r.downloadUrl)) trace.rejections.set(r.downloadUrl, reason);
+        },
+      }
     );
   let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
   try {
@@ -484,7 +599,10 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
       { itemId: item.id, indexers: env.indexers }
     );
   } catch (err) {
-    if (noteUnavailableClient(err, env.unavailable)) return "unavailable";
+    if (noteUnavailableClient(err, env.unavailable)) {
+      trace.reason = UNAVAILABLE_REASON;
+      return "unavailable";
+    }
     throw err;
   }
   if (!outcome) {
@@ -497,9 +615,12 @@ async function decide(group: Group, env: DecideEnv): Promise<"grabbed" | "held" 
         : group.kind === "single"
         ? ({ table: "media_items", id: item.id } as const)
         : null;
-    return (await isHeldByDelay(results, cutoff, delayProfile, choose, leaf ? (release) => recordPending(leaf.table, leaf.id, item.id, release) : undefined)) ? "held" : "none";
+    const held = await isHeldByDelay(results, cutoff, delayProfile, choose, leaf ? (release) => recordPending(leaf.table, leaf.id, item.id, release) : undefined);
+    trace.reason = held ? "held back by the delay profile until it is old enough" : "none of its releases passed the profile";
+    return held ? "held" : "none";
   }
-  if (!outcome.grabbed) return "skipped";
+  if (!outcome.grabbed) return skip("a download client already has it");
+  trace.chosen = outcome.chosen.result;
   env.grabbedUrls.add(outcome.chosen.result.downloadUrl);
   env.directBudget.consume(outcome.client);
   if (group.kind === "season") await recordSeasonSearch(item.id, group.season.scene, true);
@@ -514,4 +635,51 @@ async function wake(group: Group): Promise<void> {
   else if (group.kind === "episode") await wakeLeaf("episodes", group.ep.id);
   else if (group.kind === "sub") await wakeLeaf("sub_items", group.sub.id);
   else await wakeSeason(group.item.id, group.season.scene);
+}
+
+export interface MappedJudgement {
+  outcome: RssOutcome;
+  reason: string;
+  mediaItemId: number;
+  episodeId: number | null;
+  subItemId: number | null;
+}
+
+/**
+ * Judges one release again for the title the admin says it names (the "map to" step of the recent-releases list, after the
+ * release's name was taught to the title as an alias): the same decision as in a sync, grabbed when it passes. With an
+ * episode or a sub-item the release is held to that target whatever its numbering says; its quality, name and the rest are
+ * still judged, so a release the profile refuses stays refused, with the reason.
+ */
+export async function judgeMappedRelease(release: SearchResult, target: { mediaItemId: number; episodeId?: number | null; subItemId?: number | null }): Promise<MappedJudgement> {
+  const base = { mediaItemId: target.mediaItemId, episodeId: target.episodeId ?? null, subItemId: target.subItemId ?? null };
+  const clients = await rowsToDownloadClients();
+  if (clients.length === 0) return { outcome: "skipped", reason: "no enabled download client is configured", ...base };
+  const upgrades = getSetting("autoUpgradeEnabled") === "1";
+  const wanted = await loadWanted(upgrades);
+
+  let groups: Group[] = [];
+  if (target.episodeId != null) {
+    const show = wanted.shows.find((s) => s.id === target.mediaItemId);
+    const ep = (wanted.episodes.get(target.mediaItemId) ?? []).find((e) => e.id === target.episodeId);
+    if (show && ep) groups = [{ kind: "episode", key: `episode:${ep.id}`, item: show, ep, releases: [release] }];
+  } else if (target.subItemId != null) {
+    const entry = wanted.collections.get(target.mediaItemId);
+    const sub = entry?.subs.find((s) => s.id === target.subItemId);
+    if (entry && sub) groups = [{ kind: "sub", key: `sub:${sub.id}`, item: entry.item, sub, releases: [release] }];
+  } else {
+    groups = [...(await matchReleases([release], wanted)).groups.values()].filter((g) => g.item.id === target.mediaItemId);
+  }
+  if (groups.length === 0) {
+    return { outcome: "unmatched", reason: "still not matched to anything that is wanted of that title (it may be unmonitored, have its files already, or name another episode)", ...base };
+  }
+
+  const env = await buildDecideEnv(await rowsToIndexers(), clients, upgrades);
+  let best: RssDecisionInput | undefined;
+  for (const group of groups) {
+    const decided = await decide(group, env);
+    if (decided.result === "held") await wake(group);
+    for (const input of decisionsFor(group, decided)) best = strongerDecision(best, input);
+  }
+  return { outcome: best!.outcome, reason: best!.reason ?? "", mediaItemId: target.mediaItemId, episodeId: best!.episodeId ?? null, subItemId: best!.subItemId ?? null };
 }
