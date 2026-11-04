@@ -1189,12 +1189,17 @@ export function LibraryItemGrid({
     });
     if (!confirmed) return;
     try {
-      const result = await api.post<{ deleted: number; skipped: number }>("/media/bulk/delete", {
+      const result = await api.post<{ deleted: number; skipped: number; warnings?: string[]; notRecycled?: string[]; notRecycledCount?: number }>("/media/bulk/delete", {
         mediaItemIds: Array.from(selected),
         deleteFiles: confirmed.values.deleteFiles,
         addExclusion: confirmed.values.addExclusion,
       });
       notify.success(`Removed ${result.deleted} item(s)${result.skipped > 0 ? `, ${result.skipped} already gone` : ""}.`);
+      // What the removal could not finish (a folder to clean up by hand, files left in place) is said, not dropped.
+      for (const warning of result.warnings ?? []) notify.error(warning, 10000);
+      if ((result.notRecycledCount ?? 0) > 0) {
+        notify.error(`${result.notRecycledCount} file(s) could not be moved to the Recycle Bin and were left in place, e.g. ${result.notRecycled?.[0] ?? ""}`, 10000);
+      }
     } catch (e) {
       // A failed request used to leave `selected` pointing at rows that may or may not still
       // exist, with no feedback at all — surface it instead of silently doing nothing.

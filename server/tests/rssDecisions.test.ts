@@ -335,3 +335,64 @@ describe("POST /api/activity/rss-decisions/:id/map (SR14)", () => {
     expect(res.body.reason).toContain("still not matched");
   });
 });
+
+describe("POST /api/activity/rss-decisions/:id/map refuses names that are too generic or another title's (L5)", () => {
+  async function unmatched(releaseName: string) {
+    await insertClient();
+    const indexerId = await insertIndexer();
+    feeds({ "2000": [release(releaseName, indexerId)] });
+    await runRssSync();
+    return (await db.prepare("SELECT id FROM rss_decisions ORDER BY id DESC").get()) as { id: number };
+  }
+
+  it("refuses a release name under three letters", async () => {
+    const profileId = await insertProfile(["WEBDL-1080p"], "WEBDL-1080p");
+    const movieId = await insertMovie("Spirited Away", 2001, profileId);
+    const row = await unmatched("Za.2001.1080p.WEB-DL-GRP");
+
+    const res = await authed(request(app).post(`/api/activity/rss-decisions/${row.id}/map`).send({ mediaItemId: movieId }));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("shorter than 3 letters");
+    expect(res.body.error).toContain("Za");
+    expect((await db.prepare("SELECT COUNT(*) AS n FROM media_item_titles WHERE source = 'user'").get() as { n: number }).n).toBe(0);
+  });
+
+  it("refuses a name another title of the library has, whatever its case or punctuation", async () => {
+    const profileId = await insertProfile(["WEBDL-1080p"], "WEBDL-1080p");
+    const movieId = await insertMovie("Spirited Away", 2001, profileId);
+    await insertMovie("Sen To Chihiro", 2001, profileId);
+    const row = await unmatched("Sen.to.Chihiro.2001.1080p.WEB-DL-GRP");
+
+    const res = await authed(request(app).post(`/api/activity/rss-decisions/${row.id}/map`).send({ mediaItemId: movieId }));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Sen to Chihiro");
+    expect(res.body.error).toContain("already the name of");
+    expect((await db.prepare("SELECT COUNT(*) AS n FROM media_item_titles WHERE source = 'user'").get() as { n: number }).n).toBe(0);
+  });
+
+  it("refuses a name another title already has as an alias", async () => {
+    const profileId = await insertProfile(["WEBDL-1080p"], "WEBDL-1080p");
+    const movieId = await insertMovie("Spirited Away", 2001, profileId);
+    const otherId = await insertMovie("Something Else", 2001, profileId);
+    await db.prepare("INSERT INTO media_item_titles (media_item_id, title, clean_title, source) VALUES (?, 'Sen to Chihiro', 'sentochihiro', 'user')").run(otherId);
+    const row = await unmatched("Sen.to.Chihiro.2001.1080p.WEB-DL-GRP");
+
+    const res = await authed(request(app).post(`/api/activity/rss-decisions/${row.id}/map`).send({ mediaItemId: movieId }));
+
+    expect(res.status).toBe(409);
+  });
+
+  it("answers with the alias it added", async () => {
+    const profileId = await insertProfile(["WEBDL-1080p"], "WEBDL-1080p");
+    const movieId = await insertMovie("Spirited Away", 2001, profileId);
+    const row = await unmatched("Sen.to.Chihiro.2001.1080p.WEB-DL-GRP");
+
+    const res = await authed(request(app).post(`/api/activity/rss-decisions/${row.id}/map`).send({ mediaItemId: movieId }));
+
+    expect(res.status).toBe(200);
+    expect(res.body.aliasAdded).toBe(true);
+    expect(String(res.body.alias).toLowerCase()).toContain("sen to chihiro");
+  });
+});

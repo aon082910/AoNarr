@@ -522,7 +522,8 @@ export default function System() {
   }
 
   async function deleteUnmonitoredNoFile(id: number) {
-    await api.del(`/media/${id}`);
+    const result = await api.del<{ warnings?: string[] } | undefined>(`/media/${id}`);
+    for (const warning of result?.warnings ?? []) notify.error(warning, 10000);
     setUnmonitoredNoFile((prev) => prev?.filter((i) => i.id !== id) ?? null);
   }
 
@@ -542,9 +543,11 @@ export default function System() {
     // setUnmonitoredNoFile([]), leaving already-deleted items still listed with no error shown,
     // and re-clicking would re-attempt deletes on rows already gone server-side.
     const failures: string[] = [];
+    const warnings: string[] = [];
     for (const item of unmonitoredNoFile) {
       try {
-        await api.del(`/media/${item.id}`);
+        const result = await api.del<{ warnings?: string[] } | undefined>(`/media/${item.id}`);
+        for (const warning of result?.warnings ?? []) warnings.push(`${item.title}: ${warning}`);
         setUnmonitoredNoFile((prev) => prev?.filter((i) => i.id !== item.id) ?? null);
       } catch (e) {
         failures.push(`${item.title}: ${(e as Error).message}`);
@@ -552,6 +555,8 @@ export default function System() {
     }
     setDeletingAllUnmonitored(false);
     if (failures.length > 0) notify.error(`${failures.length} item(s) failed to delete:\n${failures.join("\n")}`);
+    // Removed, but something around the removal needs a hand (a folder the storage would not clean up).
+    if (warnings.length > 0) notify.error(`${warnings.length} warning(s) from the removal:\n${warnings.join("\n")}`, 10000);
   }
 
   async function loadDuplicateFiles() {

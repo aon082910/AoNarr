@@ -147,3 +147,27 @@ describe("a scan that met a running whole-library scan is retried", () => {
     expect(scanAndImportItems).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("a batch that fails before its scans", () => {
+  it("does not leave its titles queued: a later add of the same title scans again", async () => {
+    const id = await insertItem("movie");
+    // The proxy the services import forwards to this instance, so a spy on it reaches the batch's query.
+    const instance = await (await import("../src/db/index.js")).initDb();
+    const realPrepare = instance.prepare.bind(instance);
+    const prepare = vi.spyOn(instance, "prepare").mockImplementation(((sql: string) => {
+      if (sql.includes("FROM media_items WHERE id IN")) throw new Error("database is busy");
+      return realPrepare(sql);
+    }) as typeof instance.prepare);
+
+    queueScanAfterAdd(id);
+    await advance(3100);
+    expect(scanAndImportItems).not.toHaveBeenCalled();
+    prepare.mockRestore();
+
+    queueScanAfterAdd(id);
+    await advance(3100);
+
+    expect(scanAndImportItems).toHaveBeenCalledTimes(1);
+    expect((scanAndImportItems.mock.calls[0][1] as { id: number }[]).map((t) => t.id)).toEqual([id]);
+  });
+});

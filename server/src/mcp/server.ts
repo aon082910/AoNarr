@@ -196,8 +196,10 @@ export function createAoNarrMcpServer(): McpServer {
     },
     async ({ id, deleteFiles }) => {
       try {
-        await callApi("DELETE", `/api/media/${id}${deleteFiles ? "?deleteFiles=1" : ""}`);
-        return textResult({ deleted: true, id });
+        // A 204 has no body; with a body it carries the warnings (a folder the storage would not clean up).
+        const answer = (await callApi("DELETE", `/api/media/${id}${deleteFiles ? "?deleteFiles=1" : ""}`)) as { warnings?: string[] } | null;
+        const warnings = Array.isArray(answer?.warnings) ? answer.warnings : [];
+        return textResult({ deleted: true, id, ...(warnings.length > 0 ? { warnings } : {}) });
       } catch (err) {
         return errorResult(err);
       }
