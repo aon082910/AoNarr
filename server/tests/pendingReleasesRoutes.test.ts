@@ -137,3 +137,123 @@ describe("POST /api/activity/pending/:id/grab and DELETE (SR5)", () => {
     await authed(request(app).delete("/api/activity/pending/99999")).expect(404);
   });
 });
+
+describe("GET /api/activity/pending does not ask the database more per held release (round 30c)", () => {
+  async function countQueries(fn: () => Promise<void>): Promise<number> {
+    const { initDb } = await import("../src/db/index.js");
+    const instance = await initDb();
+    const spy = vi.spyOn(instance, "prepare");
+    try {
+      await fn();
+      return spy.mock.calls.length;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  async function holdEpisodes(count: number): Promise<void> {
+    await db.prepare("INSERT INTO delay_profiles (tag_id, usenet_delay_minutes, torrent_delay_minutes) VALUES (NULL, 120, 240)").run();
+    const tagId = Number((await db.prepare("INSERT INTO tags (name) VALUES (?)").run(`held-tag-${count}-${Date.now()}`)).lastInsertRowid);
+    const shows: number[] = [];
+    for (let s = 0; s < Math.min(count, 6); s++) {
+      const show = Number((await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('series', ?, ?, 1, 0, 'missing')").run(`Show ${s}`, `show ${s}`)).lastInsertRowid);
+      await db.prepare("INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)").run(show, tagId);
+      shows.push(show);
+    }
+    for (let i = 0; i < count; i++) {
+      const show = shows[i % shows.length];
+      const ep = Number((await db.prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored, has_file) VALUES (?, 1, ?, 'Held', '2020-01-08', 1, 0)").run(show, i + 1)).lastInsertRowid);
+      await recordPending("episodes", ep, show, release({ title: `Show.S01E${String(i + 1).padStart(2, "0")}.1080p.WEB-DL-GRP`, downloadUrl: `http://indexer.invalid/dl/${i}` }));
+    }
+  }
+
+  it("asks the same number of questions for 1 held release as for 30", async () => {
+    await db.prepare("DELETE FROM media_item_tags").run();
+    await holdEpisodes(1);
+    const one = await countQueries(async () => {
+      const res = await authed(request(app).get("/api/activity/pending"));
+      expect(res.body.total).toBe(1);
+    });
+
+    for (const t of ["pending_releases", "episodes", "media_items", "delay_profiles"]) await db.prepare(`DELETE FROM ${t}`).run();
+    await db.prepare("DELETE FROM media_item_tags").run();
+    await holdEpisodes(30);
+    const thirty = await countQueries(async () => {
+      const res = await authed(request(app).get("/api/activity/pending"));
+      expect(res.body.total).toBe(30);
+      expect(res.body.items.every((i: any) => i.target && i.mediaTitle && i.delayMinutes === 120)).toBe(true);
+    });
+
+    expect(thirty).toBe(one);
+  });
+});
+
+describe("Forget on a held release sticks (round 30c)", () => {
+  const forgottenCount = async () => Number(((await db.prepare("SELECT COUNT(*) AS c FROM forgotten_releases").get()) as { c: number }).c);
+  const pendingCount = async () => Number(((await db.prepare("SELECT COUNT(*) AS c FROM pending_releases").get()) as { c: number }).c);
+
+  beforeEach(async () => {
+    await db.prepare("DELETE FROM forgotten_releases").run();
+  });
+
+  it("is not held again by the next search while the delay would still have been running", async () => {
+    const { show, ep } = await setup();
+    await db.prepare("INSERT INTO delay_profiles (tag_id, usenet_delay_minutes) VALUES (NULL, 120)").run();
+    await recordPending("episodes", ep, show, release());
+    const id = Number(((await db.prepare("SELECT id FROM pending_releases").get()) as { id: number }).id);
+
+    await authed(request(app).delete(`/api/activity/pending/${id}`)).expect(204);
+    expect(await pendingCount()).toBe(0);
+
+    // The next search finds the same release and the delay profile holds it again.
+    await recordPending("episodes", ep, show, release());
+    expect(await pendingCount()).toBe(0);
+    // Another release of the same episode is still held.
+    await recordPending("episodes", ep, show, release({ downloadUrl: "http://indexer.invalid/dl?other=1" }));
+    expect(await pendingCount()).toBe(1);
+  });
+
+  it("keeps a hash of the link, never the link, for the delay window plus a day", async () => {
+    const { show, ep } = await setup();
+    await db.prepare("INSERT INTO delay_profiles (tag_id, usenet_delay_minutes) VALUES (NULL, 120)").run();
+    await recordPending("episodes", ep, show, release());
+    const id = Number(((await db.prepare("SELECT id FROM pending_releases").get()) as { id: number }).id);
+
+    await authed(request(app).delete(`/api/activity/pending/${id}`)).expect(204);
+
+    const row = (await db.prepare("SELECT * FROM forgotten_releases").get()) as any;
+    expect(JSON.stringify(row)).not.toContain("SECRETKEY");
+    expect(Number(row.media_item_id)).toBe(show);
+    const expires = Date.parse(`${String(row.expires_at).replace(" ", "T")}Z`);
+    const expected = Date.now() + 120 * 60_000 + 86_400_000;
+    expect(Math.abs(expires - expected)).toBeLessThan(2 * 60_000);
+  });
+
+  it("holds the release again once the time has passed, and the pending job prunes the old note", async () => {
+    const { show, ep } = await setup();
+    await db.prepare("INSERT INTO delay_profiles (tag_id, usenet_delay_minutes) VALUES (NULL, 120)").run();
+    await recordPending("episodes", ep, show, release());
+    const id = Number(((await db.prepare("SELECT id FROM pending_releases").get()) as { id: number }).id);
+    await authed(request(app).delete(`/api/activity/pending/${id}`)).expect(204);
+    await db.prepare("UPDATE forgotten_releases SET expires_at = '2000-01-01 00:00:00'").run();
+
+    await recordPending("episodes", ep, show, release());
+    expect(await pendingCount()).toBe(1);
+
+    const { runPendingReleases } = await import("../src/services/pendingReleases.js");
+    await runPendingReleases();
+    expect(await forgottenCount()).toBe(0);
+  });
+
+  it("is dropped with its title", async () => {
+    const { show, ep } = await setup();
+    await recordPending("episodes", ep, show, release());
+    const id = Number(((await db.prepare("SELECT id FROM pending_releases").get()) as { id: number }).id);
+    await authed(request(app).delete(`/api/activity/pending/${id}`)).expect(204);
+    expect(await forgottenCount()).toBe(1);
+
+    await db.prepare("DELETE FROM media_items WHERE id = ?").run(show);
+
+    expect(await forgottenCount()).toBe(0);
+  });
+});
