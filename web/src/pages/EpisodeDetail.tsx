@@ -7,6 +7,7 @@ import { useAuth } from "../context/AuthContext.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import type { MediaInfo, SearchResult } from "../types.js";
 import { formatMediaInfo } from "../utils/format.js";
+import { formatIsoDate } from "../utils/dateFormat.js";
 import { SearchIcon, InboxIcon, AlertTriangleIcon, DownloadIcon, CpuIcon, CalendarIcon, LayersIcon, HardDriveIcon } from "../components/NavIcons.js";
 import { ArrowLeftIcon, ArrowUpIcon, FolderIcon, TrashIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
@@ -350,7 +351,7 @@ export default function EpisodeDetail() {
         </span>
         <span className="pill">
           <CalendarIcon />
-          {episode.airDate ?? "Unknown air date"}
+          {episode.airDate ? formatIsoDate(episode.airDate) : "Unknown air date"}
         </span>
         <span className={`badge ${episode.hasFile ? "ok" : ""}`}>{episode.hasFile ? "Downloaded" : "Missing"}</span>
         {episode.quality && (

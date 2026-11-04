@@ -41,7 +41,8 @@ import { TrashIcon, PencilIcon, FolderIcon, EyeIcon, ArrowLeftIcon, ArrowUpIcon,
 import { ProviderIcon } from "../components/ProviderIcons.js";
 import { PageToolbar, ToolbarButton, ToolbarSeparator } from "../components/PageToolbar.js";
 import type { Collection, HistoryEvent, MediaInfo, MediaItem, QualityProfile, RootFolder, SearchDetail, SearchResult, Tag } from "../types.js";
-import { formatBytes, formatCalendarDate, formatMediaInfo, formatServerTimestamp, parseServerTimestamp } from "../utils/format.js";
+import { formatBytes, formatMediaInfo } from "../utils/format.js";
+import { formatCalendarDate, formatDate, formatDateTime, formatIsoDate } from "../utils/dateFormat.js";
 import { displayableImageUrl } from "../utils/artwork.js";
 import { useContentRatings } from "../hooks/useContentRatings.js";
 import { notify } from "../utils/notify.js";
@@ -1961,7 +1962,7 @@ export default function MediaDetail() {
             )}
             {isAdmin && (
               <span className="pill" title="Added">
-                <CalendarIcon /> Added {parseServerTimestamp(item.addedAt).toLocaleDateString()}
+                <CalendarIcon /> Added {formatDate(item.addedAt)}
               </span>
             )}
             {isAdmin && qualityProfile && (
@@ -2060,7 +2061,7 @@ export default function MediaDetail() {
                   </td>
                   <td>{item.mediaInfo ? summarizeAudio(item.mediaInfo) : "-"}</td>
                   <td>{item.mediaInfo ? summarizeSubtitles(item.mediaInfo) : "-"}</td>
-                  <td>{item.addedAt ? parseServerTimestamp(item.addedAt).toLocaleDateString() : "-"}</td>
+                  <td>{item.addedAt ? formatDate(item.addedAt) : "-"}</td>
                 </tr>
               ) : (
                 <tr>
@@ -2354,7 +2355,7 @@ export default function MediaDetail() {
                         <span className={`badge ${h.eventType === "failed" ? "danger" : h.eventType === "imported" ? "ok" : ""}`}>{label}</span>
                       </td>
                       <td>{detail ?? "—"}</td>
-                      <td>{formatServerTimestamp(h.createdAt)}</td>
+                      <td>{formatDateTime(h.createdAt)}</td>
                     </tr>
                   );
                 })}
@@ -3300,7 +3301,7 @@ export default function MediaDetail() {
                             <td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={ep.title ?? undefined}>
                               {ep.title ?? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>Episode {ep.episodeNumber}</span>}
                             </td>
-                            <td>{ep.airDate ?? "-"}</td>
+                            <td>{ep.airDate ? formatIsoDate(ep.airDate) : "-"}</td>
                             <td>
                               <MonitorToggle monitored={!!ep.monitored} onToggle={() => toggleEpisodeMonitored(ep)} readOnly={!isAdmin} />
                             </td>
@@ -3410,7 +3411,7 @@ export default function MediaDetail() {
                     </div>
                   </td>
                   <td>{si.title}</td>
-                  <td>{si.releaseDate ?? "-"}</td>
+                  <td>{si.releaseDate ? formatIsoDate(si.releaseDate) : "-"}</td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <MonitorToggle monitored={!!si.monitored} onToggle={() => toggleSubItemMonitored(si)} readOnly={!isAdmin} />
                   </td>

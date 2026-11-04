@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, ApiError, clearCredentials } from "../api/client.js";
 import type { AuthMe } from "../types.js";
+import { setDisplayPreferences, type DisplayPreferences } from "../utils/dateFormat.js";
 
 interface AuthContextValue {
   auth: AuthMe;
@@ -9,6 +10,16 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+/** Reads the date and time display preferences once for the whole app (every date goes through utils/dateFormat.ts).
+ * A server that has none leaves the browser's own formatting, as before they existed. */
+export async function loadDisplayPreferences(): Promise<void> {
+  try {
+    setDisplayPreferences(await api.get<DisplayPreferences>("/display-preferences"));
+  } catch {
+    // the browser's own formatting stays
+  }
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [auth, setAuth] = useState<AuthMe | null>(null);
@@ -30,7 +41,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const tryLoad = () => {
       api.get<AuthMe>("/auth/me").then(
-        (me) => {
+        async (me) => {
+          if (cancelled) return;
+          // Before the first page renders, so no date is drawn once in the browser's format and again in the chosen one.
+          await loadDisplayPreferences();
           if (cancelled) return;
           setAuth(me);
           setLoadError(null);

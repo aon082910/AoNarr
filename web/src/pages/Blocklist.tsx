@@ -8,7 +8,7 @@ import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 import Pagination, { DEFAULT_PAGE_SIZE_OPTIONS } from "../components/Pagination.js";
-import { formatServerTimestamp } from "../utils/format.js";
+import { formatDateTime } from "../utils/dateFormat.js";
 
 interface BlocklistResponse {
   items: BlocklistEntry[];
@@ -136,7 +136,7 @@ export default function Blocklist() {
                   </td>
                   <td style={{ wordBreak: "break-all" }}>{e.releaseTitle}</td>
                   <td>{e.reason ?? "—"}</td>
-                  <td>{formatServerTimestamp(e.createdAt)}</td>
+                  <td>{formatDateTime(e.createdAt)}</td>
                   <td>
                     <button type="button" className="icon-button" onClick={() => remove(e.id)} title="Remove" aria-label="Remove">
                       <TrashIcon />

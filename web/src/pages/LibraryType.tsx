@@ -5,7 +5,8 @@ import { useAuth } from "../context/AuthContext.js";
 import { useBackgroundJobs } from "../context/BackgroundJobsContext.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import type { CustomColumn, LibraryGroup, MediaItem, QualityProfile, RootFolder, SavedLibraryView, Tag } from "../types.js";
-import { formatBytes, formatCalendarDate, formatDuration, parseServerTimestamp } from "../utils/format.js";
+import { formatBytes, formatDuration } from "../utils/format.js";
+import { formatCalendarDate, formatDate } from "../utils/dateFormat.js";
 import DropdownMenu from "../components/DropdownMenu.js";
 import Modal from "../components/Modal.js";
 import MonitorToggle from "../components/MonitorToggle.js";
@@ -177,7 +178,7 @@ function fieldValue(item: MediaItem, field: ExtraField, customColumns: CustomCol
   if (field === "year") return item.year ? String(item.year) : "";
   if (field === "quality") return item.quality ?? "";
   if (field === "contentRating") return item.contentRating ?? "";
-  if (field === "added") return parseServerTimestamp(item.addedAt).toLocaleDateString();
+  if (field === "added") return formatDate(item.addedAt);
   if (field === "releaseDate") return formatCalendarDate(item.releaseDate);
   if (field === "path") return item.path ?? "";
   if (field === "sizeOnDisk") return typeof item.sizeBytes === "number" ? formatBytes(item.sizeBytes) : "";

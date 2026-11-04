@@ -24,7 +24,9 @@ import type {
   StarrQualityProfilePreview,
   Tag,
 } from "../types.js";
-import { formatBytes, formatServerTimestamp } from "../utils/format.js";
+import { formatBytes } from "../utils/format.js";
+import { formatDateTime, supportedTimeZones, UI_DATE_FORMATS } from "../utils/dateFormat.js";
+import { loadDisplayPreferences } from "../context/AuthContext.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { TrashIcon, FolderIcon, ArrowUpIcon, ArrowDownIcon } from "../components/ActionIcons.js";
 import { notify } from "../utils/notify.js";
@@ -61,7 +63,7 @@ function BlocklistTable({ entries, onRemove }: { entries: BlocklistEntry[]; onRe
           <tr key={b.id}>
             <td>{b.mediaTitle}</td>
             <td>{b.releaseTitle}</td>
-            <td>{formatServerTimestamp(b.createdAt)}</td>
+            <td>{formatDateTime(b.createdAt)}</td>
             <td>
               <button type="button" className="icon-button danger" onClick={() => onRemove(b.id)} title="Remove" aria-label="Remove">
                 <TrashIcon />
@@ -268,7 +270,7 @@ function TrashSyncResultSummary({ label, result }: { label: string; result: Tras
   return (
     <div style={{ fontSize: "0.85rem", marginTop: 8 }}>
       <div>
-        <strong>{label}</strong> — last synced {formatServerTimestamp(result.finishedAt)}
+        <strong>{label}</strong> — last synced {formatDateTime(result.finishedAt)}
       </div>
       {(!result.error || counted > 0) && (
         <div style={{ color: "var(--muted)" }}>
@@ -1676,6 +1678,13 @@ export default function Settings() {
     }
   }
 
+  /** A date or time preference: saved like any setting, then applied to this session so the dates on screen change at once. */
+  async function saveDisplaySetting(key: string, value: string) {
+    await saveSetting(key, value);
+    await loadDisplayPreferences();
+    setSettings((prev) => ({ ...prev }));
+  }
+
   /** The server treats an unset time/chmod field as "feature off", so turning a feature on also
    * persists the values shown next to it that were never saved (they only save on blur). It reads
    * what each input holds right now, because a value typed just before toggling may still be in
@@ -1925,6 +1934,69 @@ export default function Settings() {
           placeholder="https://aonarr.example.com"
           onBlur={(e) => saveSetting("externalUrl", e.target.value.replace(/\/+$/, ""))}
         />
+      </div>
+
+      <h2>Dates and times</h2>
+      <div className="form-panel">
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          How every page writes dates and times, for everyone who uses this instance. A field left on its default keeps
+          your browser's own formatting. Someone with AoNarr already open sees a change after reloading the page.
+        </p>
+        <label htmlFor="settings-ui-week-start">First day of the week</label>
+        <select id="settings-ui-week-start" value={settings.uiWeekStart ?? ""} onChange={(e) => saveDisplaySetting("uiWeekStart", e.target.value)}>
+          <option value="">Sunday (default)</option>
+          <option value="monday">Monday</option>
+          <option value="saturday">Saturday</option>
+        </select>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+          The first column of the Calendar's month grid, and the range of days the Calendar asks for. The calendar feed
+          you subscribe to from another app (.ics) is not affected.
+        </p>
+
+        <label htmlFor="settings-ui-date-format">Date format</label>
+        <select id="settings-ui-date-format" value={settings.uiDateFormat ?? ""} onChange={(e) => saveDisplaySetting("uiDateFormat", e.target.value)}>
+          <option value="">Browser default</option>
+          {UI_DATE_FORMATS.map((format) => (
+            <option key={format} value={format}>
+              {format}
+            </option>
+          ))}
+        </select>
+
+        <label htmlFor="settings-ui-time-format">Time format</label>
+        <select id="settings-ui-time-format" value={settings.uiTimeFormat ?? ""} onChange={(e) => saveDisplaySetting("uiTimeFormat", e.target.value)}>
+          <option value="">Browser default</option>
+          <option value="12h">12-hour clock (3:05 PM)</option>
+          <option value="24h">24-hour clock (15:05)</option>
+        </select>
+
+        <label htmlFor="settings-ui-time-zone">Time zone</label>
+        {supportedTimeZones().length > 0 ? (
+          <select id="settings-ui-time-zone" value={settings.uiTimeZone ?? ""} onChange={(e) => saveDisplaySetting("uiTimeZone", e.target.value)}>
+            <option value="">Browser time zone</option>
+            {/* a zone saved from another browser stays visible even when this one lacks it */}
+            {[...new Set([...(settings.uiTimeZone ? [settings.uiTimeZone] : []), ...supportedTimeZones()])].map((zone) => (
+              <option key={zone} value={zone}>
+                {zone}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input id="settings-ui-time-zone" key={settings.uiTimeZone ?? "ui-time-zone-empty"} defaultValue={settings.uiTimeZone ?? ""} placeholder="Europe/Berlin" onBlur={(e) => saveDisplaySetting("uiTimeZone", e.target.value.trim())} />
+        )}
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+          The time zone times are shown in (an IANA name such as Europe/Berlin). A date with no time, such as a release
+          date or an air date, is the same day everywhere and is never moved by it.
+        </p>
+
+        <label htmlFor="settings-ui-relative-dates">Relative dates</label>
+        <select id="settings-ui-relative-dates" value={settings.uiRelativeDates === "1" ? "1" : "0"} onChange={(e) => saveDisplaySetting("uiRelativeDates", e.target.value)}>
+          <option value="0">Off (default)</option>
+          <option value="1">On</option>
+        </select>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
+          Shows Today, Yesterday or Tomorrow in place of the date when it is that close.
+        </p>
       </div>
 
       <h2>Custom Theme</h2>
@@ -2239,6 +2311,26 @@ export default function Settings() {
         open-source audiobook tools already rely on.
       </p>
       <SettingsProviderTiles providers={METADATA_PROVIDERS} settings={settings} saveSetting={saveSetting} />
+      <div className="form-panel" style={{ marginTop: 16 }}>
+        <h3 style={{ marginTop: 0, marginBottom: 4 }}>Metadata language</h3>
+        <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
+          The language descriptions are fetched in: overviews, episode overviews, posters and trailers, from TMDB,
+          TheTVDB, Trakt, MangaDex, ScreenScraper and fanart.tv. Whatever a provider has no translation for stays in
+          English. Titles, episode titles and alternate titles are never translated, because matching releases,
+          finding duplicates and naming files depend on them. Use a language code with an optional region, such as{" "}
+          <code>en</code>, <code>de</code>, <code>fr</code>, <code>pt-BR</code> or <code>zh-CN</code>; blank is English.
+          Changing it does not re-fetch your library: run Refresh on a title, or on the whole library, to pull its
+          descriptions again in the new language.
+        </p>
+        <label htmlFor="settings-metadata-language">Metadata language</label>
+        <input id="settings-metadata-language"
+          key={settings.metadataLanguage ?? "metadata-language-empty"}
+          defaultValue={settings.metadataLanguage ?? ""}
+          placeholder="en"
+          style={{ maxWidth: 160 }}
+          onBlur={(e) => saveSetting("metadataLanguage", e.target.value.trim())}
+        />
+      </div>
       <div className="form-panel" style={{ marginTop: 16 }}>
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
           Courses has no metadata search provider — public course catalogs (Udemy, Coursera, etc.)
