@@ -870,6 +870,12 @@ export interface SkippedFile {
   reason: string;
 }
 
+/** One title a scan is limited to. */
+export interface ScanScopeItem {
+  id?: number;
+  title: string;
+}
+
 export interface ScanImportResult {
   matched: number;
   created: number;
@@ -934,7 +940,8 @@ export async function scanAndImportLibrary(
   onlyTitle?: string,
   onlySeasonNumber?: number,
   onlyMediaItemId?: number,
-  linkOnly = false
+  linkOnly = false,
+  scope?: ScanScopeItem[]
 ): Promise<ScanImportResult> {
   // A per-item scan while a whole-library scan is running or queued is left to that scan, which
   // walks this item's files too. Per-item scans only queue behind each other: they're short.
@@ -942,21 +949,22 @@ export async function scanAndImportLibrary(
     log.warn(`[libraryScan] a scan for "${type}" is already running — skipping this overlapping request`);
     return { matched: 0, created: 0, skipped: 0, skippedFiles: [], alreadyRunning: true };
   }
-  if (!onlyTitle) scansInProgress.add(type);
+  const scoped = !!onlyTitle || !!scope?.length;
+  if (!scoped) scansInProgress.add(type);
   // Only a whole-library scan (not a per-item one) gets a tracked progress entry — a per-item scan
   // is fast and isn't what the client's progress widget is for. scanAndImportLibraryInner's own
   // updateBackgroundJob/incrementBackgroundJobDone calls below are always made unconditionally and
   // just no-op when there's no tracked job to update (see backgroundJobs.ts), so nothing here needs
   // to thread a "is this job tracked" flag down into it.
-  const jobId = !onlyTitle ? startBackgroundJob("scan", type, `Scan & Import — ${getMediaTypeConfig(type).label}`) : null;
+  const jobId = !scoped ? startBackgroundJob("scan", type, `Scan & Import — ${getMediaTypeConfig(type).label}`) : null;
   let errorMessage: string | undefined;
   try {
-    return await runScanExclusively(type, () => scanAndImportLibraryInner(type, signal, onlyTitle, onlySeasonNumber, onlyMediaItemId, linkOnly));
+    return await runScanExclusively(type, () => scanAndImportLibraryInner(type, signal, onlyTitle, onlySeasonNumber, onlyMediaItemId, linkOnly, scope));
   } catch (err) {
     errorMessage = (err as Error).message;
     throw err;
   } finally {
-    if (!onlyTitle) scansInProgress.delete(type);
+    if (!scoped) scansInProgress.delete(type);
     if (jobId) finishBackgroundJob(jobId, errorMessage);
   }
 }
@@ -967,10 +975,15 @@ async function scanAndImportLibraryInner(
   onlyTitle?: string,
   onlySeasonNumber?: number,
   onlyMediaItemId?: number,
-  linkOnly = false
+  linkOnly = false,
+  scope?: ScanScopeItem[]
 ): Promise<ScanImportResult> {
   const typeConfig = getMediaTypeConfig(type);
   const result: ScanImportResult = { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
+  // Which titles this scan is for: one (the per-item button), several (the scan after a batch of adds shares one walk), or all.
+  const scopeTargets: ScanScopeItem[] | null = scope?.length ? scope : onlyTitle ? [{ id: onlyMediaItemId, title: onlyTitle }] : null;
+  const inScope = (title: string): boolean => !scopeTargets || scopeTargets.some((t) => looseTitlesMatch(title, t.title));
+  const scopeIdOf = (title: string): number | undefined => (scopeTargets ? scopeTargets.find((t) => looseTitlesMatch(title, t.title))?.id : onlyMediaItemId);
 
   const folders = ((await db.prepare("SELECT * FROM root_folders WHERE media_type = ?").all(type)) as any[]).map(rootFolderFromRow);
   if (folders.length === 0) return result;
@@ -1139,7 +1152,7 @@ async function scanAndImportLibraryInner(
           result.skippedFiles.push({ path: filePath, reason: "couldn't guess a series title from the filename or folder" });
           continue;
         }
-        if (onlyTitle && !looseTitlesMatch(guessedTitle, onlyTitle)) continue;
+        if (!inScope(guessedTitle)) continue;
         if (onlySeasonNumber != null && season !== onlySeasonNumber) continue;
         const parsed = parseReleaseTitle(base, FILE_NAME);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
@@ -1158,8 +1171,9 @@ async function scanAndImportLibraryInner(
         // to the known target, so attach it there rather than creating a "The Office" twin next to
         // "The Office (US)" because the strict match missed, or skipping it as ambiguous between
         // two shows that share the title.
-        if (!seriesMatch && onlyMediaItemId) {
-          seriesMatch = seriesItems.find((m) => m.id === onlyMediaItemId && (!found || !("ambiguous" in found) || found.ambiguous.includes(m)));
+        const scopedId = scopeIdOf(guessedTitle);
+        if (!seriesMatch && scopedId) {
+          seriesMatch = seriesItems.find((m) => m.id === scopedId && (!found || !("ambiguous" in found) || found.ambiguous.includes(m)));
         }
         if (!seriesMatch && found && "ambiguous" in found) {
           result.skipped++;
@@ -1431,7 +1445,7 @@ async function scanAndImportLibraryInner(
           });
           continue;
         }
-        if (onlyTitle && !looseTitlesMatch(parentTitle, onlyTitle)) continue;
+        if (!inScope(parentTitle)) continue;
 
         const folderId = Number(folder.id);
         const isPlaceholderRow = (m: any) => isPlaceholderParent({ type, title: m.title, external_ids: m.external_ids });
@@ -1443,8 +1457,9 @@ async function scanAndImportLibraryInner(
           (identity?.parentId != null ? collectionParents.find((m) => Number(m.id) === identity!.parentId) : undefined) ??
           (wantsPlaceholder ? placeholderParentIn(folderId) : undefined) ??
           (identity?.placeholder ? undefined : collectionParents.find((m) => titlesMatch(m.title, parentTitle) && !isPlaceholderRow(m)));
-        if (!parentMatch && onlyMediaItemId && !wantsPlaceholder) {
-          const target = collectionParents.find((m) => Number(m.id) === onlyMediaItemId);
+        const scopedId = scopeIdOf(parentTitle);
+        if (!parentMatch && scopedId && !wantsPlaceholder) {
+          const target = collectionParents.find((m) => Number(m.id) === scopedId);
           // A parent read from the file's own metadata or name ("Stephen King - It.epub") only falls
           // back to the target when it names the target: the loose title gate lets "Stephen King"
           // through for an author "King", who is someone else.
@@ -1454,7 +1469,7 @@ async function scanAndImportLibraryInner(
         // A per-item scan never files anything outside its own item. The loose title gate above lets
         // an unidentified file through for any item with "Unknown" in its title, but that file only
         // belongs to a scan of its own root's placeholder bucket.
-        if (onlyMediaItemId && wantsPlaceholder && Number(parentMatch?.id) !== onlyMediaItemId) continue;
+        if (scopedId && wantsPlaceholder && Number(parentMatch?.id) !== scopedId) continue;
         if (!parentMatch) {
           if (linkOnly) continue;
           // The "Unknown Author"/"Unknown Series" bucket is never auto-searched: there's no real
@@ -1642,7 +1657,7 @@ async function scanAndImportLibraryInner(
           result.skippedFiles.push({ path: filePath, reason: `couldn't guess a title from the filename "${base}"` });
           continue;
         }
-        if (onlyTitle && !looseTitlesMatch(guessedTitle, onlyTitle)) continue;
+        if (!inScope(guessedTitle)) continue;
         const parsed = parseReleaseTitle(base, FILE_NAME);
         const quality = parsed.quality === "Unknown" ? null : parsed.quality;
         // The year the file gives its own title (before the quality words or in brackets), not one
@@ -1652,7 +1667,8 @@ async function scanAndImportLibraryInner(
         // The per-item fallback to the target only when the years don't contradict it either — a
         // per-item scan on "It" (1990) must not claim "It.2017.mkv" just because the loose title
         // gate let it through.
-        const target = onlyMediaItemId ? singleShapeItems.find((m) => m.id === onlyMediaItemId) : undefined;
+        const scopedId = scopeIdOf(guessedTitle);
+        const target = scopedId ? singleShapeItems.find((m) => m.id === scopedId) : undefined;
         const found = matchExistingItem(singleShapeItems, guessedTitle, year, false);
         if (found && "ambiguous" in found && !(target && found.ambiguous.includes(target))) {
           result.skipped++;
@@ -2420,6 +2436,15 @@ export async function scanAndImportOneMediaItem(mediaItemId: number, signal?: Ab
   const item = (await db.prepare("SELECT type, title FROM media_items WHERE id = ?").get(mediaItemId)) as { type: string; title: string } | undefined;
   if (!item) return { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
   return scanAndImportLibrary(item.type, signal, item.title, seasonNumber, mediaItemId, linkOnly);
+}
+
+/**
+ * Scan & Import for several titles of one type at once, linking files already on disk to them (never creating another
+ * title): one walk of the root folders for all of them, where a scan per title walked the whole root each time.
+ */
+export async function scanAndImportItems(type: string, items: { id: number; title: string }[], linkOnly = true): Promise<ScanImportResult> {
+  if (items.length === 0) return { matched: 0, created: 0, skipped: 0, skippedFiles: [] };
+  return scanAndImportLibrary(type, undefined, undefined, undefined, undefined, linkOnly, items);
 }
 
 /** Inserts any episode/child a metadata provider lists that isn't already tracked for this item —
