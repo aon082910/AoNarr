@@ -16,6 +16,10 @@ COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 ENV AONARR_SERVER_HOST=aonarr-server
 ENV AONARR_SERVER_PORT=8989
+# Optional URL_BASE (a sub-path such as /aonarr) is applied at every start by this script, which the image's
+# entrypoint runs right after it has rendered the template above; nothing changes when URL_BASE is unset.
+COPY url-base.sh /docker-entrypoint.d/35-aonarr-url-base.sh
+RUN chmod +x /docker-entrypoint.d/35-aonarr-url-base.sh
 EXPOSE 9876
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -q -O /dev/null http://127.0.0.1:9876/ || exit 1
+  CMD wget -q -O /dev/null "http://127.0.0.1:9876$(cat /var/lib/aonarr-url-base/base 2>/dev/null)/" || exit 1

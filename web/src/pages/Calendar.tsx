@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client.js";
+import { absoluteUrl } from "../utils/urlBase.js";
 import { describeCalendarEntry } from "../utils/calendarDescriptions.js";
 import { PlusCircleIcon, ShareIcon, CalendarIcon } from "../components/NavIcons.js";
 import { TrashIcon, ChevronLeftIcon, ChevronRightIcon, ArrowRightIcon } from "../components/ActionIcons.js";
@@ -102,7 +103,7 @@ export default function Calendar() {
 
   async function showSubscribeUrl() {
     const result = await api.get<{ token: string }>("/settings/calendar-token");
-    setIcsUrl(`${window.location.origin}/api/calendar.ics?token=${result.token}`);
+    setIcsUrl(absoluteUrl(`/api/calendar.ics?token=${result.token}`));
   }
 
   async function regenerateIcsToken() {
@@ -115,7 +116,7 @@ export default function Calendar() {
     )
       return;
     const result = await api.post<{ token: string }>("/settings/calendar-token/regenerate", {});
-    setIcsUrl(`${window.location.origin}/api/calendar.ics?token=${result.token}`);
+    setIcsUrl(absoluteUrl(`/api/calendar.ics?token=${result.token}`));
   }
 
   async function addCustomEvent(e: React.FormEvent) {

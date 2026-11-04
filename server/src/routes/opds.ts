@@ -6,6 +6,7 @@ import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getSetting, setSetting } from "../services/settingsStore.js";
 import { streamFileWithRangeSupport, CONTENT_TYPES } from "../services/rangeStream.js";
 import { getMediaTypeConfig } from "../services/mediaTypes.js";
+import { appUrl, artworkUrlForClient } from "../services/urlBase.js";
 
 /**
  * OPDS (Open Publication Distribution System) catalog — lets an e-reader app that already speaks
@@ -127,7 +128,8 @@ function sendFeed(res: any, xml: string): void {
  * so links built from them point at port 80 over plain http. Prefer the admin's External URL;
  * otherwise emit root-relative links, which the reader resolves against the URL it actually used. */
 function origin(): string {
-  return (getSetting("externalUrl") ?? "").replace(/\/+$/, "");
+  // With a URL base (URL_BASE) the feed's links carry it too: appUrl() puts it after the External URL, or alone.
+  return appUrl((getSetting("externalUrl") ?? "").replace(/\/+$/, ""), "");
 }
 
 /** Root — one navigation entry per book/comic/audiobook/manga type. */
@@ -231,7 +233,7 @@ opdsPublicRouter.get(
           author: parent.title,
           downloadHref: `${base}/api/opds/download/subitem/${sub.id}?token=${token}`,
           mimeType: mimeTypeFor(ext),
-          posterUrl: sub.poster_url,
+          posterUrl: sub.poster_url ? artworkUrlForClient(sub.poster_url) : sub.poster_url,
         })}`;
       }
     }

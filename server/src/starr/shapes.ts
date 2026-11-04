@@ -1,6 +1,7 @@
 import type { Request } from "express";
 import { db } from "../db/index.js";
 import { HttpError } from "../middleware/errorHandler.js";
+import { artworkUrlForClient } from "../services/urlBase.js";
 
 /** Parts of a Starr resource that more than one route builds. */
 
@@ -96,8 +97,9 @@ export function numericId(value: string | undefined, label = "id"): number {
 
 export function images(posterUrl: string | null | undefined, backdropUrl?: string | null): { coverType: string; url: string; remoteUrl: string }[] {
   const out: { coverType: string; url: string; remoteUrl: string }[] = [];
-  if (posterUrl) out.push({ coverType: "poster", url: posterUrl, remoteUrl: posterUrl });
-  if (backdropUrl) out.push({ coverType: "fanart", url: backdropUrl, remoteUrl: backdropUrl });
+  // AoNarr's own proxied artwork is a root-relative path; under a URL base (URL_BASE) it carries the prefix.
+  if (posterUrl) out.push({ coverType: "poster", url: artworkUrlForClient(posterUrl), remoteUrl: artworkUrlForClient(posterUrl) });
+  if (backdropUrl) out.push({ coverType: "fanart", url: artworkUrlForClient(backdropUrl), remoteUrl: artworkUrlForClient(backdropUrl) });
   return out;
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { hasCredentials, setApiKey, setSessionToken, UI_REQUEST_HEADERS } from "../api/client.js";
+import { withBase } from "../utils/urlBase.js";
 import { AuthProvider } from "../context/AuthContext.js";
 import { MediaAnalysisProvider } from "../context/MediaAnalysisContext.js";
 import { BackgroundJobsProvider } from "../context/BackgroundJobsContext.js";
@@ -10,7 +11,7 @@ type Mode = "admin" | "user" | "apikey";
  * session (clear credentials + full page reload) — that would wipe this form and never show the
  * server's error, so they go through a plain fetch instead. */
 async function postLogin<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(withBase(`/api${path}`), {
     method: "POST",
     headers: { ...UI_REQUEST_HEADERS, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -37,7 +38,7 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (hasCreds) return;
-    fetch("/api/auth/setup-status")
+    fetch(withBase("/api/auth/setup-status"))
       .then((res) => res.json())
       .then((body) => setNeedsSetup(!!body.needsSetup))
       .catch(() => setNeedsSetup(false));
@@ -57,7 +58,7 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
     setChecking(true);
     setError(null);
     try {
-      const res = await fetch("/api/auth/setup", {
+      const res = await fetch(withBase("/api/auth/setup"), {
         method: "POST",
         headers: { ...UI_REQUEST_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim(), password }),
@@ -80,7 +81,7 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
     setChecking(true);
     setError(null);
     try {
-      const res = await fetch("/api/settings", { headers: { ...UI_REQUEST_HEADERS, "X-Api-Key": trimmed } });
+      const res = await fetch(withBase("/api/settings"), { headers: { ...UI_REQUEST_HEADERS, "X-Api-Key": trimmed } });
       if (res.status === 429) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? "Too many failed attempts. Try again later.");
@@ -106,7 +107,7 @@ export default function ApiKeyGate({ children }: { children: ReactNode }) {
     setChecking(true);
     setError(null);
     try {
-      const res = await fetch("/api/settings/totp/check-login", {
+      const res = await fetch(withBase("/api/settings/totp/check-login"), {
         method: "POST",
         headers: { ...UI_REQUEST_HEADERS, "X-Api-Key": pendingTotpKey, "Content-Type": "application/json" },
         body: JSON.stringify({ code: totpCode }),

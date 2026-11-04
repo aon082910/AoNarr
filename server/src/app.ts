@@ -72,6 +72,7 @@ import { mediaServerImportRouter } from "./routes/mediaServerImport.js";
 import { starrImportRouter } from "./routes/starrImport.js";
 import { mountStarrApps } from "./starr/router.js";
 import { openApiSpec } from "./openapi.js";
+import { appUrlBase } from "./services/urlBase.js";
 import { contentRatingsRouter } from "./routes/contentRatingsRoute.js";
 import { changelogRouter } from "./routes/changelog.js";
 import { peopleRouter } from "./routes/people.js";
@@ -371,7 +372,10 @@ export async function createApp(): Promise<Express> {
       res.status(403).json({ error: "Admin access required" });
       return;
     }
-    res.json(openApiSpec);
+    // Swagger's "Try it out" sends its requests to `servers`, so under a URL base (nginx cuts the prefix off before the
+    // server sees a request, but the browser still has to send it) the entry carries the prefix.
+    const base = appUrlBase();
+    res.json(base ? { ...openApiSpec, servers: [{ url: `${base}/api` }] } : openApiSpec);
   });
 
   app.use("/api/auth", authRouter);

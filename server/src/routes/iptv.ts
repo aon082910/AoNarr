@@ -5,6 +5,7 @@ import { iptvPlaylistFromRow, iptvPlaylistItemFromRow, iptvFillerClipFromRow } f
 import { requireAdmin, safeEqual } from "../middleware/auth.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getSetting, setSetting } from "../services/settingsStore.js";
+import { appUrl } from "../services/urlBase.js";
 import { streamFileWithRangeSupport } from "../services/rangeStream.js";
 
 function ensureIptvToken(): string {
@@ -370,7 +371,9 @@ iptvPublicRouter.get(
     // "External URL" exists precisely for "a link back to itself from somewhere other than the
     // browser" (this endpoint is fetched by the media server, never by a browser with its own
     // window.location to fall back on) — prefer it, and only fall back to the guess when it's unset.
-    const origin = getSetting("externalUrl") || `${req.protocol}://${req.get("host")}`;
+    // Under a URL base (URL_BASE) the playlist's links carry it: appUrl() puts it after the origin unless the External
+    // URL already ends with it.
+    const origin = appUrl(getSetting("externalUrl") || `${req.protocol}://${req.get("host")}`, "");
     const m3u = buildM3u(playlist, items, fillers, origin, req.query.token as string);
 
     res.set("Content-Type", "audio/x-mpegurl");

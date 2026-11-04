@@ -100,11 +100,14 @@ RUN if [ -z "$BUILD_TIME" ]; then date -u +%Y-%m-%dT%H:%M:%SZ > /app/.build-time
 COPY --from=build-web /app/dist /usr/share/nginx/html
 COPY combined/nginx.conf /etc/nginx/conf.d/aonarr.conf
 COPY combined/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Optional URL_BASE (a sub-path such as /aonarr) is applied by this script at every start, so no rebuild is needed;
+# the same script serves the split web image (web/Dockerfile).
+COPY web/url-base.sh /usr/local/bin/aonarr-url-base
+RUN chmod +x /entrypoint.sh /usr/local/bin/aonarr-url-base
 
 VOLUME ["/config"]
 EXPOSE 9876
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -f http://127.0.0.1:9876/api/health || exit 1
+  CMD curl -f "http://127.0.0.1:9876$(cat /var/lib/aonarr-url-base/base 2>/dev/null)/api/health" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -1,5 +1,8 @@
 const CACHE_NAME = "aonarr-shell-v2";
-const SHELL_FILES = ["/", "/manifest.json", "/icon.svg"];
+// The folder this worker is served from: "/" normally, "/aonarr/" when AoNarr runs under a URL base
+// (URL_BASE, see web/url-base.sh). Reading it from the script's own address keeps this file the same either way.
+const BASE = new URL("./", self.location).pathname;
+const SHELL_FILES = [BASE, BASE + "manifest.json", BASE + "icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES)));
@@ -18,7 +21,7 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET" || event.request.url.includes("/api/")) return;
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request).then((res) => res || caches.match("/")))
+    fetch(event.request).catch(() => caches.match(event.request).then((res) => res || caches.match(BASE)))
   );
 });
 
@@ -33,13 +36,13 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(payload.title || "AoNarr", {
       body: payload.body || "",
-      icon: "/icon.svg",
-      badge: "/icon.svg",
+      icon: BASE + "icon.svg",
+      badge: BASE + "icon.svg",
     })
   );
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  event.waitUntil(self.clients.openWindow("/"));
+  event.waitUntil(self.clients.openWindow(BASE));
 });

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
+import { reviveAppUrls, withBase } from "../utils/urlBase.js";
 
 interface SharedItem {
   type: string;
@@ -19,9 +20,10 @@ export default function SharePage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`/api/share/${token}`)
+    fetch(withBase(`/api/share/${token}`))
       .then(async (res) => {
-        const body = await res.json();
+        // Parsed like api/client.ts parses a response, so the poster's artwork URL gets the URL base too.
+        const body = JSON.parse(await res.text(), reviveAppUrls);
         if (!res.ok) throw new Error(body.error ?? "This link isn't valid");
         setItem(body);
       })

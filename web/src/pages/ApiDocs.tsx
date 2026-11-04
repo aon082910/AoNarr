@@ -5,6 +5,7 @@ import swaggerCssUrl from "swagger-ui-dist/swagger-ui.css?url";
 import swaggerBundleUrl from "swagger-ui-dist/swagger-ui-bundle.js?url";
 import swaggerPresetUrl from "swagger-ui-dist/swagger-ui-standalone-preset.js?url";
 import { getApiKey, getSessionToken, UI_REQUEST_HEADERS } from "../api/client.js";
+import { withBase } from "../utils/urlBase.js";
 
 declare global {
   interface Window {
@@ -49,7 +50,7 @@ export default function ApiDocs() {
     Promise.all([loadScript(swaggerBundleUrl), loadScript(swaggerPresetUrl)]).then(() => {
       if (cancelled || !window.SwaggerUIBundle || !containerRef.current) return;
       window.SwaggerUIBundle({
-        url: "/api/openapi.json",
+        url: withBase("/api/openapi.json"),
         domNode: containerRef.current,
         presets: [window.SwaggerUIBundle.presets.apis],
         requestInterceptor: (req: any) => {

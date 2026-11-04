@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../api/client.js";
+import { absoluteUrl } from "../utils/urlBase.js";
 import Modal from "../components/Modal.js";
 import { PlusCircleIcon } from "../components/NavIcons.js";
 import { XIcon, ArrowUpIcon, ArrowDownIcon, TrashIcon } from "../components/ActionIcons.js";
@@ -287,7 +288,7 @@ export default function IptvPlaylists() {
 
   const editingPlaylist = typeof mode === "number" ? playlists.find((p) => p.id === mode) ?? null : null;
   const editingClip = typeof clipMode === "number" ? fillerClips.find((c) => c.id === clipMode) ?? null : null;
-  const feedUrl = typeof mode === "number" && token ? `${window.location.origin}/api/iptv/m3u/${mode}?token=${token}` : null;
+  const feedUrl = typeof mode === "number" && token ? absoluteUrl(`/api/iptv/m3u/${mode}?token=${token}`) : null;
   const attachableClips = fillerClips.filter((c) => !(attachedFillers ?? []).some((a) => a.fillerClipId === c.id));
 
   return (
