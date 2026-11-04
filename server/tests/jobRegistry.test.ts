@@ -331,7 +331,11 @@ describe("job history is kept in job_runs (RB6)", () => {
 
     runJobNow(ok);
     runJobNow(bad);
-    await waitUntil(async () => (await listJobRuns(ok)).length === 1 && (await listJobRuns(bad)).length === 1 && (await listJobRuns(bad))[0].status !== "running");
+    // Both rows are written without the registry waiting for them (a database round trip against Postgres): wait until both runs have ended.
+    await waitUntil(
+      async () =>
+        (await listJobRuns(ok)).length === 1 && (await listJobRuns(bad)).length === 1 && (await listJobRuns(ok))[0].status !== "running" && (await listJobRuns(bad))[0].status !== "running"
+    );
 
     const [okRun] = await listJobRuns(ok);
     expect(okRun.status).toBe("success");
@@ -661,7 +665,9 @@ describe("review fixes: history, failing rule and catch-up (RB6)", () => {
     });
     runJobNow(quiet);
     runJobNow(failing);
-    await waitUntil(() => listJobs().find((j) => j.key === quiet)!.lastStatus === "success" && listJobs().find((j) => j.key === failing)!.lastStatus === "error");
+    // The failed run's row is written without the registry waiting for it: wait for it, then give a row that must NOT appear a moment to prove it does not.
+    await waitUntil(async () => (await listJobRuns(failing)).length === 1);
+    await tick(30);
     await tick(30);
 
     expect(await listJobRuns(quiet)).toEqual([]);
