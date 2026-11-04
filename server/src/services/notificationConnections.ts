@@ -41,11 +41,6 @@ export type EventKey = (typeof EVENT_KEYS)[number];
  */
 export const OPT_IN_EVENTS: ReadonlySet<string> = new Set(["added", "deleted", "renamed", "fileDeleted"]);
 
-/** The events a connection with no saved list gets. */
-export function defaultEvents(): EventKey[] {
-  return EVENT_KEYS.filter((key) => !OPT_IN_EVENTS.has(key));
-}
-
 /**
  * Whether a connection with this stored event list wants the event. A list that was never saved (null) means "every
  * event" — but an explicitly saved empty string means every event was deliberately unchecked, which must NOT also mean
