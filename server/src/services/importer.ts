@@ -387,6 +387,28 @@ function resolveDest(
   return { destPath, fileLabel };
 }
 
+/**
+ * A music track's (or audiobook part's) file name under the track template (`namingArtistTrackTemplate`), with the
+ * extension of the file it names. The import and Organize & Rename both name tracks with this one function.
+ */
+function trackFileNameFor(item: { title: string; [key: string]: any }, albumTitle: string, track: { track_number: unknown; title: unknown }, extension: string): string {
+  const trackTemplate = getSetting("namingArtistTrackTemplate") || DEFAULT_TRACK_TEMPLATE;
+  return (
+    safePathSegment(
+      renderTemplate(
+        trackTemplate,
+        pathSafeVars({
+          trackNumber: track.track_number as number,
+          trackTitle: track.title as string,
+          parentTitle: item.title,
+          childTitle: albumTitle,
+          ...providerIdVars(item as any),
+        })
+      )
+    ) + extension
+  );
+}
+
 /** Refuses an import into a root folder that is an empty mount point while the library has files recorded in it. */
 async function assertRootFolderMounted(rootFolder: { id: number; path: string; readOnly?: boolean }): Promise<void> {
   // A decision, not a glitch: the admin made this library read-only, so nothing is placed into it.
@@ -2389,7 +2411,6 @@ export async function placeAlbumFiles(params: {
     );
   }
   const namingEnabled = getNamingEnabled(item.type);
-  const trackTemplate = getSetting("namingArtistTrackTemplate") || DEFAULT_TRACK_TEMPLATE;
   const trackByNumber = new Map<number, any>(tracks.map((t) => [Number(t.track_number), t]));
 
   // Picard and iTunes name a multi-disc album's files "1-01 Title", "2-01 Title" (or "101 Title")
@@ -2448,20 +2469,7 @@ export async function placeAlbumFiles(params: {
     // already is; an unmatched file (no leading track number, or no track list fetched yet) has
     // nothing to template against, so it keeps its original name — same as naming-disabled.
     const fileName =
-      track && namingEnabled
-        ? safePathSegment(
-            renderTemplate(
-              trackTemplate,
-              pathSafeVars({
-                trackNumber: track.track_number,
-                trackTitle: track.title,
-                parentTitle: item.title,
-                childTitle: subRow.title,
-                ...providerIdVars(item),
-              })
-            )
-          ) + path.extname(src)
-        : sanitizeForPath(path.basename(src));
+      track && namingEnabled ? trackFileNameFor(item, subRow.title, track, path.extname(src)) : sanitizeForPath(path.basename(src));
     // Picked one at a time, an unmatched disc file can't see the other discs' same-named ones
     // ("CD1/Intro.flac", "CD2/Intro.flac") below, so it keeps its disc folder from the start.
     if (onlyAnchor && !track && isDiscFolderFile(src)) {
@@ -3902,13 +3910,11 @@ export interface RenameResult {
  * Retroactively re-renames every already-imported file for items whose naming template has
  * changed since they were imported — Sonarr/Radarr's "Rename Files" bulk action. Never touches
  * anything without a file yet, and only actually moves a file when the freshly-computed
- * destination differs from where it already is. Music and Audiobooks (multiFilePerChild shapes)
- * are deliberately skipped — their individual track/chapter filenames are always kept as-
- * downloaded rather than templated (see placeAlbumFiles), so a template change there would only
- * affect the album/book folder name, a different and riskier operation (renaming a folder full of
- * files with no per-file destination to verify against) than this function's per-file model
- * handles; the count is still reported (as `skippedMusic`, shared by both types) so a caller isn't
- * left thinking they were silently included.
+ * destination differs from where it already is. Music and Audiobooks (multiFilePerChild shapes) are renamed in two
+ * steps: an album's folder is moved to the one the template names, and the track files and audiobook parts inside it
+ * are renamed to the track template (`namingArtistTrackTemplate`), each staying in the folder it is in. An album that
+ * is a single file, is not a folder of its own, or shares its folder, is counted in `skippedMusic` (shared by both
+ * types) so a caller isn't left thinking it was silently included.
  */
 export async function renameLibraryFiles(mediaType?: MediaType, dryRun = false, mediaItemIds?: number[]): Promise<RenameResult> {
   const result: RenameResult = { renamed: [], errors: [], skippedMusic: 0 };
@@ -4152,6 +4158,75 @@ async function relocateLibraryFile(src: string, dest: string, rootFolderPath: st
   removeEmptyParents(path.dirname(src), rootFolderPath);
 }
 
+/** The lyrics file named for a track ("01 - Song.lrc"), which goes with it. */
+function findTrackSidecars(trackPath: string): string[] {
+  const dir = path.dirname(trackPath);
+  const stem = path.basename(trackPath, path.extname(trackPath));
+  try {
+    return fs.readdirSync(dir).filter((name) => name.toLowerCase() === `${stem.toLowerCase()}.lrc`).map((name) => path.join(dir, name));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Renames the track files (and audiobook parts) of albums to the track template, as the import names them. A file stays
+ * in the folder it is in: only its name changes, so a disc folder is kept and nothing leaves its album folder. Only an
+ * album that is a folder is handled (a single-file book is one file the album row itself points at), and only a track
+ * that sits inside that folder. `albumFolderAfter` holds the folders the folder pass has moved (or, in a preview, will
+ * move) albums to.
+ */
+async function renameTrackFiles(
+  item: { title: string; [key: string]: any },
+  albums: { id: number; title: string; file_path: string }[],
+  albumFolderAfter: Map<number, string>,
+  claimed: Set<string>,
+  result: RenameResult,
+  dryRun: boolean
+): Promise<void> {
+  for (const album of albums) {
+    const movedTo = albumFolderAfter.get(album.id);
+    // A real run has already moved the folder (and the track rows with it); a preview works from the old place.
+    const folderAfter = path.resolve(movedTo ?? album.file_path);
+    if (!isDirectory(dryRun ? album.file_path : folderAfter)) continue;
+    const rows = (await db.prepare("SELECT * FROM tracks WHERE sub_item_id = ? AND has_file = 1 AND file_path IS NOT NULL ORDER BY track_number").all(album.id)) as any[];
+    const oldFolder = path.resolve(album.file_path);
+    for (const track of rows) {
+      const recorded = path.resolve(String(track.file_path));
+      const current = dryRun && movedTo && recorded.startsWith(oldFolder + path.sep) ? path.join(path.resolve(movedTo), path.relative(oldFolder, recorded)) : recorded;
+      if (!current.startsWith(folderAfter + path.sep)) continue;
+      const extension = path.extname(current);
+      const dest = path.join(path.dirname(current), trackFileNameFor(item, album.title, track, extension));
+      if (path.resolve(dest) === current) {
+        claimed.add(current);
+        continue;
+      }
+      const label = `${item.title} — ${album.title} — ${track.title}`;
+      const conflict = renameConflict(dryRun ? recorded : current, dest, claimed);
+      if (conflict) {
+        result.errors.push({ title: label, error: conflict });
+        continue;
+      }
+      try {
+        if (!dryRun) {
+          const sidecars = findTrackSidecars(current);
+          await moveFile(current, dest, true);
+          const newStem = dest.slice(0, dest.length - extension.length);
+          for (const sidecar of sidecars) {
+            const target = newStem + path.extname(sidecar);
+            if (isOtherExistingEntry(sidecar, target)) continue;
+            await moveFile(sidecar, target, true).catch((err) => log.warn(`[importer] failed to move lyrics file "${sidecar}":`, (err as Error).message));
+          }
+          await db.prepare("UPDATE tracks SET file_path = ? WHERE id = ?").run(dest, track.id);
+        }
+        result.renamed.push({ title: label, from: recorded, to: dest });
+      } catch (err) {
+        result.errors.push({ title: label, error: (err as Error).message });
+      }
+    }
+  }
+}
+
 /** `dryRun` computes and reports the same from/to paths a real rename would, without touching the
  * filesystem or the database — Radarr-style rename preview, so an admin can see what a bulk
  * "Organize & Rename" would actually do before committing to it. */
@@ -4275,6 +4350,8 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
         .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL ORDER BY id")
         .all(item.id)) as any[];
       if (!namingEnabled) result.skippedMusic += albums.length;
+      // Where each album's folder is (or, in a preview, will be) after the folder pass below.
+      const albumFolderAfter = new Map<number, string>();
       for (const album of albums) {
         if (!namingEnabled) break;
         const current = path.resolve(album.file_path);
@@ -4314,6 +4391,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
           continue;
         }
         claimed.add(key);
+        albumFolderAfter.set(album.id, destPath);
         if (!dryRun) {
           await moveAlbumFolder(album.file_path, destPath);
           await db.prepare("UPDATE sub_items SET file_path = ? WHERE id = ?").run(destPath, album.id);
@@ -4328,6 +4406,7 @@ async function renameOneItemRow(mediaRow: any, result: RenameResult, onlySeasonN
         }
         result.renamed.push({ title: label, from: album.file_path, to: destPath });
       }
+      if (namingEnabled) await renameTrackFiles(item, albums, albumFolderAfter, claimed, result, dryRun);
     } else if (shape === "collection") {
       const subItems = (await db
         .prepare("SELECT * FROM sub_items WHERE media_item_id = ? AND has_file = 1 AND file_path IS NOT NULL ORDER BY id")

@@ -107,8 +107,8 @@ export default function RenamePreviewModal({
           )}
           {preview.skippedMusic > 0 && (
             <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-              {preview.skippedMusic} track/chapter file(s) skipped — this tool doesn't retroactively rename
-              already-placed track/chapter files (new imports already follow the naming template).
+              {preview.skippedMusic} album/book(s) left alone — naming is off for the type, or the album is a single file, is not a
+              folder of its own, or shares its folder with another album. Track files inside renamed albums follow the track template.
             </p>
           )}
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>

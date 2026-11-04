@@ -5630,3 +5630,149 @@ describe("Round 27 — Auto import strategy and the download's facts in history"
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round 30c: Organize & Rename covers the track files of albums and audiobooks
+// ---------------------------------------------------------------------------
+
+describe("Organize & Rename names music tracks and audiobook parts by the track template (R30c)", () => {
+  async function albumWithTracks(
+    type: "artist" | "audiobook",
+    files: { name: string; number: number; title: string }[],
+    sub = ""
+  ): Promise<{ folder: { id: number; path: string }; albumDir: string; artistId: number; albumId: number; trackIds: number[] }> {
+    const folder = await insertRootFolder(type);
+    const artistId = Number(
+      (await db.prepare("INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES (?, 'Band', 'band', ?, 1, 1, 'downloaded')").run(type, folder.id)).lastInsertRowid
+    );
+    const albumDir = path.join(folder.path, "Band", "Record");
+    const albumId = Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'Record', 1, 1, ?)").run(artistId, albumDir)).lastInsertRowid);
+    const trackIds: number[] = [];
+    for (const f of files) {
+      const file = path.join(albumDir, sub, f.name);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "audio");
+      trackIds.push(Number((await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, ?, ?, 1, ?)").run(albumId, f.number, f.title, file)).lastInsertRowid));
+    }
+    return { folder, albumDir, artistId, albumId, trackIds };
+  }
+  const trackPath = async (id: number) => ((await db.prepare("SELECT file_path FROM tracks WHERE id = ?").get(id)) as any).file_path as string;
+
+  it("renames a track kept under its downloaded name, updates its row, and takes its lyrics file along", async () => {
+    const { albumDir, artistId, trackIds } = await albumWithTracks("artist", [
+      { name: "track01.flac", number: 1, title: "Opening" },
+      { name: "02 - Already Right.flac", number: 2, title: "Already Right" },
+    ]);
+    fs.writeFileSync(path.join(albumDir, "track01.lrc"), "lyrics");
+
+    const result = await renameOneMediaItem(artistId);
+
+    expect(result.errors).toEqual([]);
+    expect(result.renamed.map((r) => [path.basename(r.from), path.basename(r.to)])).toEqual([["track01.flac", "01 - Opening.flac"]]);
+    expect(await trackPath(trackIds[0])).toBe(path.join(albumDir, "01 - Opening.flac"));
+    expect(await trackPath(trackIds[1])).toBe(path.join(albumDir, "02 - Already Right.flac"));
+    expect(fs.readdirSync(albumDir).sort()).toEqual(["01 - Opening.flac", "01 - Opening.lrc", "02 - Already Right.flac"]);
+  });
+
+  it("a preview reports the same renames and changes nothing", async () => {
+    const { albumDir, artistId, trackIds } = await albumWithTracks("artist", [{ name: "track01.flac", number: 1, title: "Opening" }]);
+
+    const preview = await renameOneMediaItem(artistId, undefined, true);
+
+    expect(preview.renamed.map((r) => path.basename(r.to))).toEqual(["01 - Opening.flac"]);
+    expect(fs.readdirSync(albumDir)).toEqual(["track01.flac"]);
+    expect(await trackPath(trackIds[0])).toBe(path.join(albumDir, "track01.flac"));
+  });
+
+  it("uses the track template setting, and keeps a disc subfolder", async () => {
+    setSetting("namingArtistTrackTemplate", "{parentTitle} - {trackNumber:00} - {trackTitle}");
+    try {
+      const { albumDir, artistId, trackIds } = await albumWithTracks("artist", [{ name: "a.flac", number: 3, title: "Third" }], "CD2");
+
+      const result = await renameOneMediaItem(artistId);
+
+      expect(result.errors).toEqual([]);
+      expect(await trackPath(trackIds[0])).toBe(path.join(albumDir, "CD2", "Band - 03 - Third.flac"));
+    } finally {
+      setSetting("namingArtistTrackTemplate", "");
+    }
+  });
+
+  it("renames an audiobook's parts the same way", async () => {
+    const { albumDir, artistId, trackIds } = await albumWithTracks("audiobook", [
+      { name: "part1.mp3", number: 1, title: "Chapter One" },
+      { name: "part2.mp3", number: 2, title: "Chapter Two" },
+    ]);
+
+    const result = await renameOneMediaItem(artistId);
+
+    expect(result.errors).toEqual([]);
+    expect(await trackPath(trackIds[1])).toBe(path.join(albumDir, "02 - Chapter Two.mp3"));
+  });
+
+  it("leaves a file alone when its new name is taken by another file, and never moves a file out of the album folder", async () => {
+    const { albumDir, artistId, albumId, trackIds } = await albumWithTracks("artist", [{ name: "track01.flac", number: 1, title: "Opening" }]);
+    fs.writeFileSync(path.join(albumDir, "01 - Opening.flac"), "someone else");
+    const outside = path.join(path.dirname(albumDir), "elsewhere.flac");
+    fs.writeFileSync(outside, "x");
+    const stray = Number((await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, 9, 'Stray', 1, ?)").run(albumId, outside)).lastInsertRowid);
+
+    const result = await renameOneMediaItem(artistId);
+
+    expect(result.errors[0].error).toMatch(/already exists/);
+    expect(fs.readFileSync(path.join(albumDir, "01 - Opening.flac"), "utf8")).toBe("someone else");
+    expect(await trackPath(trackIds[0])).toBe(path.join(albumDir, "track01.flac"));
+    expect(await trackPath(stray)).toBe(outside);
+    expect(fs.existsSync(outside)).toBe(true);
+  });
+
+  it("does nothing to tracks when naming is switched off for the type, and for a single-file book", async () => {
+    setSetting("namingEnabledArtist", "0");
+    try {
+      const { artistId, trackIds, albumDir } = await albumWithTracks("artist", [{ name: "track01.flac", number: 1, title: "Opening" }]);
+      const result = await renameOneMediaItem(artistId);
+      expect(result.renamed).toEqual([]);
+      expect(await trackPath(trackIds[0])).toBe(path.join(albumDir, "track01.flac"));
+    } finally {
+      setSetting("namingEnabledArtist", "");
+    }
+
+    const folder = await insertRootFolder("audiobook");
+    const bookId = Number(
+      (await db.prepare("INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('audiobook', 'Author', 'author', ?, 1, 1, 'downloaded')").run(folder.id)).lastInsertRowid
+    );
+    const single = path.join(folder.path, "Author", "Dune.m4b");
+    fs.mkdirSync(path.dirname(single), { recursive: true });
+    fs.writeFileSync(single, "x");
+    const album = Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'Dune', 1, 1, ?)").run(bookId, single)).lastInsertRowid);
+    const track = Number((await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, 1, 'Dune', 1, ?)").run(album, single)).lastInsertRowid);
+
+    const result = await renameOneMediaItem(bookId);
+
+    expect(result.renamed).toEqual([]);
+    expect(await trackPath(track)).toBe(single);
+    expect(fs.existsSync(single)).toBe(true);
+  });
+
+  it("a preview of an album folder move shows the track renames in the new folder", async () => {
+    const folder = await insertRootFolder("artist");
+    const artistId = Number(
+      (await db.prepare("INSERT INTO media_items (type, title, sort_title, root_folder_id, monitored, has_file, status) VALUES ('artist', 'New Name', 'new name', ?, 1, 1, 'downloaded')").run(folder.id)).lastInsertRowid
+    );
+    const oldAlbum = path.join(folder.path, "Old Name", "Some Album");
+    fs.mkdirSync(oldAlbum, { recursive: true });
+    fs.writeFileSync(path.join(oldAlbum, "track01.flac"), "x");
+    const albumId = Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file, file_path) VALUES (?, 'Some Album', 1, 1, ?)").run(artistId, oldAlbum)).lastInsertRowid);
+    await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title, has_file, file_path) VALUES (?, 1, 'Song', 1, ?)").run(albumId, path.join(oldAlbum, "track01.flac"));
+
+    const preview = await renameOneMediaItem(artistId, undefined, true);
+    const newAlbum = path.join(folder.path, "New Name", "Some Album");
+    expect(preview.renamed.map((r) => r.to)).toEqual([newAlbum, path.join(newAlbum, "01 - Song.flac")]);
+
+    const real = await renameOneMediaItem(artistId);
+    expect(real.errors).toEqual([]);
+    expect(real.renamed.map((r) => r.to)).toEqual([newAlbum, path.join(newAlbum, "01 - Song.flac")]);
+    expect(fs.existsSync(path.join(newAlbum, "01 - Song.flac"))).toBe(true);
+    expect(((await db.prepare("SELECT file_path FROM tracks WHERE sub_item_id = ?").get(albumId)) as any).file_path).toBe(path.join(newAlbum, "01 - Song.flac"));
+  });
+});
