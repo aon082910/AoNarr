@@ -153,8 +153,24 @@ one book.
   to it (or a specific episode/album/book) yourself, for anything auto-match couldn't resolve.
 - **Discography grabs** — when two or more of an artist's albums are missing, AoNarr also looks for
   the artist's discography ("Artist - Discography (1973-1995) [FLAC]"). One grab fills every missing
-  album the release covers, and the importer files each album's folder under its own album. It can be
-  turned off in Settings (Media Management).
+  album the release covers, and the importer files each album's folder under its own album; a folder whose
+  name does not say which album it is (a folder that is called "CD1 - misc rips") is recognized by the album and
+  artist tags of its tracks (every track is read, up to 40, and all must agree), and disc folders ("Album CD1",
+  "Album CD2") whose tags agree and whose track numbers are whole are filed as one album.
+  RSS feeds, IRC announces and `POST /release/push` take a discography under the same rules as the search, and one
+  notification tells of the whole discography. An opt-in setting ("Look for a discography when one album is missing")
+  also looks for one after an album's own search found nothing (a discography that covers more than 15 albums is not
+  taken that way). A discography held by a delay profile is kept as pending. When folders of a discography or files of
+  a collection are left in the download, the torrent stays in the client with its data. All of it can be turned off in
+  Settings (Media Management).
+- **Author collections** — when three or more of an author's books are missing, AoNarr also looks for the author's
+  collection ("Terry Pratchett - Complete Collection", "Books 1-12", "Bibliography", "Gesamtausgabe", ...). It is taken
+  only when it names the author, holds an ebook format and would add at least three missing books that are at least 30%
+  of the books it covers; the files are matched to your books by file name, files that match no single book stay in
+  the download, and a release that filled some books is not blocklisted; a collection delivered as one archive is
+  unpacked and imported, and one notification tells of the whole collection. A manual import of one file can import everything
+  matched in its folder ("Import everything matched in this folder"). Setting "Download an author's complete
+  collection" (Media Management). Audiobook collections and embedded ebook titles are not covered yet.
 - **Calendar** and **Missing** views — upcoming episode/album/book release dates, and everything
   monitored across the library that doesn't have a file yet.
 - **Subtitle search + auto-download** (Bazarr-style) — OpenSubtitles-backed; once a video file is
