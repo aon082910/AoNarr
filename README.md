@@ -816,6 +816,35 @@ integrations (curl, webhooks, other *arr apps) send no `Origin` and never need i
 - **URL base** — start the container with `URL_BASE=/aonarr` to serve AoNarr at `https://host/aonarr/`
   (the Starr mounts too: a tool's URL base becomes `/aonarr/sonarr`, and so on). It is applied at start, with
   no rebuild; unset or `/` changes nothing. See "Running behind a sub-path" under Running on Unraid.
+- **Quality ladder** — 30 tiers as in Radarr and Sonarr: the pre-release tiers (WORKPRINT, CAM, TELESYNC,
+  TELECINE, REGIONAL, DVDSCR), SD, SDTV, WEBRip/WEBDL-480p, Bluray-480p/576p, DVD, DVD-R, the 720p to 2160p tiers,
+  BR-DISK and Raw-HD. The pre-release, BR-DISK and Raw-HD tiers are off in every profile until you allow them.
+  A profile can have its own order (Settings → Quality Profiles → "Order"; API field `qualityOrder`): prefer
+  WEB-DL over Blu-ray in one profile and the reverse in another; without an order a profile ranks by the global
+  ladder as before; a quality a profile's order leaves out ranks by its ladder position, and a saved order is
+  completed with the allowed qualities it lacks. On the first start after the upgrade, profiles that allowed SD
+  also allow the new SD-class tiers and rank them as one group with SD, so nothing that was accepted is refused and
+  no upgrade starts (a settings template made before this gets the same treatment on import). Words such as
+  "Cam" or "Screener" in a title or episode title no longer make a release or a file a CAM or screener grade.
+- **Metadata files** — Settings → Media Management → "Metadata Files": per library type, `tvshow.nfo`,
+  episode NFOs (also for season packs), `artist.nfo` and `album.nfo` for music, and pictures (`poster.jpg`,
+  `fanart.jpg`, `seasonNN-poster.jpg`, episode `-thumb.jpg`, music `folder.jpg`/`artist.jpg`) written on
+  import. The new kinds are off until you switch them on; a richer NFO from another tool is never replaced; a
+  picture that is there is kept unless "overwrite" is on. "Write files now" and the "Metadata Files" job (off by
+  default) write them for titles that already have files; the weekly job leaves existing files alone even when
+  "overwrite" is on, unless `overwriteMetadataFilesInJob` is ticked.
+- **Audio tags** — `writeAudioTagsMode` (`none` default, `new`, `all`, `sync`) writes tags into MP3, FLAC,
+  M4A/M4B/MP4 and OGG/Opus files and audiobook parts (ffmpeg copies the audio without re-encoding into a temp
+  file, checks it, and only then replaces the original; a file with hardlinks, in a read-only root or changed
+  meanwhile is skipped). Options: remove the old tags first, embed the cover. Ebooks and comics are not
+  written. The old `writeAudioTagsOnImport` switch still means MP3 only with the five old fields. "Retag now" and the weekly
+  "Retag Audio Files" job (only in `all`/`sync` mode) retag existing files; in `sync` mode a burst of edits is one
+  pass about 5 seconds later, one title at a time, and at most two files are rewritten at once (import and retag
+  together). A file is skipped when the disk has less than its size plus 256 MB free.
+- **Auto tagging** — Settings → Tags → "Auto tagging": rules that add tags to titles by library type, genre or
+  import list (any/all), at add, at metadata refresh and at list sync, with "Preview" and "Apply to library".
+  "Remove tags automatically" takes back only the tags the rule added; a tag you set by hand is never taken over
+  or removed. API `/api/auto-tag-rules`; settings templates carry the rules.
 - **Download clients** — clients of the same type and priority share the grabs in turn (set a lower
   priority number to prefer one). A torrent is always added started, even when the client is set to
   add torrents stopped, and a `.torrent` link is fetched by AoNarr and uploaded to qBittorrent. A
