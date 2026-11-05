@@ -333,29 +333,8 @@ async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<
     // An album, book or comic issue that the name could be: the parent is named in the release and the sub-item passes the
     // name tests of a search (chooseBestResult on this one release).
     if (wanted.collections.size > 0 && parsed.seasonNumber == null && !(parsed.episodeNumbers?.length ?? 0) && !parsed.isFullSeason && !parsed.airDate) {
-      const releaseKey = ` ${identityKey(release.title)} `;
-      const released = new Set(releaseKey.split(" ").filter(Boolean));
-      let matchedSub = false;
-      for (const { item, subs } of wanted.collections.values()) {
-        if (matchedSub) break; // one release maps to at most one sub-item
-        const key = identityKey(item.title);
-        if (!key || !releaseKey.includes(` ${key} `)) continue;
-        for (const sub of subs) {
-          // A cheap cut before the full name test: an album or book is named by (the main part of) its title, so all of
-          // those words are in the release; a comic issue or chapter is named by its number and is left to the full test.
-          if (["artist", "author", "audiobook"].includes(item.type)) {
-            const words = identityKey(editionlessTitle(sub.title).split(/\s*:\s*/)[0].replace(/\([^)]*\)|\[[^\]]*\]/g, " ")).split(" ").filter((w) => w.length > 0);
-            if (words.length > 0 && !words.every((w) => released.has(w) || ["a", "an", "the", "of", "and"].includes(w))) continue;
-          }
-          const name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
-          const named = await chooseBestResult([release], [], "", null, 0, null, new Set(), item.type, null, null, item.id, { name });
-          if (named) {
-            add({ kind: "sub", key: `sub:${sub.id}`, item, sub, releases: [release] });
-            matchedSub = true;
-            break;
-          }
-        }
-      }
+      const hit = await matchCollectionRelease(release, wanted.collections.values());
+      if (hit) add({ kind: "sub", key: `sub:${hit.sub.id}`, item: hit.item, sub: hit.sub, releases: [release] });
     }
 
     if (!episodeShaped) {
@@ -397,7 +376,34 @@ async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<
   return { groups, unmatched };
 }
 
-async function releaseNamesEpisode(
+/**
+ * The album, book or comic issue a release names among these parents (artists, authors, series), each with the sub-items to
+ * try in the order to try them: the parent has to be named in the release, and the sub-item has to pass the name tests of a
+ * search (chooseBestResult on this one release). One release maps to at most one sub-item. The RSS sync tries the wanted ones,
+ * the scan of a folder (pathScan.ts) every one the library has.
+ */
+export async function matchCollectionRelease(release: SearchResult, collections: Iterable<{ item: MediaItem; subs: any[] }>): Promise<{ item: MediaItem; sub: any } | null> {
+  const releaseKey = ` ${identityKey(release.title)} `;
+  const released = new Set(releaseKey.split(" ").filter(Boolean));
+  for (const { item, subs } of collections) {
+    const key = identityKey(item.title);
+    if (!key || !releaseKey.includes(` ${key} `)) continue;
+    for (const sub of subs) {
+      // A cheap cut before the full name test: an album or book is named by (the main part of) its title, so all of
+      // those words are in the release; a comic issue or chapter is named by its number and is left to the full test.
+      if (["artist", "author", "audiobook"].includes(item.type)) {
+        const words = identityKey(editionlessTitle(sub.title).split(/\s*:\s*/)[0].replace(/\([^)]*\)|\[[^\]]*\]/g, " ")).split(" ").filter((w) => w.length > 0);
+        if (words.length > 0 && !words.every((w) => released.has(w) || ["a", "an", "the", "of", "and"].includes(w))) continue;
+      }
+      const name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
+      const named = await chooseBestResult([release], [], "", null, 0, null, new Set(), item.type, null, null, item.id, { name });
+      if (named) return { item, sub };
+    }
+  }
+  return null;
+}
+
+export async function releaseNamesEpisode(
   parsed: ParsedRelease,
   show: MediaItem,
   ep: any,

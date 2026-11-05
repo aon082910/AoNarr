@@ -3364,6 +3364,8 @@ export default function Settings() {
                   {text("importExtraFileExtensions", "Extra file extensions (comma separated)", "srt")}
                   {choice("rejectDangerousFiles", "Leave downloads that hold a program or script", "1", [["1", "On: .exe, .bat, .scr ... (default)"], ["0", "Off"]])}
                   {text("rejectedFileExtensions", "Also reject these extensions", "e.g. xyz, ass")}
+                  {text("scanPathAllowList", "Folders a scan command may read (comma separated)", "e.g. /data/torrents, /mnt/user/downloads")}
+                  {help("The Downloaded Episodes, Movies, Albums and Books Scan commands of the Sonarr, Radarr, Lidarr and Readarr API import a path they are given. A path is taken only inside the downloads folder, the local side of a remote path mapping, or a folder listed here (absolute paths; empty by default). It must exist, hold no .., and not be inside a library root folder; links are never followed.")}
                   {choice("importProbeChecks", "Leave a sample or a file with no audio", "1", [["1", "On: probe the file first (default)"], ["0", "Off"]])}
                   {choice("enableMediaInfo", "Analyse video files", "1", [["1", "On: read each file with ffprobe on import and scan (default)"], ["0", "Off"]])}
                   {help(
