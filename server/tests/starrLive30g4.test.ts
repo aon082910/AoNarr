@@ -176,3 +176,45 @@ describe("the languages of a file, as Bazarr reads them", () => {
     expect(files.map((f: any) => f.languages)).toEqual([[{ id: 3, name: "Spanish" }], [{ id: 0, name: "Swahili" }]]);
   });
 });
+
+describe("the folder browser of a Starr app (Bazarr's path mapping and root folder pickers)", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "aonarr-fs-"));
+  fs.mkdirSync(path.join(base, "a-dir"));
+  fs.mkdirSync(path.join(base, "B-dir"));
+  fs.mkdirSync(path.join(base, ".hidden"));
+  fs.writeFileSync(path.join(base, "movie.mkv"), "12345");
+
+  it("lists the folders under a path, without hidden ones and without files unless asked", async () => {
+    const res = await get(`/radarr/api/v3/filesystem?path=${encodeURIComponent(base)}&allowFoldersWithoutTrailingSlashes=true&includeFiles=false`);
+    expect(res.status).toBe(200);
+    expect(res.body.parent).toBe(path.dirname(base));
+    expect(res.body.directories).toEqual([
+      { type: "folder", name: "a-dir", path: path.join(base, "a-dir"), size: 0 },
+      { type: "folder", name: "B-dir", path: path.join(base, "B-dir"), size: 0 },
+    ]);
+    expect(res.body.files).toEqual([]);
+  });
+
+  it("ends a folder's path with a separator unless the caller allows folders without one", async () => {
+    const res = await get(`/sonarr/api/v3/filesystem?path=${encodeURIComponent(base)}`);
+    expect(res.body.directories.map((d: any) => d.path)).toEqual([path.join(base, "a-dir") + path.sep, path.join(base, "B-dir") + path.sep]);
+  });
+
+  it("adds the files, with their size, when includeFiles is true", async () => {
+    const res = await get(`/lidarr/api/v1/filesystem?path=${encodeURIComponent(base)}&includeFiles=true`);
+    expect(res.body.files).toEqual([{ type: "file", name: "movie.mkv", path: path.join(base, "movie.mkv"), size: 5, lastModified: expect.any(String) }]);
+  });
+
+  it("answers an empty listing for a path that is missing, and lists the top folder for no path", async () => {
+    const missing = await get(`/radarr/api/v3/filesystem?path=${encodeURIComponent(path.join(base, "nowhere"))}`);
+    expect(missing.status).toBe(200);
+    expect(missing.body).toMatchObject({ directories: [], files: [] });
+    const top = await get("/radarr/api/v3/filesystem");
+    expect(top.status).toBe(200);
+    expect(top.body.parent).toBeNull();
+  });
+
+  it("is behind the key like the rest of the surface", async () => {
+    expect((await request(app).get("/radarr/api/v3/filesystem?path=/")).status).toBe(401);
+  });
+});
