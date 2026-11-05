@@ -1071,3 +1071,29 @@ describe("one notification for a whole discography", () => {
     });
   });
 });
+
+describe("a discography that lost albums to other downloads between the search and the grab (round 30h review L2)", () => {
+  it("is not sent for the one album that is left", async () => {
+    await insertClient();
+    const { artistId, albums } = await queen();
+    answers((query) => {
+      if (!isDiscographyQuery(query)) return [];
+      return [release(DISCOGRAPHY)];
+    });
+    // The slow indexer round: while the discography is being looked for, three of the four albums get a download of their own.
+    const base = searchAllIndexers.getMockImplementation()!;
+    searchAllIndexers.mockImplementation(async (indexers: unknown, query: string, ...rest: unknown[]) => {
+      const found = await base(indexers, query, ...rest);
+      if (isDiscographyQuery(query)) {
+        for (const id of albums.slice(0, 3)) await db.prepare("INSERT INTO queue (media_item_id, sub_item_id, title, status) VALUES (?, ?, ?, 'downloading')").run(artistId, id, `Album ${id}`);
+      }
+      return found;
+    });
+
+    await scheduler.searchAndGrabTargets([{ mediaItemId: artistId }]);
+
+    // One album is left open: under the bar of two albums (and 25% of the four it covers) the release was judged by.
+    expect(addDownload).not.toHaveBeenCalled();
+    expect((await queueRows()).filter((r) => r.sub_item_id == null)).toHaveLength(0);
+  });
+});

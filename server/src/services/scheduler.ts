@@ -2836,7 +2836,14 @@ export async function grabDiscography(
   const verdict = judgeDiscography(chosen.result.title, albums, { ...judge, isUnreleased: (date) => isNotYetReleased(date) });
   // A release that no longer adds an album (they were queued while it was chosen) is not sent as a download of the artist.
   if (verdict.wanted.length === 0) return false;
-  return grab(client, item, null, null, chosen, 0, null, source, { targetSubItemIds: verdict.wanted.map((album) => album.id) });
+  // The bar the release was judged against holds again inside grab(), after it dropped the albums another download queued
+  // meanwhile: a release judged to add two albums is not sent for the one that is left.
+  return grab(client, item, null, null, chosen, 0, null, source, {
+    targetSubItemIds: verdict.wanted.map((album) => album.id),
+    minOpen: judge.minWanted,
+    minShare: judge.minShare,
+    judgedCovered: verdict.covered.length,
+  });
 }
 
 /**
