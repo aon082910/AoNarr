@@ -74,8 +74,7 @@ import { importReviewRouter } from "./routes/importReview.js";
 import { mediaServerImportRouter } from "./routes/mediaServerImport.js";
 import { starrImportRouter } from "./routes/starrImport.js";
 import { mountStarrApps } from "./starr/router.js";
-import { openApiSpec } from "./openapi.js";
-import { appUrlBase } from "./services/urlBase.js";
+import { openApiDocument } from "./openapi.js";
 import { contentRatingsRouter } from "./routes/contentRatingsRoute.js";
 import { displayPreferencesRouter } from "./routes/displayPreferences.js";
 import { changelogRouter } from "./routes/changelog.js";
@@ -374,15 +373,11 @@ export async function createApp(): Promise<Express> {
   app.use("/api", asyncHandler(requireAuth));
 
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
-  app.get("/api/openapi.json", (req, res) => {
-    if (!req.auth?.isAdmin) {
-      res.status(403).json({ error: "Admin access required" });
-      return;
-    }
-    // Swagger's "Try it out" sends its requests to `servers`, so under a URL base (nginx cuts the prefix off before the
-    // server sees a request, but the browser still has to send it) the entry carries the prefix.
-    const base = appUrlBase();
-    res.json(base ? { ...openApiSpec, servers: [{ url: `${base}/api` }] } : openApiSpec);
+  // Generated from the routes registered below (openapi.ts), read on first use and kept; requireAdmin in the chain is also
+  // what marks this route admin-only in the document itself. Under a URL base the document's `servers` carry the prefix:
+  // nginx cuts it off before the server sees a request, but Swagger's "Try it out" is sent by the browser.
+  app.get("/api/openapi.json", requireAdmin, (_req, res) => {
+    res.json(openApiDocument(app));
   });
 
   app.use("/api/auth", authRouter);
