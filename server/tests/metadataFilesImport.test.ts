@@ -153,6 +153,17 @@ describe("movies at import", () => {
     expect(fs.readdirSync(path.dirname(placed.destPath))).toEqual([path.basename(placed.destPath)]);
   });
 
+  it("writes the movie's NFO by option, as before", async () => {
+    const folder = await insertRootFolder("movie");
+    const first = await placeMovie(await insertMovie(folder.id));
+    expect(fs.existsSync(first.destPath.replace(/.mkv$/, ".nfo"))).toBe(false);
+
+    await db.prepare("DELETE FROM media_items").run();
+    setSetting("writeNfoOnImport", "1");
+    const second = await placeMovie(await insertMovie(folder.id));
+    expect(fs.readFileSync(second.destPath.replace(/.mkv$/, ".nfo"), "utf-8")).toContain("<movie>");
+  });
+
   it("does not let a failing picture fail the import", async () => {
     const folder = await insertRootFolder("movie");
     setSetting("writeImagesOnImport", "1");
@@ -272,6 +283,29 @@ describe("shows at import", () => {
 
     expect(fs.readdirSync(path.join(folder.path, "Show"))).toEqual(["Season 01"]);
     expect(fs.readdirSync(path.join(folder.path, "Show", "Season 01")).filter((n) => !n.endsWith(".mkv"))).toEqual([]);
+    expect(fetched).toEqual([]);
+  });
+});
+
+describe("books at import", () => {
+  it("follow Write NFO on Import alone: the show and music switches do not reach them", async () => {
+    const folder = await insertRootFolder("author");
+    const authorId = Number(
+      (await db.prepare("INSERT INTO media_items (type, title, sort_title, root_folder_id, has_file, monitored, status) VALUES ('author','Frank Herbert','frank herbert',?,0,1,'missing')").run(folder.id))
+        .lastInsertRowid
+    );
+    const book = async (title: string) =>
+      Number((await db.prepare("INSERT INTO sub_items (media_item_id, title, monitored, has_file) VALUES (?, ?, 1, 0)").run(authorId, title)).lastInsertRowid);
+    setSetting("nfoTvEnabled", "1");
+    setSetting("nfoMusicEnabled", "1");
+    setSetting("writeImagesOnImport", "1");
+
+    const off = await placeFile({ itemId: authorId, episodeId: null, subItemId: await book("Dune"), sourceFile: download("Dune.epub"), quality: null });
+    expect(fs.readdirSync(path.dirname(off.destPath)).filter((n) => !n.endsWith(".epub"))).toEqual([]);
+
+    setSetting("writeNfoOnImport", "1");
+    const on = await placeFile({ itemId: authorId, episodeId: null, subItemId: await book("Dune Messiah"), sourceFile: download("Dune Messiah.epub"), quality: null });
+    expect(fs.readdirSync(path.dirname(on.destPath)).filter((n) => n.endsWith(".nfo"))).toHaveLength(1);
     expect(fetched).toEqual([]);
   });
 });

@@ -4,7 +4,7 @@ import { db } from "../db/index.js";
 import { mediaItemFromRow } from "../db/mappers.js";
 import { log } from "./logger.js";
 import { writeArtworkFile, type ArtworkResult, type ArtworkSource } from "./artworkFiles.js";
-import { finishBackgroundJob, incrementBackgroundJobDone, startBackgroundJob } from "./backgroundJobs.js";
+import { finishBackgroundJob, incrementBackgroundJobDone, setBackgroundJobLabel, startBackgroundJob } from "./backgroundJobs.js";
 import { trackedFileInside } from "./fileDeletion.js";
 import { folderSegmentsOf, ownFolderOf } from "./libraryFolder.js";
 import {
@@ -563,7 +563,14 @@ export async function runMetadataFilesJob(signal?: AbortSignal): Promise<Metadat
     log.info(
       `[metadataFiles] library run${summary.cancelled ? " (cancelled)" : ""}: ${summary.titles} title(s), ${summary.written} file(s) written, ${summary.skipped} already there or without a source, ${summary.failed} failed, ${summary.titlesSkipped} title(s) passed over`
     );
-    if (jobId) finishBackgroundJob(jobId, summary.failed > 0 ? `${summary.failed} file(s) could not be written, see the Logs page` : undefined);
+    if (jobId) {
+      setBackgroundJobLabel(
+        METADATA_FILES_JOB.kind,
+        METADATA_FILES_JOB.type,
+        `Metadata files${summary.cancelled ? " (cancelled)" : ""}: ${summary.written} written, ${summary.skipped} already there`
+      );
+      finishBackgroundJob(jobId, summary.failed > 0 ? `${summary.failed} file(s) could not be written, see the Logs page` : undefined);
+    }
   }
   return summary;
 }

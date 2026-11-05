@@ -70,9 +70,8 @@ export function nfoEnabledFor(item: { type: string; legacyShape?: string | null 
 }
 
 /**
- * Whether artwork is written beside this kind of item at all: movies and shows with a Kodi-style sidecar convention
- * (not ROMs, Courses-with-nothing... the types that have one), and music. Books and comics have no poster-in-the-folder
- * convention worth guessing at.
+ * Whether artwork is written beside this kind of item at all: movies and shows of the types that follow the Kodi video
+ * convention (so not ROMs), and music. Books and comics have no poster-in-the-folder convention worth guessing at.
  */
 export function imagesApplyTo(item: { type: string; legacyShape?: string | null }): boolean {
   const kind = metadataKindOf(item);

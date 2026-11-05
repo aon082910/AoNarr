@@ -464,6 +464,7 @@ describe("runMetadataFilesJob", () => {
     const job = backgroundJobs.listBackgroundJobs().find((j) => j.type === "metadata-files");
     expect(job).toMatchObject({ kind: "organize", running: false, total: 4, done: 4 });
     expect(job?.error).toContain("1 file(s) could not be written");
+    expect(job?.label).toBe("Metadata files: 11 written, 0 already there");
   });
 
   it("is safe to run again: a second run writes nothing and fetches nothing", async () => {

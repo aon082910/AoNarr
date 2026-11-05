@@ -59,8 +59,9 @@ export default function MetadataFilesSettings({ settings, saveSetting }: Props) 
     <div>
       <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
         Files that Kodi, Jellyfin, Emby and Plex read beside your media. Everything is off until you switch it on, so an update never starts writing
-        files by itself. A file another tool wrote is never replaced, and the whole thing stays out of read-only libraries and shares that are not
-        mounted.
+        files by itself. A file another tool wrote is never replaced (an NFO with anything beyond title, year, plot, thumb and unique ids in it, such
+        as one from Kodi or tinyMediaManager), and the whole thing stays out of read-only libraries and shares that are not mounted. With the NFO switch
+        for movies on, editing or rematching a movie's metadata also refreshes its NFO.
       </p>
 
       <label style={{ display: "flex", alignItems: "center", gap: 6 }}>

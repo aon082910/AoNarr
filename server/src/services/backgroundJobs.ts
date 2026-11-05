@@ -58,6 +58,12 @@ export function updateBackgroundJob(kind: BackgroundJobProgress["kind"], type: s
   if (job) Object.assign(job, patch);
 }
 
+/** Renames a tracked job, e.g. to carry the outcome of a run into the panel's finished row. */
+export function setBackgroundJobLabel(kind: BackgroundJobProgress["kind"], type: string, label: string): void {
+  const job = jobs.get(jobId(kind, type));
+  if (job) job.label = label;
+}
+
 export function incrementBackgroundJobDone(kind: BackgroundJobProgress["kind"], type: string, by = 1): void {
   const job = jobs.get(jobId(kind, type));
   if (job) job.done += by;
