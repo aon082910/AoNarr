@@ -5,6 +5,7 @@ import { clientBackoffUntil, isClientBackedOff, recordClientFailure, recordClien
 import { languageRejection } from "./profileLanguage.js";
 import path from "node:path";
 import { log } from "./logger.js";
+import { redactLinks } from "./linkRedaction.js";
 import { db } from "../db/index.js";
 import { nowExpr, nowOffsetHoursExpr } from "../db/asyncDb.js";
 import { config } from "../config.js";
@@ -386,7 +387,7 @@ export interface ChosenResult {
 }
 
 /** What grabbed a release, recorded on the queue row as grab_source. */
-export type GrabSource = "auto" | "interactive" | "irc" | "retry" | "rss";
+export type GrabSource = "auto" | "interactive" | "irc" | "retry" | "rss" | "push";
 
 /** A target's own identity (year + external provider ids). Two uses in chooseBestResult: the
  * identity gate (releaseIdentity.ts) compares a release's title year and ids against it, and
@@ -1778,7 +1779,8 @@ export async function grabBestRelease(
         }
         if (!(err instanceof ReleaseRefusedError)) throw err;
         refusal = err;
-        log.warn(`[scheduler] "${client.name}" refused "${chosen.result.title}":`, err.message);
+        // The client's message can quote the release's link, which may carry an indexer key or a tracker passkey.
+        log.warn(`[scheduler] "${client.name}" refused "${chosen.result.title}":`, redactLinks(err.message));
         remaining = remaining.filter((r) => r.downloadUrl !== chosen.result.downloadUrl);
         continue attempts;
       }

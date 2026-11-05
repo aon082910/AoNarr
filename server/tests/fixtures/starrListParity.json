@@ -1,0 +1,1309 @@
+{
+  "movie": [
+    {
+      "id": 3,
+      "overview": "",
+      "images": [],
+      "path": "/movies/3",
+      "qualityProfileId": 1,
+      "monitored": false,
+      "rootFolderPath": "/movies",
+      "folder": "3",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "title": "!!!",
+      "originalTitle": "!!!",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "alternateTitles": [],
+      "sortTitle": "!!!",
+      "sizeOnDisk": 0,
+      "status": "announced",
+      "inCinemas": "2099-01-01T00:00:00.000Z",
+      "year": 0,
+      "hasFile": false,
+      "youTubeTrailerId": "",
+      "minimumAvailability": "inCinemas",
+      "isAvailable": false,
+      "folderName": "/movies/3",
+      "runtime": 0,
+      "cleanTitle": "3",
+      "tmdbId": 0,
+      "titleSlug": "3",
+      "statistics": {
+        "movieFileCount": 0,
+        "sizeOnDisk": 0,
+        "releaseGroups": []
+      }
+    },
+    {
+      "id": 2,
+      "overview": "",
+      "images": [],
+      "path": "/movies/amelie",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/movies",
+      "folder": "amelie",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "title": "Amélie",
+      "originalTitle": "Amélie",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "alternateTitles": [],
+      "sortTitle": "amelie",
+      "sizeOnDisk": 0,
+      "status": "released",
+      "inCinemas": "2001-04-25T00:00:00.000Z",
+      "year": 2001,
+      "hasFile": false,
+      "youTubeTrailerId": "",
+      "minimumAvailability": "announced",
+      "isAvailable": true,
+      "folderName": "/movies/amelie",
+      "runtime": 0,
+      "cleanTitle": "amelie",
+      "tmdbId": 194,
+      "titleSlug": "194",
+      "statistics": {
+        "movieFileCount": 0,
+        "sizeOnDisk": 0,
+        "releaseGroups": []
+      }
+    },
+    {
+      "id": 4,
+      "overview": "",
+      "images": [],
+      "path": "/movies/Folder Path (2005)",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/movies",
+      "folder": "Folder Path (2005)",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "title": "Folder Path",
+      "originalTitle": "Folder Path",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "alternateTitles": [],
+      "sortTitle": "folder path",
+      "sizeOnDisk": 0,
+      "status": "released",
+      "inCinemas": "2005-05-05T00:00:00.000Z",
+      "digitalRelease": "2099-02-02T00:00:00.000Z",
+      "year": 2005,
+      "hasFile": false,
+      "youTubeTrailerId": "",
+      "minimumAvailability": "released",
+      "isAvailable": false,
+      "folderName": "/movies/Folder Path (2005)",
+      "runtime": 0,
+      "cleanTitle": "folderpath",
+      "tmdbId": 0,
+      "titleSlug": "folder-path",
+      "statistics": {
+        "movieFileCount": 0,
+        "sizeOnDisk": 0,
+        "releaseGroups": []
+      }
+    },
+    {
+      "id": 7,
+      "overview": "",
+      "images": [],
+      "path": "/movies/future-cinema",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/movies",
+      "folder": "future-cinema",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "title": "Future Cinema",
+      "originalTitle": "Future Cinema",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "alternateTitles": [],
+      "sortTitle": "future cinema",
+      "sizeOnDisk": 0,
+      "status": "announced",
+      "inCinemas": "2099-03-03T00:00:00.000Z",
+      "physicalRelease": "2099-09-09T00:00:00.000Z",
+      "year": 2099,
+      "hasFile": false,
+      "youTubeTrailerId": "",
+      "minimumAvailability": "released",
+      "isAvailable": false,
+      "folderName": "/movies/future-cinema",
+      "runtime": 0,
+      "cleanTitle": "futurecinema",
+      "tmdbId": 0,
+      "titleSlug": "future-cinema",
+      "statistics": {
+        "movieFileCount": 0,
+        "sizeOnDisk": 0,
+        "releaseGroups": []
+      }
+    },
+    {
+      "id": 1,
+      "overview": "A hacker learns.",
+      "images": [
+        {
+          "coverType": "poster",
+          "url": "/api/media/art/1/poster",
+          "remoteUrl": "/api/media/art/1/poster"
+        },
+        {
+          "coverType": "fanart",
+          "url": "/api/media/art/1/fanart",
+          "remoteUrl": "/api/media/art/1/fanart"
+        }
+      ],
+      "path": "/movies/The Matrix (1999)",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/movies",
+      "folder": "The Matrix (1999)",
+      "genres": [
+        "Action",
+        "Sci-Fi"
+      ],
+      "tags": [
+        1,
+        2
+      ],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 8.7
+      },
+      "certification": "R",
+      "title": "The Matrix",
+      "originalTitle": "The Matrix",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "alternateTitles": [],
+      "sortTitle": "matrix",
+      "sizeOnDisk": 9876543210,
+      "status": "released",
+      "inCinemas": "1999-03-31T00:00:00.000Z",
+      "physicalRelease": "2001-06-02T00:00:00.000Z",
+      "digitalRelease": "2001-05-01T00:00:00.000Z",
+      "year": 1999,
+      "hasFile": true,
+      "youTubeTrailerId": "",
+      "studio": "Warner",
+      "minimumAvailability": "released",
+      "isAvailable": true,
+      "folderName": "/movies/The Matrix (1999)",
+      "runtime": 136,
+      "cleanTitle": "thematrix",
+      "imdbId": "tt0133093",
+      "tmdbId": 603,
+      "titleSlug": "603",
+      "movieFile": {
+        "movieId": 1,
+        "edition": "",
+        "id": 1,
+        "relativePath": "The Matrix (1999) Bluray-1080p.mkv",
+        "path": "/movies/The Matrix (1999)/The Matrix (1999) Bluray-1080p.mkv",
+        "size": 9876543210,
+        "dateAdded": "2024-03-04T05:06:07.000Z",
+        "sceneName": "",
+        "releaseGroup": "",
+        "quality": {
+          "quality": {
+            "id": 22,
+            "name": "Bluray-1080p",
+            "source": "bluray",
+            "resolution": 1080
+          },
+          "revision": {
+            "version": 1,
+            "real": 0,
+            "isRepack": false
+          }
+        },
+        "languages": [
+          {
+            "id": 1,
+            "name": "English"
+          }
+        ],
+        "mediaInfo": {
+          "video": {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080
+          },
+          "audio": [
+            {
+              "codec": "eac3",
+              "channels": 6
+            }
+          ]
+        },
+        "qualityCutoffNotMet": false,
+        "customFormats": [],
+        "customFormatScore": 0
+      },
+      "statistics": {
+        "movieFileCount": 1,
+        "sizeOnDisk": 9876543210,
+        "releaseGroups": []
+      }
+    },
+    {
+      "id": 6,
+      "overview": "",
+      "images": [],
+      "path": "",
+      "qualityProfileId": 0,
+      "monitored": true,
+      "rootFolderPath": "",
+      "folder": "",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "title": "No Profile",
+      "originalTitle": "No Profile",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "alternateTitles": [],
+      "sortTitle": "no profile",
+      "sizeOnDisk": 0,
+      "status": "released",
+      "inCinemas": "2011-11-11T10:20:30.000Z",
+      "year": 2011,
+      "hasFile": false,
+      "youTubeTrailerId": "",
+      "minimumAvailability": "announced",
+      "isAvailable": true,
+      "folderName": "",
+      "runtime": 0,
+      "cleanTitle": "noprofile",
+      "tmdbId": 0,
+      "titleSlug": "no-profile",
+      "statistics": {
+        "movieFileCount": 0,
+        "sizeOnDisk": 0,
+        "releaseGroups": []
+      }
+    },
+    {
+      "id": 5,
+      "overview": "",
+      "images": [],
+      "path": "/movies/Odd Quality",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/movies",
+      "folder": "Odd Quality",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "title": "Odd Quality",
+      "originalTitle": "Odd Quality",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "alternateTitles": [],
+      "sortTitle": "odd quality",
+      "sizeOnDisk": 12345,
+      "status": "released",
+      "inCinemas": "2010-10-10T00:00:00.000Z",
+      "year": 2010,
+      "hasFile": true,
+      "youTubeTrailerId": "",
+      "minimumAvailability": "tba",
+      "isAvailable": true,
+      "folderName": "/movies/Odd Quality",
+      "runtime": 0,
+      "cleanTitle": "oddquality",
+      "tmdbId": 0,
+      "titleSlug": "odd-quality",
+      "movieFile": {
+        "movieId": 5,
+        "edition": "",
+        "id": 5,
+        "relativePath": "odd.mp4",
+        "path": "/movies/Odd Quality/odd.mp4",
+        "size": 12345,
+        "dateAdded": "2024-03-04T05:06:07.000Z",
+        "sceneName": "",
+        "releaseGroup": "",
+        "quality": {
+          "quality": {
+            "id": 0,
+            "name": "Weird-Q",
+            "source": "unknown",
+            "resolution": 0
+          },
+          "revision": {
+            "version": 1,
+            "real": 0,
+            "isRepack": false
+          }
+        },
+        "languages": [
+          {
+            "id": 1,
+            "name": "English"
+          }
+        ],
+        "mediaInfo": {},
+        "qualityCutoffNotMet": false,
+        "customFormats": [],
+        "customFormatScore": 0
+      },
+      "statistics": {
+        "movieFileCount": 1,
+        "sizeOnDisk": 12345,
+        "releaseGroups": []
+      }
+    },
+    {
+      "id": 8,
+      "overview": "",
+      "images": [
+        {
+          "coverType": "poster",
+          "url": "https://img.example/p.jpg",
+          "remoteUrl": "https://img.example/p.jpg"
+        }
+      ],
+      "path": "/movies/U",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/movies",
+      "folder": "U",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "title": "Unicode Ö Ünïcode",
+      "originalTitle": "Unicode Ö Ünïcode",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "alternateTitles": [],
+      "sortTitle": "unicode",
+      "sizeOnDisk": 1,
+      "status": "released",
+      "year": 2020,
+      "hasFile": true,
+      "youTubeTrailerId": "",
+      "minimumAvailability": "announced",
+      "isAvailable": true,
+      "folderName": "/movies/U",
+      "runtime": 0,
+      "cleanTitle": "unicodeounicode",
+      "imdbId": "tt1",
+      "tmdbId": 0,
+      "titleSlug": "unicode-o-unicode",
+      "movieFile": {
+        "movieId": 8,
+        "edition": "",
+        "id": 8,
+        "relativePath": "U.mkv",
+        "path": "/movies/U/U.mkv",
+        "size": 1,
+        "dateAdded": "2024-03-04T05:06:07.000Z",
+        "sceneName": "",
+        "releaseGroup": "",
+        "quality": {
+          "quality": {
+            "id": 28,
+            "name": "Remux-2160p",
+            "source": "bluray",
+            "resolution": 2160
+          },
+          "revision": {
+            "version": 1,
+            "real": 0,
+            "isRepack": false
+          }
+        },
+        "languages": [
+          {
+            "id": 1,
+            "name": "English"
+          }
+        ],
+        "mediaInfo": {
+          "video": {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080
+          },
+          "audio": [
+            {
+              "codec": "eac3",
+              "channels": 6
+            }
+          ]
+        },
+        "qualityCutoffNotMet": false,
+        "customFormats": [],
+        "customFormatScore": 0
+      },
+      "statistics": {
+        "movieFileCount": 1,
+        "sizeOnDisk": 1,
+        "releaseGroups": []
+      }
+    }
+  ],
+  "series": [
+    {
+      "id": 13,
+      "overview": "",
+      "images": [],
+      "path": "/anime/anime-show",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/anime",
+      "folder": "anime-show",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "title": "Anime Show",
+      "alternateTitles": [],
+      "sortTitle": "anime show",
+      "status": "continuing",
+      "ended": false,
+      "year": 2012,
+      "seriesType": "anime",
+      "cleanTitle": "animeshow",
+      "titleSlug": "anime-show",
+      "languageProfileId": 1,
+      "seasonFolder": true,
+      "useSceneNumbering": false,
+      "runtime": 0,
+      "tvdbId": 9,
+      "tmdbId": 0,
+      "tvMazeId": 0,
+      "tvRageId": 0,
+      "lastAired": "2012-07-14T00:00:00.000Z",
+      "previousAiring": "2012-07-14T00:00:00.000Z",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "seasons": [
+        {
+          "seasonNumber": 1,
+          "monitored": true,
+          "statistics": {
+            "episodeFileCount": 0,
+            "episodeCount": 2,
+            "totalEpisodeCount": 2,
+            "sizeOnDisk": 0,
+            "percentOfEpisodes": 0,
+            "previousAiring": "2012-07-14T00:00:00.000Z"
+          }
+        }
+      ],
+      "statistics": {
+        "seasonCount": 1,
+        "episodeFileCount": 0,
+        "episodeCount": 2,
+        "totalEpisodeCount": 2,
+        "sizeOnDisk": 0,
+        "releaseGroups": [],
+        "percentOfEpisodes": 0
+      }
+    },
+    {
+      "id": 10,
+      "overview": "A teacher.",
+      "images": [
+        {
+          "coverType": "poster",
+          "url": "/api/media/art/9/poster",
+          "remoteUrl": "/api/media/art/9/poster"
+        }
+      ],
+      "path": "/tv/Breaking Bad",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/tv",
+      "folder": "Breaking Bad",
+      "genres": [
+        "Drama"
+      ],
+      "tags": [
+        1
+      ],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 9.5
+      },
+      "certification": "TV-MA",
+      "title": "Breaking Bad",
+      "alternateTitles": [],
+      "sortTitle": "breaking bad",
+      "status": "ended",
+      "ended": true,
+      "network": "AMC",
+      "year": 2008,
+      "seriesType": "standard",
+      "cleanTitle": "breakingbad",
+      "titleSlug": "breaking-bad",
+      "languageProfileId": 1,
+      "seasonFolder": true,
+      "useSceneNumbering": false,
+      "runtime": 47,
+      "tvdbId": 81189,
+      "tmdbId": 1396,
+      "imdbId": "tt0903747",
+      "tvMazeId": 0,
+      "tvRageId": 0,
+      "lastAired": "2009-03-08T00:00:00.000Z",
+      "previousAiring": "2009-03-08T00:00:00.000Z",
+      "nextAiring": "2099-05-05T00:00:00.000Z",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "seasons": [
+        {
+          "seasonNumber": 0,
+          "monitored": true,
+          "statistics": {
+            "episodeFileCount": 0,
+            "episodeCount": 1,
+            "totalEpisodeCount": 1,
+            "sizeOnDisk": 0,
+            "percentOfEpisodes": 0,
+            "previousAiring": "2008-12-01T00:00:00.000Z"
+          }
+        },
+        {
+          "seasonNumber": 1,
+          "monitored": true,
+          "statistics": {
+            "episodeFileCount": 2,
+            "episodeCount": 2,
+            "totalEpisodeCount": 3,
+            "sizeOnDisk": 2900000000,
+            "percentOfEpisodes": 100,
+            "previousAiring": "2008-01-27T00:00:00.000Z"
+          }
+        },
+        {
+          "seasonNumber": 2,
+          "monitored": true,
+          "statistics": {
+            "episodeFileCount": 0,
+            "episodeCount": 1,
+            "totalEpisodeCount": 3,
+            "sizeOnDisk": 0,
+            "percentOfEpisodes": 0,
+            "nextAiring": "2099-05-05T00:00:00.000Z",
+            "previousAiring": "2009-03-08T00:00:00.000Z"
+          }
+        }
+      ],
+      "statistics": {
+        "seasonCount": 2,
+        "episodeFileCount": 2,
+        "episodeCount": 4,
+        "totalEpisodeCount": 7,
+        "sizeOnDisk": 2900000000,
+        "releaseGroups": [],
+        "percentOfEpisodes": 50
+      }
+    },
+    {
+      "id": 12,
+      "overview": "",
+      "images": [],
+      "path": "/tv/cancelled-show",
+      "qualityProfileId": 1,
+      "monitored": false,
+      "rootFolderPath": "/tv",
+      "folder": "cancelled-show",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "title": "Cancelled Show",
+      "alternateTitles": [],
+      "sortTitle": "cancelled show",
+      "status": "ended",
+      "ended": true,
+      "year": 2015,
+      "seriesType": "daily",
+      "cleanTitle": "cancelledshow",
+      "titleSlug": "cancelled-show",
+      "languageProfileId": 1,
+      "seasonFolder": true,
+      "useSceneNumbering": false,
+      "runtime": 0,
+      "tvdbId": 777,
+      "tmdbId": 0,
+      "tvMazeId": 0,
+      "tvRageId": 0,
+      "lastAired": "2015-06-06T00:00:00.000Z",
+      "previousAiring": "2015-06-06T00:00:00.000Z",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "seasons": [
+        {
+          "seasonNumber": 1,
+          "monitored": true,
+          "statistics": {
+            "episodeFileCount": 1,
+            "episodeCount": 1,
+            "totalEpisodeCount": 1,
+            "sizeOnDisk": 700,
+            "percentOfEpisodes": 100,
+            "previousAiring": "2015-06-06T00:00:00.000Z"
+          }
+        }
+      ],
+      "statistics": {
+        "seasonCount": 1,
+        "episodeFileCount": 1,
+        "episodeCount": 1,
+        "totalEpisodeCount": 1,
+        "sizeOnDisk": 700,
+        "releaseGroups": [],
+        "percentOfEpisodes": 100
+      }
+    },
+    {
+      "id": 11,
+      "overview": "",
+      "images": [],
+      "path": "/tv/no-episodes-yet",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/tv",
+      "folder": "no-episodes-yet",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "title": "No Episodes Yet",
+      "alternateTitles": [],
+      "sortTitle": "no episodes yet",
+      "status": "upcoming",
+      "ended": false,
+      "year": 2030,
+      "seriesType": "standard",
+      "cleanTitle": "noepisodesyet",
+      "titleSlug": "no-episodes-yet",
+      "languageProfileId": 1,
+      "seasonFolder": true,
+      "useSceneNumbering": false,
+      "runtime": 0,
+      "tvdbId": 0,
+      "tmdbId": 0,
+      "tvMazeId": 0,
+      "tvRageId": 0,
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "seasons": [],
+      "statistics": {
+        "seasonCount": 0,
+        "episodeFileCount": 0,
+        "episodeCount": 0,
+        "totalEpisodeCount": 0,
+        "sizeOnDisk": 0,
+        "releaseGroups": [],
+        "percentOfEpisodes": 100
+      }
+    }
+  ],
+  "artist": [
+    {
+      "id": 14,
+      "overview": "A band.",
+      "images": [],
+      "path": "/music/Pink Floyd",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/music",
+      "folder": "Pink Floyd",
+      "genres": [],
+      "tags": [
+        2
+      ],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "artistName": "Pink Floyd",
+      "sortName": "pink floyd",
+      "status": "ended",
+      "ended": true,
+      "disambiguation": "",
+      "links": [],
+      "cleanName": "pinkfloyd",
+      "foreignArtistId": "83d91898-7763-47d7-b03b-b92132375c47",
+      "metadataProfileId": 0,
+      "monitorNewItems": "all",
+      "artistType": "",
+      "statistics": {
+        "albumCount": 2,
+        "trackFileCount": 1,
+        "trackCount": 2,
+        "totalTrackCount": 3,
+        "sizeOnDisk": 400000000,
+        "percentOfTracks": 50
+      }
+    },
+    {
+      "id": 15,
+      "overview": "",
+      "images": [],
+      "path": "",
+      "qualityProfileId": 1,
+      "monitored": false,
+      "rootFolderPath": "",
+      "folder": "",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "artistName": "Silent Artist",
+      "sortName": "silent artist",
+      "status": "continuing",
+      "ended": false,
+      "disambiguation": "",
+      "links": [],
+      "cleanName": "silentartist",
+      "foreignArtistId": "",
+      "metadataProfileId": 0,
+      "monitorNewItems": "all",
+      "artistType": "",
+      "statistics": {
+        "albumCount": 0,
+        "trackFileCount": 0,
+        "trackCount": 0,
+        "totalTrackCount": 0,
+        "sizeOnDisk": 0,
+        "percentOfTracks": 100
+      }
+    }
+  ],
+  "author": [
+    {
+      "id": 16,
+      "overview": "An author.",
+      "images": [],
+      "path": "/books/Frank Herbert",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/books",
+      "folder": "Frank Herbert",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "authorName": "Frank Herbert",
+      "authorNameLastFirst": "Frank Herbert",
+      "sortName": "herbert, frank",
+      "status": "ended",
+      "ended": true,
+      "disambiguation": "",
+      "links": [],
+      "cleanName": "frankherbert",
+      "foreignAuthorId": "OL79034A",
+      "metadataProfileId": 0,
+      "monitorNewItems": "all",
+      "statistics": {
+        "bookCount": 2,
+        "bookFileCount": 1,
+        "availableBookCount": 1,
+        "totalBookCount": 2,
+        "sizeOnDisk": 2000000,
+        "percentOfBooks": 50
+      }
+    },
+    {
+      "id": 17,
+      "overview": "",
+      "images": [],
+      "path": "",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "",
+      "folder": "",
+      "genres": [],
+      "tags": [],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "authorName": "No Books",
+      "authorNameLastFirst": "No Books",
+      "sortName": "no books",
+      "status": "continuing",
+      "ended": false,
+      "disambiguation": "",
+      "links": [],
+      "cleanName": "nobooks",
+      "foreignAuthorId": "1",
+      "metadataProfileId": 0,
+      "monitorNewItems": "all",
+      "statistics": {
+        "bookCount": 0,
+        "bookFileCount": 0,
+        "availableBookCount": 0,
+        "totalBookCount": 0,
+        "sizeOnDisk": 0,
+        "percentOfBooks": 100
+      }
+    }
+  ],
+  "album": [
+    {
+      "id": 1,
+      "title": "The Dark Side of the Moon",
+      "disambiguation": "",
+      "overview": "An album.",
+      "monitored": true,
+      "releaseDate": "1973-03-01T00:00:00.000Z",
+      "images": [
+        {
+          "coverType": "poster",
+          "url": "/api/media/art/a1/poster",
+          "remoteUrl": "/api/media/art/a1/poster"
+        }
+      ],
+      "genres": [],
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "grabbed": false,
+      "artistId": 14,
+      "foreignAlbumId": "mb-The Dark Side of the Moon",
+      "anyReleaseOk": true,
+      "profileId": 0,
+      "duration": 0,
+      "albumType": "Album",
+      "secondaryTypes": [],
+      "mediaCount": 1,
+      "releases": [],
+      "media": [],
+      "statistics": {
+        "trackFileCount": 1,
+        "trackCount": 1,
+        "totalTrackCount": 1,
+        "sizeOnDisk": 400000000,
+        "percentOfTracks": 100
+      }
+    },
+    {
+      "id": 2,
+      "title": "Wish You Were Here",
+      "disambiguation": "",
+      "monitored": true,
+      "releaseDate": "1975-09-12T00:00:00.000Z",
+      "images": [],
+      "genres": [],
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "grabbed": false,
+      "artistId": 14,
+      "foreignAlbumId": "mb-Wish You Were Here",
+      "anyReleaseOk": true,
+      "profileId": 0,
+      "duration": 0,
+      "albumType": "Album",
+      "secondaryTypes": [],
+      "mediaCount": 1,
+      "releases": [],
+      "media": [],
+      "statistics": {
+        "trackFileCount": 0,
+        "trackCount": 1,
+        "totalTrackCount": 1,
+        "sizeOnDisk": 0,
+        "percentOfTracks": 0
+      }
+    },
+    {
+      "id": 3,
+      "title": "Unreleased",
+      "disambiguation": "",
+      "monitored": false,
+      "releaseDate": "2099-01-01T00:00:00.000Z",
+      "images": [],
+      "genres": [],
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "grabbed": false,
+      "artistId": 14,
+      "foreignAlbumId": "mb-Unreleased",
+      "anyReleaseOk": true,
+      "profileId": 0,
+      "duration": 0,
+      "albumType": "Album",
+      "secondaryTypes": [],
+      "mediaCount": 1,
+      "releases": [],
+      "media": [],
+      "statistics": {
+        "trackFileCount": 0,
+        "trackCount": 1,
+        "totalTrackCount": 1,
+        "sizeOnDisk": 0,
+        "percentOfTracks": 0
+      }
+    }
+  ],
+  "book": [
+    {
+      "id": 4,
+      "title": "Dune",
+      "disambiguation": "",
+      "monitored": true,
+      "releaseDate": "1965-08-01T00:00:00.000Z",
+      "images": [],
+      "genres": [],
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "grabbed": false,
+      "authorId": 16,
+      "foreignBookId": "OL-Dune",
+      "titleSlug": "dune",
+      "pageCount": 0,
+      "seriesTitle": "Dune Chronicles",
+      "anyEditionOk": true,
+      "editions": [],
+      "statistics": {
+        "bookFileCount": 1,
+        "bookCount": 1,
+        "totalBookCount": 1,
+        "sizeOnDisk": 2000000,
+        "percentOfBooks": 100
+      }
+    },
+    {
+      "id": 5,
+      "title": "Dune Messiah",
+      "disambiguation": "",
+      "monitored": true,
+      "releaseDate": "1969-10-01T00:00:00.000Z",
+      "images": [],
+      "genres": [],
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "grabbed": false,
+      "authorId": 16,
+      "foreignBookId": "OL-Dune Messiah",
+      "titleSlug": "dune-messiah",
+      "pageCount": 0,
+      "seriesTitle": "Dune Chronicles",
+      "anyEditionOk": true,
+      "editions": [],
+      "statistics": {
+        "bookFileCount": 0,
+        "bookCount": 1,
+        "totalBookCount": 1,
+        "sizeOnDisk": 0,
+        "percentOfBooks": 0
+      }
+    }
+  ],
+  "movie-by-tmdb": [
+    {
+      "id": 1,
+      "overview": "A hacker learns.",
+      "images": [
+        {
+          "coverType": "poster",
+          "url": "/api/media/art/1/poster",
+          "remoteUrl": "/api/media/art/1/poster"
+        },
+        {
+          "coverType": "fanart",
+          "url": "/api/media/art/1/fanart",
+          "remoteUrl": "/api/media/art/1/fanart"
+        }
+      ],
+      "path": "/movies/The Matrix (1999)",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/movies",
+      "folder": "The Matrix (1999)",
+      "genres": [
+        "Action",
+        "Sci-Fi"
+      ],
+      "tags": [
+        1,
+        2
+      ],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 8.7
+      },
+      "certification": "R",
+      "title": "The Matrix",
+      "originalTitle": "The Matrix",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "alternateTitles": [],
+      "sortTitle": "matrix",
+      "sizeOnDisk": 9876543210,
+      "status": "released",
+      "inCinemas": "1999-03-31T00:00:00.000Z",
+      "physicalRelease": "2001-06-02T00:00:00.000Z",
+      "digitalRelease": "2001-05-01T00:00:00.000Z",
+      "year": 1999,
+      "hasFile": true,
+      "youTubeTrailerId": "",
+      "studio": "Warner",
+      "minimumAvailability": "released",
+      "isAvailable": true,
+      "folderName": "/movies/The Matrix (1999)",
+      "runtime": 136,
+      "cleanTitle": "thematrix",
+      "imdbId": "tt0133093",
+      "tmdbId": 603,
+      "titleSlug": "603",
+      "movieFile": {
+        "movieId": 1,
+        "edition": "",
+        "id": 1,
+        "relativePath": "The Matrix (1999) Bluray-1080p.mkv",
+        "path": "/movies/The Matrix (1999)/The Matrix (1999) Bluray-1080p.mkv",
+        "size": 9876543210,
+        "dateAdded": "2024-03-04T05:06:07.000Z",
+        "sceneName": "",
+        "releaseGroup": "",
+        "quality": {
+          "quality": {
+            "id": 22,
+            "name": "Bluray-1080p",
+            "source": "bluray",
+            "resolution": 1080
+          },
+          "revision": {
+            "version": 1,
+            "real": 0,
+            "isRepack": false
+          }
+        },
+        "languages": [
+          {
+            "id": 1,
+            "name": "English"
+          }
+        ],
+        "mediaInfo": {
+          "video": {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080
+          },
+          "audio": [
+            {
+              "codec": "eac3",
+              "channels": 6
+            }
+          ]
+        },
+        "qualityCutoffNotMet": false,
+        "customFormats": [],
+        "customFormatScore": 0
+      },
+      "statistics": {
+        "movieFileCount": 1,
+        "sizeOnDisk": 9876543210,
+        "releaseGroups": []
+      }
+    }
+  ],
+  "series-by-tvdb": [
+    {
+      "id": 10,
+      "overview": "A teacher.",
+      "images": [
+        {
+          "coverType": "poster",
+          "url": "/api/media/art/9/poster",
+          "remoteUrl": "/api/media/art/9/poster"
+        }
+      ],
+      "path": "/tv/Breaking Bad",
+      "qualityProfileId": 1,
+      "monitored": true,
+      "rootFolderPath": "/tv",
+      "folder": "Breaking Bad",
+      "genres": [
+        "Drama"
+      ],
+      "tags": [
+        1
+      ],
+      "added": "2024-03-04T05:06:07.000Z",
+      "ratings": {
+        "votes": 0,
+        "value": 9.5
+      },
+      "certification": "TV-MA",
+      "title": "Breaking Bad",
+      "alternateTitles": [],
+      "sortTitle": "breaking bad",
+      "status": "ended",
+      "ended": true,
+      "network": "AMC",
+      "year": 2008,
+      "seriesType": "standard",
+      "cleanTitle": "breakingbad",
+      "titleSlug": "breaking-bad",
+      "languageProfileId": 1,
+      "seasonFolder": true,
+      "useSceneNumbering": false,
+      "runtime": 47,
+      "tvdbId": 81189,
+      "tmdbId": 1396,
+      "imdbId": "tt0903747",
+      "tvMazeId": 0,
+      "tvRageId": 0,
+      "lastAired": "2009-03-08T00:00:00.000Z",
+      "previousAiring": "2009-03-08T00:00:00.000Z",
+      "nextAiring": "2099-05-05T00:00:00.000Z",
+      "originalLanguage": {
+        "id": 1,
+        "name": "English"
+      },
+      "seasons": [
+        {
+          "seasonNumber": 0,
+          "monitored": true,
+          "statistics": {
+            "episodeFileCount": 0,
+            "episodeCount": 1,
+            "totalEpisodeCount": 1,
+            "sizeOnDisk": 0,
+            "percentOfEpisodes": 0,
+            "previousAiring": "2008-12-01T00:00:00.000Z"
+          }
+        },
+        {
+          "seasonNumber": 1,
+          "monitored": true,
+          "statistics": {
+            "episodeFileCount": 2,
+            "episodeCount": 2,
+            "totalEpisodeCount": 3,
+            "sizeOnDisk": 2900000000,
+            "percentOfEpisodes": 100,
+            "previousAiring": "2008-01-27T00:00:00.000Z"
+          }
+        },
+        {
+          "seasonNumber": 2,
+          "monitored": true,
+          "statistics": {
+            "episodeFileCount": 0,
+            "episodeCount": 1,
+            "totalEpisodeCount": 3,
+            "sizeOnDisk": 0,
+            "percentOfEpisodes": 0,
+            "nextAiring": "2099-05-05T00:00:00.000Z",
+            "previousAiring": "2009-03-08T00:00:00.000Z"
+          }
+        }
+      ],
+      "statistics": {
+        "seasonCount": 2,
+        "episodeFileCount": 2,
+        "episodeCount": 4,
+        "totalEpisodeCount": 7,
+        "sizeOnDisk": 2900000000,
+        "releaseGroups": [],
+        "percentOfEpisodes": 50
+      }
+    }
+  ]
+}

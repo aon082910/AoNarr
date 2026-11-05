@@ -3,9 +3,10 @@ import { db } from "../db/index.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { log } from "../services/logger.js";
 import { findUpgradeCandidates } from "../services/upgradeCandidates.js";
+import { ScanRefused, checkScanPath, importModeOfCommand, scanPath } from "../services/pathScan.js";
 import { callNative } from "./native.js";
 import { type StarrApp, typeFilter } from "./apps.js";
-import { idList, numericId } from "./shapes.js";
+import { idList, numericId, validationFailure } from "./shapes.js";
 import type { StarrRoutes } from "./router.js";
 
 /**
@@ -14,7 +15,10 @@ import type { StarrRoutes } from "./router.js";
  */
 
 type CommandBody = Record<string, any>;
-type Action = (app: Application, body: CommandBody) => Promise<void>;
+/** What a command did, as the message of its record (Starr shows it beside the result); nothing for most commands. */
+type Action = (app: Application, body: CommandBody) => Promise<void | string>;
+/** Checks the body of a command before it is accepted: a refusal answers the request and leaves no record. */
+type Validator = (body: CommandBody) => Promise<void>;
 
 interface CommandRecord {
   id: number;
@@ -87,7 +91,15 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
   };
 
   const rssSync: Action = async (app) => void (await callNative(app, "POST", "/api/jobs/rssSync/run"));
-  const downloadedScan: Action = async (app) => void (await callNative(app, "POST", "/api/jobs/queuePoll/run"));
+  // Without a path: the queue check, which imports what the download clients finished. With one: the media found at that path
+  // is matched to the library and imported (services/pathScan.ts); a download the queue tracks is left to the queue check.
+  const downloadedScan: Action = async (app, body) => {
+    if (!hasPath(body)) return void (await callNative(app, "POST", "/api/jobs/queuePoll/run"));
+    const summary = await scanPath({ types: typeNames, path: body.path, importMode: body.importMode, downloadId: body.downloadClientId });
+    if (summary.tracked > 0) await callNative(app, "POST", "/api/jobs/queuePoll/run").catch(() => undefined);
+    if (summary.failed > 0 && summary.imported === 0) throw new Error(summary.message);
+    return summary.message;
+  };
   // Overseerr and Jellyseerr send this before every read of the queue (their download tracker, each minute), and give up on
   // the read when it is refused. The poll is the same one the scheduler runs; one already running answers 202 and is enough.
   const refreshMonitoredDownloads: Action = async (app) => void (await callNative(app, "POST", "/api/jobs/queuePoll/run"));
@@ -192,9 +204,28 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
   }
 }
 
+const hasPath = (body: CommandBody) => body.path !== undefined && body.path !== null && body.path !== "";
+
+/** The commands whose body is checked before they are accepted (a path outside the places a scan may look in is refused). */
+function validatorsOf(starr: StarrApp): Record<string, Validator> {
+  const scan: Validator = async (body) => {
+    if (!hasPath(body)) return;
+    try {
+      await checkScanPath(body.path, typeof body.downloadClientId === "string" ? body.downloadClientId : null);
+      importModeOfCommand(body.importMode);
+    } catch (err) {
+      if (err instanceof ScanRefused) throw validationFailure([{ propertyName: err.propertyName, errorMessage: err.message }]);
+      throw err;
+    }
+  };
+  const name = starr.key === "sonarr" ? "DownloadedEpisodesScan" : starr.key === "radarr" ? "DownloadedMoviesScan" : starr.key === "lidarr" ? "DownloadedAlbumsScan" : "DownloadedBooksScan";
+  return { [name]: scan };
+}
+
 export function registerCommandRoutes(r: StarrRoutes): void {
   const starr = r.app;
   const actions = actionsOf(starr);
+  const validators = validatorsOf(starr);
 
   r.get("/command", "Recent commands", () => commands.filter((c) => c.app === starr.key).map(resource));
   r.get("/command/:id", "One command", (req) => {
@@ -208,6 +239,7 @@ export function registerCommandRoutes(r: StarrRoutes): void {
     const name = String(body.name ?? "");
     const action = Object.hasOwn(actions, name) ? actions[name] : undefined;
     if (!action) throw new HttpError(400, name ? `${starr.appName} does not run "${name}" here` : "name is required");
+    if (Object.hasOwn(validators, name)) await validators[name](body);
     const now = new Date().toISOString();
     const record: CommandRecord = {
       id: nextCommandId++,
@@ -237,7 +269,10 @@ export function registerCommandRoutes(r: StarrRoutes): void {
     };
     record.status = "started";
     record.started = new Date().toISOString();
-    const running = action(req.app, body);
+    let said: string | undefined;
+    const running = action(req.app, body).then((message) => {
+      said = typeof message === "string" ? message : undefined;
+    });
     // Settled fast for the checks that can fail on the caller's input (an unknown id), so they answer as an error.
     let timer: NodeJS.Timeout | undefined;
     const early = await Promise.race([running.then(() => "done" as const, (err) => err as Error), new Promise<"pending">((resolve) => (timer = setTimeout(() => resolve("pending"), 250)))]);
@@ -247,10 +282,10 @@ export function registerCommandRoutes(r: StarrRoutes): void {
       if (early instanceof HttpError && early.status < 500) throw early;
       log.warn(`[starr] ${starr.appName} command ${name} failed:`, early.message);
     } else if (early === "done") {
-      finished(true);
+      finished(true, said);
     } else {
       running.then(
-        () => finished(true),
+        () => finished(true, said),
         (err: Error) => {
           finished(false, err.message);
           log.warn(`[starr] ${starr.appName} command ${name} failed:`, err.message);

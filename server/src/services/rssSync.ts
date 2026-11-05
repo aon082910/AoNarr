@@ -15,6 +15,7 @@ import { sceneIndexFor } from "./sceneNumbering.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { recordPending } from "./pendingStore.js";
+import { redactLinks } from "./linkRedaction.js";
 import { formatCutoffNotMet, propersMode, revisionUpgrade, upgradeProfileOf, type ExistingFile, type UpgradeProfile } from "./upgradeRules.js";
 import { existingFileRecord } from "./fileRelease.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
@@ -43,6 +44,7 @@ import {
   packsPossibleFor,
   pickClientForProtocol,
   pickDelayProfile,
+  ReleaseRefusedError,
   rowsToDownloadClients,
   rowsToIndexers,
   seasonGroupsOf,
@@ -50,6 +52,7 @@ import {
   targetIdentityOf,
   type DelayProfile,
   type DirectDownloadBudget,
+  type GrabSource,
   type SeasonGroup,
 } from "./scheduler.js";
 import type { DownloadClient, Indexer, MediaItem, MediaType, SearchResult } from "../types/index.js";
@@ -330,29 +333,8 @@ async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<
     // An album, book or comic issue that the name could be: the parent is named in the release and the sub-item passes the
     // name tests of a search (chooseBestResult on this one release).
     if (wanted.collections.size > 0 && parsed.seasonNumber == null && !(parsed.episodeNumbers?.length ?? 0) && !parsed.isFullSeason && !parsed.airDate) {
-      const releaseKey = ` ${identityKey(release.title)} `;
-      const released = new Set(releaseKey.split(" ").filter(Boolean));
-      let matchedSub = false;
-      for (const { item, subs } of wanted.collections.values()) {
-        if (matchedSub) break; // one release maps to at most one sub-item
-        const key = identityKey(item.title);
-        if (!key || !releaseKey.includes(` ${key} `)) continue;
-        for (const sub of subs) {
-          // A cheap cut before the full name test: an album or book is named by (the main part of) its title, so all of
-          // those words are in the release; a comic issue or chapter is named by its number and is left to the full test.
-          if (["artist", "author", "audiobook"].includes(item.type)) {
-            const words = identityKey(editionlessTitle(sub.title).split(/\s*:\s*/)[0].replace(/\([^)]*\)|\[[^\]]*\]/g, " ")).split(" ").filter((w) => w.length > 0);
-            if (words.length > 0 && !words.every((w) => released.has(w) || ["a", "an", "the", "of", "and"].includes(w))) continue;
-          }
-          const name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
-          const named = await chooseBestResult([release], [], "", null, 0, null, new Set(), item.type, null, null, item.id, { name });
-          if (named) {
-            add({ kind: "sub", key: `sub:${sub.id}`, item, sub, releases: [release] });
-            matchedSub = true;
-            break;
-          }
-        }
-      }
+      const hit = await matchCollectionRelease(release, wanted.collections.values());
+      if (hit) add({ kind: "sub", key: `sub:${hit.sub.id}`, item: hit.item, sub: hit.sub, releases: [release] });
     }
 
     if (!episodeShaped) {
@@ -394,7 +376,34 @@ async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<
   return { groups, unmatched };
 }
 
-async function releaseNamesEpisode(
+/**
+ * The album, book or comic issue a release names among these parents (artists, authors, series), each with the sub-items to
+ * try in the order to try them: the parent has to be named in the release, and the sub-item has to pass the name tests of a
+ * search (chooseBestResult on this one release). One release maps to at most one sub-item. The RSS sync tries the wanted ones,
+ * the scan of a folder (pathScan.ts) every one the library has.
+ */
+export async function matchCollectionRelease(release: SearchResult, collections: Iterable<{ item: MediaItem; subs: any[] }>): Promise<{ item: MediaItem; sub: any } | null> {
+  const releaseKey = ` ${identityKey(release.title)} `;
+  const released = new Set(releaseKey.split(" ").filter(Boolean));
+  for (const { item, subs } of collections) {
+    const key = identityKey(item.title);
+    if (!key || !releaseKey.includes(` ${key} `)) continue;
+    for (const sub of subs) {
+      // A cheap cut before the full name test: an album or book is named by (the main part of) its title, so all of
+      // those words are in the release; a comic issue or chapter is named by its number and is left to the full test.
+      if (["artist", "author", "audiobook"].includes(item.type)) {
+        const words = identityKey(editionlessTitle(sub.title).split(/\s*:\s*/)[0].replace(/\([^)]*\)|\[[^\]]*\]/g, " ")).split(" ").filter((w) => w.length > 0);
+        if (words.length > 0 && !words.every((w) => released.has(w) || ["a", "an", "the", "of", "and"].includes(w))) continue;
+      }
+      const name = { title: sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, sub.id), ...(await yearFieldsOf(item, sub)) };
+      const named = await chooseBestResult([release], [], "", null, 0, null, new Set(), item.type, null, null, item.id, { name });
+      if (named) return { item, sub };
+    }
+  }
+  return null;
+}
+
+export async function releaseNamesEpisode(
   parsed: ParsedRelease,
   show: MediaItem,
   ep: any,
@@ -410,8 +419,9 @@ async function releaseNamesEpisode(
   return releaseMatchesEpisode(parsed, ep.season_number, ep.episode_number, ep.scene_season_number, ep.scene_episode_number, absolute, sceneIndex);
 }
 
-async function buildDecideEnv(indexers: Indexer[], clients: DownloadClient[], upgrades: boolean): Promise<DecideEnv> {
+async function buildDecideEnv(indexers: Indexer[], clients: DownloadClient[], upgrades: boolean, source: GrabSource = "rss"): Promise<DecideEnv> {
   return {
+    source,
     indexers,
     clients,
     delayProfiles: await loadDelayProfiles(),
@@ -465,6 +475,8 @@ interface DecideEnv {
   upgrades: boolean;
   /** Releases sent to a client in this run: one that names several episodes is one download, not one per episode. */
   grabbedUrls: Set<string>;
+  /** What the grab is recorded as: the sync's own "rss", or "push" for a release another program handed over. */
+  source: GrabSource;
 }
 
 /**
@@ -595,7 +607,7 @@ async function decideGroup(group: Group, env: DecideEnv, trace: DecideTrace): Pr
       results,
       usable,
       (remaining) => choose(remaining, delayProfile),
-      (client, chosen) => grab(client, item, episodeId, group.kind === "sub" ? group.sub.id : null, chosen, 0, seasonNumber, "rss"),
+      (client, chosen) => grab(client, item, episodeId, group.kind === "sub" ? group.sub.id : null, chosen, 0, seasonNumber, env.source),
       { itemId: item.id, indexers: env.indexers }
     );
   } catch (err) {
@@ -675,11 +687,109 @@ export async function judgeMappedRelease(release: SearchResult, target: { mediaI
   }
 
   const env = await buildDecideEnv(await rowsToIndexers(), clients, upgrades);
+  const { best } = await decideGroups(groups, env);
+  return { outcome: best!.outcome, reason: best!.reason ?? "", mediaItemId: target.mediaItemId, episodeId: best!.episodeId ?? null, subItemId: best!.subItemId ?? null };
+}
+
+/** Decides each group as a sync does (a held one wakes its target), and keeps what was decided about every release and the strongest of it. */
+async function decideGroups(groups: Group[], env: DecideEnv): Promise<{ best: RssDecisionInput | undefined; inputs: RssDecisionInput[] }> {
   let best: RssDecisionInput | undefined;
+  const inputs: RssDecisionInput[] = [];
   for (const group of groups) {
     const decided = await decide(group, env);
     if (decided.result === "held") await wake(group);
-    for (const input of decisionsFor(group, decided)) best = strongerDecision(best, input);
+    for (const input of decisionsFor(group, decided)) {
+      inputs.push(input);
+      best = strongerDecision(best, input);
+    }
   }
-  return { outcome: best!.outcome, reason: best!.reason ?? "", mediaItemId: target.mediaItemId, episodeId: best!.episodeId ?? null, subItemId: best!.subItemId ?? null };
+  return { best, inputs };
+}
+
+/** What judgeOneRelease says about one release. */
+export interface OneReleaseJudgement {
+  outcome: RssOutcome;
+  /** Why it was not taken (one line each); empty for a release that was grabbed. */
+  reasons: string[];
+  /** Not refused for good: a delay profile holds it, or no download client could take it just now. */
+  temporary: boolean;
+  mediaItemId: number | null;
+  episodeId: number | null;
+  subItemId: number | null;
+  /** The quality the release's name states. */
+  quality: string | null;
+}
+
+/** Releases handed over one at a time are judged one at a time: the library's wanted list and the clients' budget are read for each. */
+let judging: Promise<unknown> = Promise.resolve();
+
+/**
+ * Judges ONE release the way the RSS sync judges a feed's: which wanted title, episode, season or album it names
+ * (matchReleases), then the rules of a search for that target (decide: identity, rejections, quality, formats, blocklist,
+ * delay profile, pack guards, upgrade rules), and the grab when it passes. This is what `POST /release/push` runs for a
+ * release a program such as autobrr hands over. A release the delay profile holds is kept as pending (the search of the target
+ * takes it once it is old enough); one that names nothing wanted is answered "unmatched" and nothing is stored or grabbed.
+ * `types` limits the titles it may name (a Radarr mount takes movies only). Calls queue up and run one at a time.
+ */
+export function judgeOneRelease(release: SearchResult, options: { source?: GrabSource; types?: string[] } = {}): Promise<OneReleaseJudgement> {
+  const run = judging.then(
+    () => judgeOneNow(release, options),
+    () => judgeOneNow(release, options)
+  );
+  judging = run.catch(() => undefined);
+  return run;
+}
+
+async function judgeOneNow(release: SearchResult, options: { source?: GrabSource; types?: string[] }): Promise<OneReleaseJudgement> {
+  const none = { mediaItemId: null, episodeId: null, subItemId: null, quality: parseReleaseTitle(release.title).quality ?? null };
+  const clients = await rowsToDownloadClients();
+  if (clients.length === 0) return { outcome: "skipped", reasons: ["no enabled download client is configured"], temporary: true, ...none };
+  const upgrades = getSetting("autoUpgradeEnabled") === "1";
+  const wanted = await loadWanted(upgrades);
+  if (options.types) restrictWanted(wanted, new Set(options.types));
+  const { groups, unmatched } = await matchReleases([release], wanted);
+  if (groups.size === 0) {
+    return { outcome: "unmatched", reasons: [unmatched[0]?.reason ?? "it names nothing the library wants"], temporary: false, ...none, mediaItemId: unmatched[0]?.mediaItemId ?? null };
+  }
+
+  const env = await buildDecideEnv(await rowsToIndexers(), clients, upgrades, options.source ?? "rss");
+  let decided: Awaited<ReturnType<typeof decideGroups>>;
+  try {
+    decided = await decideGroups([...groups.values()], env);
+  } catch (err) {
+    // The download client turned the release away (a link it cannot read, a torrent it will not take): the push says so.
+    const target = [...groups.values()][0];
+    // The client's message can quote the link it was given, which may carry a key.
+    const said = redactLinks((err as Error).message);
+    const reason = err instanceof ReleaseRefusedError ? `the download client refused it: ${said}` : `it could not be sent to a download client: ${said}`;
+    log.warn(`[push] couldn't process "${release.title}":`, said);
+    return { outcome: "skipped", reasons: [reason], temporary: !(err instanceof ReleaseRefusedError), ...none, mediaItemId: target.item.id };
+  }
+  const best = decided.best!;
+  // What was decided about the release is kept for the list of recent releases, as a sync's decisions are (never fails the push).
+  try {
+    await recordRssDecisions(decided.inputs);
+  } catch (err) {
+    log.warn("[push] couldn't keep the decision about the pushed release:", (err as Error).message);
+  }
+  const reasons = best.outcome === "grabbed" ? [] : [...new Set(decided.inputs.filter((i) => i.outcome !== "grabbed" && i.reason).map((i) => i.reason as string))];
+  if (best.outcome !== "grabbed" && reasons.length === 0) reasons.push(best.reason ?? "no release of this target could be taken");
+  return {
+    outcome: best.outcome,
+    reasons,
+    temporary: best.outcome === "held" || best.reason === UNAVAILABLE_REASON,
+    mediaItemId: best.mediaItemId ?? null,
+    episodeId: best.episodeId ?? null,
+    subItemId: best.subItemId ?? null,
+    quality: none.quality,
+  };
+}
+
+/** Leaves in `wanted` only the titles of these media types. */
+function restrictWanted(wanted: Wanted, types: Set<string>): void {
+  wanted.singles = wanted.singles.filter((i) => types.has(i.type));
+  wanted.shows = wanted.shows.filter((i) => types.has(i.type));
+  for (const id of [...wanted.episodes.keys()]) if (!wanted.shows.some((s) => s.id === id)) wanted.episodes.delete(id);
+  for (const [id, entry] of [...wanted.collections]) if (!types.has(entry.item.type)) wanted.collections.delete(id);
+  wanted.types = new Set([...wanted.types].filter((t) => types.has(t)));
 }

@@ -171,6 +171,7 @@ export const SETTING_KEY_LIST: readonly string[] = [
   "searchWindowEnd",
   "searchWindowStart",
   "scanOnAdd",
+  "scanPathAllowList",
   "seasonPackGuards",
   "seasonPackShare",
   "setPermissionsEnabled",
