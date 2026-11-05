@@ -37,7 +37,9 @@ vi.mock("../src/services/metadata.js", async (importOriginal) => {
     fetchByExternalId: vi.fn(async (type: string, provider: string, id: string) => {
       if (type === "artist" && provider === "musicbrainz" && id === MBID) return ARTIST;
       if (type === "author" && provider === "openlibrary" && id === "OL79034A") return AUTHOR;
-      if (type === "author" && provider === "isbn" && id === "9780441013593") return { title: "Test Author", year: null, overview: "Matched via ISBN", posterUrl: null, externalIds: {} };
+      if (type === "author" && provider === "isbn" && id === "9780441013593") return { title: "Test Author", year: null, overview: "Matched via ISBN", posterUrl: null, externalIds: { openlibrary: "OL79034A" } };
+      // A book whose record lists no author: the provider answers the book itself, with no author id.
+      if (type === "author" && provider === "isbn" && id === "9780000000002") return { title: "Authorless Book", year: null, overview: "No author listed", posterUrl: null, externalIds: {} };
       throw new Error(`No ${type} with ${provider} id ${id}`);
     }),
     searchMetadata: vi.fn(async (type: string, term: string) => (/test/i.test(term) ? [type === "artist" ? ARTIST : AUTHOR] : [])),
@@ -150,7 +152,8 @@ describe("looking an artist up (Lidarr)", () => {
       vi.mocked(metadata.fetchByExternalId).mockImplementation(async (type: string, provider: string, id: string) => {
         if (type === "artist" && provider === "musicbrainz" && id === MBID) return ARTIST as any;
         if (type === "author" && provider === "openlibrary" && id === "OL79034A") return AUTHOR as any;
-        if (type === "author" && provider === "isbn" && id === "9780441013593") return { title: "Test Author", year: null, overview: "Matched via ISBN", posterUrl: null, externalIds: {} } as any;
+        if (type === "author" && provider === "isbn" && id === "9780441013593") return { title: "Test Author", year: null, overview: "Matched via ISBN", posterUrl: null, externalIds: { openlibrary: "OL79034A" } } as any;
+        if (type === "author" && provider === "isbn" && id === "9780000000002") return { title: "Authorless Book", year: null, overview: "No author listed", posterUrl: null, externalIds: {} } as any;
         throw new Error(`No ${type} with ${provider} id ${id}`);
       });
       vi.mocked(metadata.searchMetadata).mockImplementation(async (type: string, term: string) => (/test/i.test(term) ? [type === "artist" ? ARTIST : AUTHOR] : []) as any);
@@ -175,9 +178,25 @@ describe("looking an author up (Readarr)", () => {
       expect(res.body[0], term).toMatchObject({ id: 0, authorName: "Test Author", foreignAuthorId: "OL79034A", monitored: false, tags: [] });
     }
     const byIsbn = await get("/readarr/api/v1/author/lookup?term=isbn:9780441013593");
-    expect(byIsbn.body[0]).toMatchObject({ authorName: "Test Author", foreignAuthorId: "" });
+    expect(byIsbn.body[0]).toMatchObject({ authorName: "Test Author", foreignAuthorId: "OL79034A" });
     expect((await get("/readarr/api/v1/author/lookup?term=test")).body[0].authorName).toBe("Test Author");
     expect((await get("/readarr/api/v1/author/lookup?term=zzz")).body).toEqual([]);
+  });
+
+  it("answers an author that can be added for an ISBN, and nothing for a book that lists no author", async () => {
+    const byIsbn = await get("/readarr/api/v1/author/lookup?term=isbn:9780441013593");
+    expect(byIsbn.body).toHaveLength(1);
+    expect(byIsbn.body[0].foreignAuthorId).toBe("OL79034A");
+    // A client that offers "add" for the lookup result posts its foreignAuthorId back: that must be accepted.
+    const added = await post("/readarr/api/v1/author", authorBody({ foreignAuthorId: byIsbn.body[0].foreignAuthorId }));
+    expect(added.status).toBe(201);
+    expect(added.body).toMatchObject({ authorName: "Test Author", foreignAuthorId: "OL79034A" });
+    // The author the library now holds answers with its own id.
+    expect((await get("/readarr/api/v1/author/lookup?term=isbn:9780441013593")).body[0].id).toBe(added.body.id);
+    // A book without an author is not an author (its title would have been offered as one, with an id that cannot be added).
+    expect((await get("/readarr/api/v1/author/lookup?term=isbn:9780000000002")).body).toEqual([]);
+    // An ISBN no provider knows.
+    expect((await get("/readarr/api/v1/author/lookup?term=isbn:9780000000019")).body).toEqual([]);
   });
 
   it("answers no result for an id form no provider here can resolve", async () => {
