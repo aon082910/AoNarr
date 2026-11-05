@@ -3,7 +3,7 @@ import { nowExpr } from "../db/asyncDb.js";
 import { log } from "./logger.js";
 import { isValidMediaType, MEDIA_TYPES } from "./mediaTypes.js";
 import { createYielder } from "./fsAsync.js";
-import { isJobBusy, listJobs, registerJob, runJobWithResult } from "./jobRegistry.js";
+import { isJobBusy, listJobs, registerJob, runJobWithResult, type JobDef } from "./jobRegistry.js";
 import { finishBackgroundJob, incrementBackgroundJobDone, startBackgroundJob } from "./backgroundJobs.js";
 
 /**
@@ -759,17 +759,19 @@ async function runAllRules(signal: AbortSignal): Promise<void> {
   await trackedRun(rules, "all", "Auto tagging", signal);
 }
 
-/** Registers the "Auto Tagging" job (idempotent): the scheduler registers it at start-up, the Apply route makes sure it is there. */
+/** The "Auto Tagging" job: the scheduler registers it at start-up. */
+export const AUTO_TAG_JOB_DEF: JobDef = {
+  key: AUTO_TAG_JOB,
+  name: "Auto Tagging",
+  scheduleType: "cron",
+  // Sunday, after the other weekly jobs: only a safety net, since the rules run on every add, refresh and list sync.
+  defaultSchedule: "10 5 * * 0",
+  run: (signal) => runAllRules(signal),
+};
+
+/** Makes sure the job is registered (the Apply route needs it, and a process that never started the scheduler has not). */
 export function registerAutoTagJob(): void {
-  if (listJobs().some((j) => j.key === AUTO_TAG_JOB)) return;
-  registerJob({
-    key: AUTO_TAG_JOB,
-    name: "Auto Tagging",
-    scheduleType: "cron",
-    // Sunday, after the other weekly jobs: only a safety net, since the rules run on every add, refresh and list sync.
-    defaultSchedule: "10 5 * * 0",
-    run: (signal) => runAllRules(signal),
-  });
+  if (!listJobs().some((j) => j.key === AUTO_TAG_JOB)) registerJob(AUTO_TAG_JOB_DEF);
 }
 
 /**

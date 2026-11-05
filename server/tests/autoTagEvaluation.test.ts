@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import cron from "node-cron";
 import request from "supertest";
 import type { Express } from "express";
 import { setupTestDb } from "./helpers/testDb.js";
@@ -630,6 +631,24 @@ describe("a preview and applying a rule to the library", () => {
     expect(second.scanned).toBe(450);
     expect(second.tagsAdded).toBe(250);
     expect((await db.prepare("SELECT COUNT(*) AS c FROM media_item_tags WHERE tag_id = ?").get(t)) as { c: number }).toMatchObject({ c: 450 });
+  });
+
+  it("the weekly Auto Tagging job applies every enabled rule and leaves a switched-off one alone", async () => {
+    const a = await tag("weekly-a");
+    const b = await tag("weekly-b");
+    const c = await tag("weekly-c");
+    await rule({ name: "A", genres: ["Horror"], tagIds: [a] });
+    await rule({ name: "B", libraryTypes: ["movie"], tagIds: [b] });
+    await rule({ name: "C", enabled: false, libraryTypes: ["movie"], tagIds: [c] });
+    const [first] = await library(2);
+
+    const def = autoTag.AUTO_TAG_JOB_DEF;
+    expect(def).toMatchObject({ key: "autoTag", name: "Auto Tagging", scheduleType: "cron" });
+    expect(cron.validate(def.defaultSchedule)).toBe(true);
+    await def.run(new AbortController().signal, { manual: true });
+
+    expect(await tagsOf(first)).toEqual(["weekly-a", "weekly-b"]);
+    expect(autoTag.lastApplyOf("all")).toMatchObject({ scanned: 2, tagsAdded: 3, error: null });
   });
 
   it("with remove_when_unmatched an apply takes back what no longer fits", async () => {

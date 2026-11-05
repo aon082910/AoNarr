@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
@@ -277,5 +280,27 @@ describe("what the form needs", () => {
     expect(res.body.libraryTypes).toEqual(expect.arrayContaining([{ key: "movie", label: expect.any(String) }, { key: "series", label: expect.any(String) }]));
     expect(res.body.genres).toEqual(["Comedy", "Drama", "Horror"]);
     expect(res.body.lists).toEqual([{ id: l, name: "My list", type: "trakt" }]);
+  });
+});
+
+describe("the tables on an install that predates them", () => {
+  it("the schema creates both, keeps working when it runs again, and a rule can be written afterwards", async () => {
+    const t = await tag("upgrade");
+    await db.exec("DROP TABLE media_item_auto_tags");
+    await db.exec("DROP TABLE auto_tag_rules");
+    const file = db.dialect === "postgres" ? "schema.postgres.sql" : "schema.sql";
+    const sql = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/db", file), "utf-8");
+
+    await db.exec(sql);
+    await db.exec(sql);
+
+    invalidateAutoTagRules();
+    expect((await createRule({ name: "After upgrade", genres: ["Horror"], tagIds: [t] })).status).toBe(201);
+    // The claims table takes a row without an id column (Postgres must not be asked to RETURNING one).
+    const rule = (await authed(request(app).get("/api/auto-tag-rules"))).body[0];
+    const m = await movie("Scary", ["Horror"]);
+    await db.prepare("INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)").run(m, t);
+    await db.prepare("INSERT INTO media_item_auto_tags (media_item_id, tag_id, rule_id) VALUES (?, ?, ?)").run(m, t, rule.id);
+    expect(await db.prepare("SELECT 1 AS ok FROM media_item_auto_tags WHERE media_item_id = ?").get(m)).toBeTruthy();
   });
 });
