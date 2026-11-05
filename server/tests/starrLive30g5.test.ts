@@ -32,6 +32,12 @@ vi.mock("../src/services/metadata.js", async (importOriginal) => {
     fetchSeriesEpisodesFor: vi.fn(async () => EPISODES),
   };
 });
+// The targets a command hands to the bulk search (the route behind POST /api/search/bulk), so a test can see what would be searched.
+const bulkSearch = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+vi.mock("../src/services/scheduler.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/services/scheduler.js")>()),
+  searchAndGrabTargets: (...args: unknown[]) => bulkSearch(...args),
+}));
 vi.mock("../src/services/searchOnAdd.js", () => ({ queueSearchAfterAdd: vi.fn(), searchOnAddEnabled: () => false }));
 
 let app: Express;
@@ -146,5 +152,77 @@ describe("Jellyseerr's request for a show known only by its TVDB id", () => {
     expect(body).toHaveLength(1);
     expect(body[0].seasons).toEqual([]);
     expect(metadata.fetchSeriesEpisodesFor).not.toHaveBeenCalled();
+  });
+});
+
+describe("Overseerr's and Jellyseerr's search after an add: the missing-search commands for one title", () => {
+  const insertId = async (sql: string, ...params: unknown[]) => Number((await db.prepare(sql).run(...params)).lastInsertRowid);
+  const title = (type: string, name: string) =>
+    insertId("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES (?, ?, ?, 1, 0, 'unknown')", type, name, name.toLowerCase());
+  const episode = (show: number, season: number, number: number, airDate: string, over: { monitored?: number; hasFile?: number } = {}) =>
+    insertId("INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, monitored, has_file) VALUES (?, ?, ?, ?, ?, ?, ?)", show, season, number, `E${number}`, airDate, over.monitored ?? 1, over.hasFile ?? 0);
+  const part = (parent: number, name: string, over: { monitored?: number; hasFile?: number } = {}) =>
+    insertId("INSERT INTO sub_items (media_item_id, title, release_date, monitored, has_file) VALUES (?, ?, '2001-05-05', ?, ?)", parent, name, over.monitored ?? 1, over.hasFile ?? 0);
+  const searched = () => bulkSearch.mock.calls.flatMap((call) => call[0] as { mediaItemId: number; episodeId?: number; subItemId?: number }[]);
+
+  let showA: number;
+  let showB: number;
+  let episodesA: number[];
+  let episodesB: number[];
+
+  beforeEach(async () => {
+    for (const t of ["history", "queue", "episodes", "sub_items", "media_item_tags", "media_item_titles", "media_items"]) await db.prepare(`DELETE FROM ${t}`).run();
+    bulkSearch.mockClear();
+    showA = await title("series", "Breaking Bad");
+    showB = await title("series", "The Wire");
+    episodesA = [await episode(showA, 1, 1, "2009-01-15"), await episode(showA, 1, 2, "2009-02-15")];
+    // One has its file, one is not monitored, one has not aired: none of them is missing.
+    await episode(showA, 1, 3, "2009-03-15", { hasFile: 1 });
+    await episode(showA, 2, 1, "2010-01-15", { monitored: 0 });
+    await episode(showA, 2, 2, "2999-01-15");
+    episodesB = [await episode(showB, 1, 1, "2002-06-02"), await episode(showB, 1, 2, "2002-06-09"), await episode(showB, 1, 3, "2002-06-16")];
+  });
+
+  it("searches only the series named by seriesId (Jellyseerr sends MissingEpisodeSearch {seriesId} after adding one show)", async () => {
+    const res = await send("post", "/sonarr/api/v3/command", { name: "MissingEpisodeSearch", seriesId: showA });
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(searched().length).toBeGreaterThan(0));
+    expect(searched().map((t) => t.episodeId).sort()).toEqual([...episodesA].sort());
+    expect(searched().every((t) => t.mediaItemId === showA)).toBe(true);
+  });
+
+  it("still searches every missing episode when no series is named, as Sonarr does", async () => {
+    await send("post", "/sonarr/api/v3/command", { name: "MissingEpisodeSearch" });
+    await vi.waitFor(() => expect(searched().length).toBe(episodesA.length + episodesB.length));
+    expect(new Set(searched().map((t) => t.mediaItemId))).toEqual(new Set([showA, showB]));
+  });
+
+  it("answers 404 for a title that is not this app's, and searches nothing", async () => {
+    const movie = await title("movie", "A Movie");
+    const res = await send("post", "/sonarr/api/v3/command", { name: "MissingEpisodeSearch", seriesId: movie });
+    expect(res.status).toBe(404);
+    expect((await send("post", "/sonarr/api/v3/command", { name: "MissingEpisodeSearch", seriesId: 999999 })).status).toBe(404);
+    expect(bulkSearch).not.toHaveBeenCalled();
+  });
+
+  it("does the same for one artist's albums and one author's books", async () => {
+    const artist = await title("artist", "Queen");
+    const otherArtist = await title("artist", "Abba");
+    const album = await part(artist, "Innuendo");
+    await part(artist, "Have it", { hasFile: 1 });
+    await part(otherArtist, "Waterloo");
+    const author = await title("author", "Tolkien");
+    const otherAuthor = await title("author", "Herbert");
+    const book = await part(author, "The Hobbit");
+    await part(otherAuthor, "Dune");
+
+    expect((await send("post", "/lidarr/api/v1/command", { name: "MissingAlbumSearch", artistId: artist })).status).toBe(201);
+    await vi.waitFor(() => expect(searched().length).toBe(1));
+    expect(searched()).toEqual([{ mediaItemId: artist, subItemId: album }]);
+
+    bulkSearch.mockClear();
+    expect((await send("post", "/readarr/api/v1/command", { name: "MissingBookSearch", authorId: author })).status).toBe(201);
+    await vi.waitFor(() => expect(searched().length).toBe(1));
+    expect(searched()).toEqual([{ mediaItemId: author, subItemId: book }]);
   });
 });
