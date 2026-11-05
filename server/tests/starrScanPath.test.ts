@@ -213,10 +213,12 @@ describe("importing a film from a folder", () => {
     expect(movieResource).toMatchObject({ hasFile: true });
   });
 
-  it("follows the import strategy setting when the command names no mode: move by default, copy when the setting says copy", async () => {
+  it("moves the file when the command says Move, and follows a setting that already leaves the source alone", async () => {
     const m = await movie();
     const moved = write(dl, `${MATRIX}/${MATRIX}.mkv`, "MOVED");
-    expect((await scan("radarr", { path: path.dirname(moved) })).record.status).toBe("completed");
+    const first = await scan("radarr", { path: path.dirname(moved), importMode: "Move" });
+    expect(first.record.status).toBe("completed");
+    expect(first.record.message).not.toMatch(/hardlinked/);
     expect(fs.existsSync(moved)).toBe(false);
     expect(Number(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(m.id)) as any).has_file)).toBe(1);
 
@@ -227,6 +229,7 @@ describe("importing a film from a folder", () => {
     const kept = write(dl, `${MATRIX}/${MATRIX}.mkv`, "KEPT");
     const { record } = await scan("radarr", { path: path.dirname(kept), importMode: "Auto" });
     expect(record.message).toMatch(/^Imported 1 of 1/);
+    expect(record.message).not.toMatch(/hardlinked/);
     expect(fs.existsSync(kept)).toBe(true);
   });
 
@@ -471,6 +474,185 @@ describe("albums (Lidarr) and books (Readarr)", () => {
     expect(record.message).toMatch(/^Imported 1 of 2 media files/);
     expect(Number(((await db.prepare("SELECT has_file FROM sub_items WHERE id = ?").get(book)) as any).has_file)).toBe(1);
     expect(fs.existsSync(other)).toBe(true);
+  });
+});
+
+describe("a file no queue row tracks, where a torrent may still be seeding (M1)", () => {
+  const library = async (id: number) => (await db.prepare("SELECT has_file, path FROM media_items WHERE id = ?").get(id)) as { has_file: number; path: string | null };
+
+  it.each([
+    ["move", {}],
+    ["move", { importMode: "Auto" }],
+    ["auto", {}],
+    ["auto", { importMode: "auto" }],
+  ])("is hardlinked, not moved, in the downloads folder (import strategy %s, command %j): the download stays, the message says so", async (setting, body) => {
+    setSetting("importStrategy", setting);
+    const m = await movie();
+    const file = write(dl, `${MATRIX}/${MATRIX}.mkv`, "STILL SEEDING");
+    const { record } = await scan("radarr", { path: path.dirname(file), ...body });
+    expect(record).toMatchObject({ status: "completed", result: "successful" });
+    expect(record.message).toMatch(/^Imported 1 of 1 media file/);
+    expect(record.message).toMatch(/hardlinked 1 file/);
+    // The torrent client still has its data...
+    expect(fs.readFileSync(file, "utf8")).toBe("STILL SEEDING");
+    // ...and the library has the film.
+    const row = await library(m.id);
+    expect(Number(row.has_file)).toBe(1);
+    expect(fs.readFileSync(row.path!, "utf8")).toBe("STILL SEEDING");
+  });
+
+  it("is moved when the command says Move: that is the caller's call", async () => {
+    const m = await movie();
+    const file = write(dl, `${MATRIX}/${MATRIX}.mkv`, "MOVE ME");
+    const { record } = await scan("radarr", { path: path.dirname(file), importMode: "Move" });
+    expect(record.message).toBe(`Imported 1 of 1 media file in "${MATRIX}"`);
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.readFileSync((await library(m.id)).path!, "utf8")).toBe("MOVE ME");
+  });
+
+  it("keeps the setting in a folder that is no download folder: the allow-list, and a usenet client's mapped folder", async () => {
+    const m = await movie();
+    setSetting("scanPathAllowList", outside);
+    const listed = write(outside, `${MATRIX}/${MATRIX}.mkv`, "LISTED");
+    const first = await scan("radarr", { path: path.dirname(listed) });
+    expect(first.record.message).toBe(`Imported 1 of 1 media file in "${MATRIX}"`);
+    expect(fs.existsSync(listed)).toBe(false);
+
+    // A usenet client's own folder, seen through its remote path mapping, is moved from like the setting says.
+    fs.rmSync((await library(m.id)).path!);
+    await db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL WHERE id = ?").run(m.id);
+    setSetting("scanPathAllowList", "");
+    const usenet = Number((await db.prepare("INSERT INTO download_clients (name, type, enabled) VALUES ('Usenet', 'sabnzbd', 1)").run()).lastInsertRowid);
+    await db.prepare("INSERT INTO remote_path_mappings (download_client_id, remote_path, local_path) VALUES (?, '/remote/usenet', ?)").run(usenet, outside);
+    const nzb = write(outside, `${MATRIX}/${MATRIX}.mkv`, "NZB");
+    const second = await scan("radarr", { path: `/remote/usenet/${MATRIX}` });
+    expect(second.record.message).toBe(`Imported 1 of 1 media file in "${MATRIX}"`);
+    expect(fs.existsSync(nzb)).toBe(false);
+  });
+
+  it("is hardlinked in a torrent client's mapped folder, wherever that is, and a usenet client's folder inside the downloads folder is still moved from", async () => {
+    const m = await movie();
+    const torrent = Number((await db.prepare("INSERT INTO download_clients (name, type, enabled) VALUES ('Seeder', 'transmission', 1)").run()).lastInsertRowid);
+    await db.prepare("INSERT INTO remote_path_mappings (download_client_id, remote_path, local_path) VALUES (?, '/remote/seeding', ?)").run(torrent, outside);
+    const seeding = write(outside, `${MATRIX}/${MATRIX}.mkv`, "SEEDING ELSEWHERE");
+    const first = await scan("radarr", { path: `/remote/seeding/${MATRIX}` });
+    expect(first.record.message).toMatch(/hardlinked 1 file/);
+    expect(fs.readFileSync(seeding, "utf8")).toBe("SEEDING ELSEWHERE");
+    expect(Number((await library(m.id)).has_file)).toBe(1);
+
+    // The deepest folder decides: a usenet client's folder inside the downloads folder keeps the setting.
+    fs.rmSync((await library(m.id)).path!);
+    await db.prepare("UPDATE media_items SET has_file = 0, path = NULL, quality = NULL WHERE id = ?").run(m.id);
+    const usenet = Number((await db.prepare("INSERT INTO download_clients (name, type, enabled) VALUES ('Usenet', 'nzbget', 1)").run()).lastInsertRowid);
+    const nzbDir = path.join(dl, "usenet-complete");
+    fs.mkdirSync(nzbDir, { recursive: true });
+    await db.prepare("INSERT INTO remote_path_mappings (download_client_id, remote_path, local_path) VALUES (?, '/remote/nzb', ?)").run(usenet, nzbDir);
+    const nzb = write(nzbDir, `${MATRIX}/${MATRIX}.mkv`, "NZB IN DOWNLOADS");
+    const second = await scan("radarr", { path: `/remote/nzb/${MATRIX}` });
+    expect(second.record.message).toBe(`Imported 1 of 1 media file in "${MATRIX}"`);
+    expect(fs.existsSync(nzb)).toBe(false);
+  });
+});
+
+describe("the local folder of a remote path mapping (M3)", () => {
+  it("is a place to look only for a path that goes through that mapping", async () => {
+    const m = await movie();
+    const client = Number((await db.prepare("INSERT INTO download_clients (name, type, enabled) VALUES ('Remote', 'qbittorrent', 1)").run()).lastInsertRowid);
+    await db.prepare("INSERT INTO remote_path_mappings (download_client_id, remote_path, local_path) VALUES (?, '/remote/dl', ?)").run(client, outside);
+    const file = write(outside, `${MATRIX}/${MATRIX}.mkv`, "BEHIND THE MAPPING");
+
+    // The same folder named by its local path is not a download: no mapping was used for it.
+    const before = await commandCount("radarr");
+    const direct = await scan("radarr", { path: path.dirname(file), importMode: "Copy" });
+    expect(direct.res.status).toBe(400);
+    expect(direct.res.body[0].errorMessage).toMatch(/not inside the downloads folder/);
+    expect(await commandCount("radarr")).toBe(before);
+    expect(Number(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(m.id)) as any).has_file)).toBe(0);
+
+    // Named by the client's path, the mapping is what brings it here, and it is a place to look.
+    const mapped = await scan("radarr", { path: `/remote/dl/${MATRIX}`, importMode: "Copy" });
+    expect(mapped.record.message).toMatch(/^Imported 1 of 1/);
+    expect(Number(((await db.prepare("SELECT has_file FROM media_items WHERE id = ?").get(m.id)) as any).has_file)).toBe(1);
+  });
+
+  it("is not a place for a path outside the mapping that happens to be next to it", async () => {
+    await movie();
+    const client = Number((await db.prepare("INSERT INTO download_clients (name, type, enabled) VALUES ('Remote', 'qbittorrent', 1)").run()).lastInsertRowid);
+    const mappedFolder = path.join(outside, "mapped");
+    const sibling = path.join(outside, "sibling");
+    fs.mkdirSync(mappedFolder, { recursive: true });
+    write(sibling, `${MATRIX}/${MATRIX}.mkv`, "NEXT DOOR");
+    await db.prepare("INSERT INTO remote_path_mappings (download_client_id, remote_path, local_path) VALUES (?, '/remote/dl', ?)").run(client, mappedFolder);
+    const { res } = await scan("radarr", { path: path.join(sibling, MATRIX), importMode: "Copy" });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("a folder named like a parent (L3)", () => {
+  it("is still inside the library root folder that holds it", async () => {
+    const m = await movie();
+    // The library's folder sits in a place the allow-list opens; a folder of it whose name begins with two dots is part of it.
+    setSetting("scanPathAllowList", libraryDir);
+    const odd = write(m.dir, `..odd/${MATRIX}.mkv`, "IN THE LIBRARY");
+    const { res } = await scan("radarr", { path: path.dirname(odd), importMode: "Copy" });
+    expect(res.status).toBe(400);
+    expect(res.body[0].errorMessage).toMatch(/library root folder/);
+    expect((await scan("radarr", { path: odd, importMode: "Copy" })).res.status).toBe(400);
+  });
+});
+
+describe("what limits a scan (L4)", () => {
+  it("says so when folders deeper than 6 levels were not looked at, and does not when they hold no media", async () => {
+    await movie();
+    write(dl, `${MATRIX}/${MATRIX}.mkv`, "TOP");
+    write(dl, "a/b/c/d/e/f/g/Deep.Film.2001.1080p.WEB-DL-GRP.mkv", "DEEP");
+    const { record } = await scan("radarr", { path: dl, importMode: "Copy" });
+    expect(record.message).toBe('Imported 1 of 1 media file in "scan-dl" (folders deeper than 6 levels were not looked at)');
+    expect(fs.existsSync(path.join(dl, "a/b/c/d/e/f/g/Deep.Film.2001.1080p.WEB-DL-GRP.mkv"))).toBe(true);
+
+    fs.rmSync(path.join(dl, "a"), { recursive: true, force: true });
+    fs.rmSync(path.join(dl, MATRIX), { recursive: true, force: true });
+    write(dl, "a/b/c/d/e/f/g/readme.nfo", "text");
+    const quiet = await scan("radarr", { path: dl, importMode: "Copy" });
+    expect(quiet.record.message).toBe('Nothing to import: no media files in "scan-dl"');
+  });
+
+  it("does not count a file the library already has toward the limit: a rerun goes on from where the last one stopped", async () => {
+    const { scanLimits } = await import("../src/services/pathScan.js");
+    const kept = { ...scanLimits };
+    const names = ["Aaa", "Bbb", "Ccc", "Ddd", "Eee", "Fff", "Ggg", "Hhh"].map((n) => ({ title: `${n} Film`, release: `${n}.Film.2001.1080p.BluRay.x264-GRP` }));
+    const ids: number[] = [];
+    const root = await rootFolder("movie", "movies");
+    for (const [i, n] of names.entries()) {
+      // The first four are in the library already (a hardlink or copy scan left them in the downloads folder too).
+      const have = i < 4;
+      const libFile = have ? write(root.dir, `have/${n.title}.mkv`, "HAVE") : null;
+      ids.push(
+        Number(
+          (
+            await db
+              .prepare("INSERT INTO media_items (type, title, sort_title, year, root_folder_id, monitored, has_file, quality, path, status) VALUES ('movie', ?, ?, 2001, ?, 1, ?, ?, ?, 'missing')")
+              .run(n.title, n.title.toLowerCase(), root.id, have ? 1 : 0, have ? "Bluray-1080p" : null, libFile)
+          ).lastInsertRowid
+        )
+      );
+      write(dl, `${n.release}/${n.release}.mkv`, n.title);
+    }
+    try {
+      scanLimits.maxFiles = 2;
+      scanLimits.chunkSize = 2;
+      const first = await scan("radarr", { path: dl, importMode: "Copy" });
+      // The four the library has were passed over without counting; two more were imported, which is the limit.
+      expect(first.record.message).toBe('Imported 2 of 6 media files in "scan-dl"; 4 skipped (only the first 6 files were looked at)');
+      const have = async () => ((await db.prepare("SELECT has_file FROM media_items WHERE id IN (" + ids.map(() => "?").join(",") + ") ORDER BY id").all(...ids)) as any[]).map((r) => Number(r.has_file));
+      expect(await have()).toEqual([1, 1, 1, 1, 1, 1, 0, 0]);
+
+      const second = await scan("radarr", { path: dl, importMode: "Copy" });
+      expect(second.record.message).toBe('Imported 2 of 8 media files in "scan-dl"; 6 skipped');
+      expect(await have()).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
+    } finally {
+      Object.assign(scanLimits, kept);
+    }
   });
 });
 

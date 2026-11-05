@@ -3,7 +3,14 @@
  * so it is written to a log, or into a message an API answers, only through these.
  */
 
-/** A link as it may be written down: scheme, host and path, no query string; a magnet link only by its info hash. */
+// What a link's last path segment may still say of itself: what it is a link to. Nothing else of the path is written down.
+const KNOWN_LINK_ENDING = /\.(torrent|nzb|magnet|rss|xml|json|zip|gz)$/i;
+
+/**
+ * A link as it may be written down: scheme and host, and at most the file type it ends in; no path, no query string. A tracker
+ * can put its passkey in the path (`/download/<passkey>/45.torrent`) as well as in the query, so no segment of the path is kept.
+ * A magnet link is written only by its info hash.
+ */
 export function describeLink(link: string): string {
   if (/^magnet:/i.test(link)) {
     const hash = /[?&]xt=urn:bt(?:ih|mh):([^&\s]+)/i.exec(link)?.[1];
@@ -11,7 +18,10 @@ export function describeLink(link: string): string {
   }
   try {
     const url = new URL(link);
-    return `${url.protocol}//${url.host}${url.pathname}`;
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (segments.length === 0) return `${url.protocol}//${url.host}`;
+    const ending = KNOWN_LINK_ENDING.exec(segments[segments.length - 1])?.[0].toLowerCase() ?? "";
+    return `${url.protocol}//${url.host}/*${ending}`;
   } catch {
     return "a link";
   }

@@ -9,7 +9,7 @@ import { mediaItemFromRow } from "../db/mappers.js";
 import { fetchRecentReleases, rssFeedGroups, type RssMarker } from "./indexerClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type ParsedRelease } from "./releaseParser.js";
 import { aliasTitlesByItem, resolveReleaseItemInLibrary } from "./releaseAliases.js";
-import { identityKey } from "./releaseIdentity.js";
+import { couldNameItem, identityKey, releaseNameTokens } from "./releaseIdentity.js";
 import { editionlessTitle } from "./nonVideoMatch.js";
 import { sceneIndexFor } from "./sceneNumbering.js";
 import { computeAbsoluteEpisodeNumber } from "./importer.js";
@@ -111,9 +111,17 @@ interface Wanted {
   types: Set<MediaType>;
 }
 
-async function loadWanted(upgrades: boolean): Promise<Wanted> {
-  const wanted: Wanted = { singles: [], shows: [], episodes: new Map(), collections: new Map(), types: new Set() };
-  const items = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1").all()) as any[])
+const emptyWanted = (): Wanted => ({ singles: [], shows: [], episodes: new Map(), collections: new Map(), types: new Set() });
+
+/**
+ * What the library wants. With `only`, just those items' share of it: a pushed release can name nothing else, and the rest of a
+ * large library (every monitored episode of it, with upgrades on) is not read for it.
+ */
+async function loadWanted(upgrades: boolean, only?: ReadonlySet<number>): Promise<Wanted> {
+  const wanted = emptyWanted();
+  const ids = only ? [...only] : null;
+  const itemFilter = ids ? ` AND id IN (${ids.map(() => "?").join(",")})` : "";
+  const items = ((await db.prepare(`SELECT * FROM media_items WHERE monitored = 1${itemFilter}`).all(...(ids ?? []))) as any[])
     .map(mediaItemFromRow)
     .filter((item) => usesQualityTiers(item.type)) as MediaItem[];
 
@@ -136,9 +144,9 @@ async function loadWanted(upgrades: boolean): Promise<Wanted> {
     const rows = (await db
       .prepare(
         `SELECT e.* FROM episodes e JOIN media_items m ON m.id = e.media_item_id
-         WHERE e.monitored = 1 AND m.monitored = 1 ${upgrades ? "" : "AND e.has_file = 0"}`
+         WHERE e.monitored = 1 AND m.monitored = 1 ${upgrades ? "" : "AND e.has_file = 0"}${ids ? ` AND e.media_item_id IN (${ids.map(() => "?").join(",")})` : ""}`
       )
-      .all()) as any[];
+      .all(...(ids ?? []))) as any[];
     const today = new Date().toISOString().slice(0, 10);
     const frontiers = new Map<number, Map<number, number>>();
     for (const row of rows) {
@@ -158,7 +166,7 @@ async function loadWanted(upgrades: boolean): Promise<Wanted> {
     for (const id of wanted.episodes.keys()) wanted.shows.push(showsById.get(id)!);
   }
   // Albums, books, audiobooks, comic issues and manga chapters that are missing (not the ones not out yet).
-  const collections = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1").all()) as any[])
+  const collections = ((await db.prepare(`SELECT * FROM media_items WHERE monitored = 1${itemFilter}`).all(...(ids ?? []))) as any[])
     .map(mediaItemFromRow)
     .filter((item) => !usesQualityTiers(item.type) && getMediaTypeConfig(item.type).shape === "collection" && !["video", "podcast"].includes(item.type)) as MediaItem[];
   // One query for every collection's missing sub-items (a plain album before an edition of it, so a release names the plain one).
@@ -731,7 +739,7 @@ let judging: Promise<unknown> = Promise.resolve();
  * takes it once it is old enough); one that names nothing wanted is answered "unmatched" and nothing is stored or grabbed.
  * `types` limits the titles it may name (a Radarr mount takes movies only). Calls queue up and run one at a time.
  */
-export function judgeOneRelease(release: SearchResult, options: { source?: GrabSource; types?: string[] } = {}): Promise<OneReleaseJudgement> {
+export function judgeOneRelease(release: SearchResult, options: JudgeOneOptions = {}): Promise<OneReleaseJudgement> {
   const run = judging.then(
     () => judgeOneNow(release, options),
     () => judgeOneNow(release, options)
@@ -740,12 +748,67 @@ export function judgeOneRelease(release: SearchResult, options: { source?: GrabS
   return run;
 }
 
-async function judgeOneNow(release: SearchResult, options: { source?: GrabSource; types?: string[] }): Promise<OneReleaseJudgement> {
+export interface JudgeOneOptions {
+  source?: GrabSource;
+  types?: string[];
+  /** False judges the release against the whole wanted library instead of the titles it can name (the reference the narrowing is tested against). */
+  narrow?: boolean;
+}
+
+/** More items than this share a word with the release: it is not narrowed, the whole library is read as before. */
+const MAX_NARROWED_ITEMS = 500;
+
+/**
+ * The monitored items a release could name: the ones with a name (title or alias) that shares a word with it, which is the first
+ * cut the matching makes (couldNameItem), and the artists, authors and the like whose whole title is in its name. Reading these
+ * names is a lighter read than the wanted library (no episodes, no item rows), and a release for a title the library does not
+ * hold, the commonest push, is then answered without reading that. An empty set: nothing can be named. Null: the release cannot
+ * be narrowed this way (the sender gave an id, which names an item whatever its title says; or very many items share a word).
+ */
+async function itemsReleaseCouldName(release: SearchResult, types: string[] | undefined): Promise<Set<number> | null> {
+  const parsed = parseReleaseTitle(release.title);
+  // matchReleases turns these away before it reads the library.
+  if (parsed.rejected || !parsed.title) return new Set();
+  const ids = release as { imdbId?: string | null; tmdbId?: string | null; tvdbId?: string | null };
+  if (ids.imdbId || ids.tmdbId || ids.tvdbId || parsed.imdbId) return null;
+  if (types && types.length === 0) return new Set();
+
+  const typeSql = (column: string) => (types ? ` AND ${column} IN (${types.map(() => "?").join(",")})` : "");
+  const items = (await db.prepare(`SELECT id, type, title FROM media_items WHERE monitored = 1${typeSql("type")}`).all(...(types ?? []))) as { id: number; type: string; title: string }[];
+  const aliasRows = (await db
+    .prepare(`SELECT t.media_item_id AS id, t.title AS title FROM media_item_titles t JOIN media_items m ON m.id = t.media_item_id WHERE m.monitored = 1 AND t.source <> 'primary'${typeSql("m.type")}`)
+    .all(...(types ?? []))) as { id: number; title: string }[];
+  const aliases = new Map<number, string[]>();
+  for (const row of aliasRows) {
+    const list = aliases.get(row.id);
+    if (list) list.push(row.title);
+    else aliases.set(row.id, [row.title]);
+  }
+
+  const tokens = releaseNameTokens(parsed);
+  const releaseKey = ` ${identityKey(release.title)} `;
+  const near = new Set<number>();
+  for (const item of items) {
+    if (usesQualityTiers(item.type)) {
+      if (couldNameItem(tokens, item.title, aliases.get(item.id) ?? [])) near.add(item.id);
+    } else {
+      // An artist, author or series is named when the whole of its title is in the name of the release (matchCollectionRelease).
+      const key = identityKey(item.title);
+      if (key && releaseKey.includes(` ${key} `)) near.add(item.id);
+    }
+    if (near.size > MAX_NARROWED_ITEMS) return null;
+  }
+  return near;
+}
+
+async function judgeOneNow(release: SearchResult, options: JudgeOneOptions): Promise<OneReleaseJudgement> {
   const none = { mediaItemId: null, episodeId: null, subItemId: null, quality: parseReleaseTitle(release.title).quality ?? null };
   const clients = await rowsToDownloadClients();
   if (clients.length === 0) return { outcome: "skipped", reasons: ["no enabled download client is configured"], temporary: true, ...none };
   const upgrades = getSetting("autoUpgradeEnabled") === "1";
-  const wanted = await loadWanted(upgrades);
+  // Only the titles this release can name are read; one that can name none is answered as the whole library would answer it.
+  const near = options.narrow === false ? null : await itemsReleaseCouldName(release, options.types);
+  const wanted = near && near.size === 0 ? emptyWanted() : await loadWanted(upgrades, near ?? undefined);
   if (options.types) restrictWanted(wanted, new Set(options.types));
   const { groups, unmatched } = await matchReleases([release], wanted);
   if (groups.size === 0) {

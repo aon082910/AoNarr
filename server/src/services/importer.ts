@@ -1064,7 +1064,7 @@ export function autoStrategyFor(protocol: string | null | undefined, clientType?
 }
 
 /** Clients that download torrents into the folder AoNarr imports from and go on seeding them there. */
-const SEEDING_CLIENT_TYPES: ReadonlySet<string> = new Set(["qbittorrent", "transmission", "deluge"]);
+export const SEEDING_CLIENT_TYPES: ReadonlySet<string> = new Set(["qbittorrent", "transmission", "deluge"]);
 
 /**
  * Runs `work` with a strategy of its own (Sonarr's manual import asks for Move or Copy per import). An unknown or
