@@ -364,6 +364,7 @@ POST /api/quality-profiles  [admin]
 POST /api/recycle-bin/restore-all  [admin]
 POST /api/recycle-bin/{id}/restore  [admin]
 POST /api/release-profiles  [admin]
+POST /api/releases/push  [admin]
 POST /api/remote-instances  [admin]
 POST /api/remote-path-mappings  [admin]
 POST /api/requests
