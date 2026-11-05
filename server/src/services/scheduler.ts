@@ -35,6 +35,7 @@ import { freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReason, freeSpaceRese
 import { recordGrabbed } from "./grabHistory.js";
 import {
   discographyAlbumsOf,
+  discographyFallbackSingleEnabled,
   discographyGrabsEnabled,
   isWantedAlbum,
   judgeDiscography,
@@ -514,7 +515,7 @@ export interface ChooseOptions {
   /** The artist's discography is wanted (not an album): only a discography release naming the artist (`name`) that
    * passes judgeDiscography against these albums is taken, and the one adding the most missing albums comes first
    * among releases of the same format. */
-  discography?: { albums: DiscographyAlbum[]; minWanted: number; minShare?: number };
+  discography?: { albums: DiscographyAlbum[]; minWanted: number; minShare?: number; mustCover?: number };
   /** Told of every release the call turns away, with the reason it is logged with (the first one for a release counts). */
   onRejected?: (result: SearchResult, reason: string) => void;
   /** Human-readable "media title" (plus episode/season where relevant) for this call's log lines
@@ -1080,6 +1081,7 @@ export async function chooseBestResult(
         const verdict = judgeDiscography(result.title, options.discography.albums, {
           minWanted: options.discography.minWanted,
           minShare: options.discography.minShare,
+          mustCover: options.discography.mustCover,
           isUnreleased: isNotYetReleased,
         });
         if (!verdict.ok) {
@@ -1553,12 +1555,14 @@ export async function grab(
       release: { title: best.title, indexer: best.indexerName, size, quality, releaseGroup: parsedBest.releaseGroup, protocol: best.protocol },
       downloadClient: { name: client.name, type: client.type, downloadId },
     };
+    // A discography is one grab for many albums: one notification that says how many, never one per album.
+    const notifiedTitle = targets.length > 0 ? `${mediaItem.title} - Discography: ${targets.length} album${targets.length === 1 ? "" : "s"}` : mediaItem.title;
     if (source === "interactive") {
       void Promise.resolve()
-        .then(() => notifyGrabbed(mediaItem.title, best.title, grabContext))
+        .then(() => notifyGrabbed(notifiedTitle, best.title, grabContext))
         .catch((e) => log.warn("[scheduler] notification failed:", e.message));
     } else {
-      await notifyGrabbed(mediaItem.title, best.title, grabContext);
+      await notifyGrabbed(notifiedTitle, best.title, grabContext);
     }
     notifyQueueChanged();
     log.info(`[scheduler] grabbed "${best.title}" for "${mediaItem.title}"`);
@@ -2185,6 +2189,8 @@ export async function runAutoSearch(signal?: AbortSignal) {
   let cancelled = false;
   let clientsExhausted = false;
   const loggedItemErrors = new Set<number>();
+  /** The artists whose discography was looked for as the fallback of a single album in this cycle. */
+  const fallbackTried = new Set<number>();
   const itemContexts = new Map<number, Promise<AutoSearchItemContext>>();
 
   function getItemContext(item: MediaItem): Promise<AutoSearchItemContext> {
@@ -2388,7 +2394,9 @@ export async function runAutoSearch(signal?: AbortSignal) {
       siblingTitles: await siblingTitlesOf(item, sub.id),
       ...(await yearFieldsOf(item, sub)),
     });
-    await recordAutoSearchResult("sub_items", sub.id, result);
+    // Nothing usable for the album itself: with the setting on, its artist's discography is looked for too.
+    const fallback = result === "none" ? await searchDiscographyFallback(item, sub.id, seasonEnv, fallbackTried, reserveSearchSlot) : null;
+    await recordAutoSearchResult("sub_items", sub.id, fallback === "grabbed" ? "grabbed" : result);
   }
 
   // Season packs. A finished season with two or more of its episodes wanted is searched once for a
@@ -2433,6 +2441,8 @@ export async function runAutoSearch(signal?: AbortSignal) {
         if (!reserveSearchSlot()) break;
         const made = await searchDiscographyFirst(item, seasonEnv);
         if (made.searches === 0) searchedCount--;
+        // Its discography was just looked for: the fallback of a single album has nothing to add to that search.
+        else fallbackTried.add(item.id);
       } catch (err) {
         log.warn(`[scheduler] discography search failed for "${item.title}":`, (err as Error).message);
       }
@@ -2694,6 +2704,57 @@ async function searchSeasonsFirst(item: MediaItem, episodeIds: number[], ctx: Bu
 /** The key an artist's search for a discography has in season_searches, which an artist has no seasons in. */
 export const DISCOGRAPHY_SEARCH_KEY = -1;
 
+/** What a discography is judged by (judgeDiscography): the albums it must add, and what share of the albums it covers. */
+export interface DiscographyJudge {
+  minWanted: number;
+  minShare?: number;
+  /** An album the release has to cover: the one whose own search found nothing, for the fallback. */
+  mustCover?: number;
+}
+
+/** The terms of a discography taken without the admin choosing it: by the automatic search, an RSS feed or an IRC announce. */
+export const AUTOMATIC_DISCOGRAPHY_JUDGE: DiscographyJudge = {
+  minWanted: MIN_WANTED_FOR_AUTOMATIC_DISCOGRAPHY,
+  minShare: MIN_WANTED_SHARE_FOR_AUTOMATIC_DISCOGRAPHY,
+};
+
+/**
+ * The artist's albums as a discography is judged against them. An album already downloading is covered by the release but is
+ * not one it is wanted for (it is marked unmonitored). `wantedCount` is what a grab would add; `queuedCount` the albums that
+ * would be wanted had a download not been on its way already.
+ */
+export async function discographyJudgingAlbums(mediaItemId: number): Promise<{ albums: DiscographyAlbum[]; wantedCount: number; queuedCount: number }> {
+  const albums: DiscographyAlbum[] = [];
+  let wantedCount = 0;
+  let queuedCount = 0;
+  for (const album of await discographyAlbumsOf(mediaItemId)) {
+    const missing = isWantedAlbum(album, (date) => isNotYetReleased(date));
+    const queued = missing && (await isAlreadyQueued(mediaItemId, null, album.id));
+    if (missing && !queued) wantedCount++;
+    if (queued) queuedCount++;
+    albums.push(missing && !queued ? album : { ...album, monitored: false });
+  }
+  return { albums, wantedCount, queuedCount };
+}
+
+/**
+ * Sends a discography to a client for the albums it would add. Every way a discography comes in (the search, an RSS feed,
+ * an announce) ends here, so they file it against the albums the same way.
+ */
+export async function grabDiscography(
+  client: DownloadClient,
+  item: MediaItem,
+  chosen: ChosenResult,
+  albums: DiscographyAlbum[],
+  judge: DiscographyJudge,
+  source: GrabSource
+): Promise<boolean> {
+  const verdict = judgeDiscography(chosen.result.title, albums, { ...judge, isUnreleased: (date) => isNotYetReleased(date) });
+  // A release that no longer adds an album (they were queued while it was chosen) is not sent as a download of the artist.
+  if (verdict.wanted.length === 0) return false;
+  return grab(client, item, null, null, chosen, 0, null, source, { targetSubItemIds: verdict.wanted.map((album) => album.id) });
+}
+
 /**
  * One search for an artist's discography, grabbed for the albums it would add. `albums` is the artist's albums as
  * the release is judged against (an album already on its way is marked unmonitored, so it is covered but not
@@ -2703,7 +2764,7 @@ export const DISCOGRAPHY_SEARCH_KEY = -1;
 async function searchAndGrabDiscography(
   item: MediaItem,
   albums: DiscographyAlbum[],
-  minWanted: number,
+  judge: DiscographyJudge,
   ctx: BulkSearchContext
 ): Promise<{ result: GrabResult; error?: string }> {
   if (ctx.clients.length > 0 && ctx.clients.every((c) => ctx.unavailable.has(c.id))) {
@@ -2721,7 +2782,7 @@ async function searchAndGrabDiscography(
       name: { title: item.title },
       indexers: ctx.indexers,
       label: `${item.title} discography`,
-      discography: { albums, minWanted, minShare: MIN_WANTED_SHARE_FOR_AUTOMATIC_DISCOGRAPHY },
+      discography: { albums, ...judge },
       userInvoked: !ctx.automatic,
     });
   let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
@@ -2730,14 +2791,7 @@ async function searchAndGrabDiscography(
       discographies,
       usable,
       (remaining) => choose(remaining, delayProfile),
-      (client, chosen) => {
-        const verdict = judgeDiscography(chosen.result.title, albums, {
-          minWanted,
-          minShare: MIN_WANTED_SHARE_FOR_AUTOMATIC_DISCOGRAPHY,
-          isUnreleased: (date) => isNotYetReleased(date),
-        });
-        return grab(client, item, null, null, chosen, 0, null, "auto", { targetSubItemIds: verdict.wanted.map((album) => album.id) });
-      },
+      (client, chosen) => grabDiscography(client, item, chosen, albums, judge, "auto"),
       { itemId: item.id, indexers: ctx.indexers }
     );
   } catch (err) {
@@ -2760,25 +2814,50 @@ async function searchAndGrabDiscography(
  */
 async function searchDiscographyFirst(item: MediaItem, ctx: BulkSearchContext): Promise<{ searches: number; grabbed: number }> {
   if (item.type !== "artist" || !discographyGrabsEnabled()) return { searches: 0, grabbed: 0 };
-  const albums = await discographyAlbumsOf(item.id);
-  // An album already downloading is covered by the release but is not one it is wanted for.
-  const forJudging: DiscographyAlbum[] = [];
-  let wantedCount = 0;
-  for (const album of albums) {
-    const wanted = isWantedAlbum(album, (date) => isNotYetReleased(date)) && !(await isAlreadyQueued(item.id, null, album.id));
-    if (wanted) wantedCount++;
-    forJudging.push(wanted ? album : { ...album, monitored: false });
-  }
+  const { albums: forJudging, wantedCount } = await discographyJudgingAlbums(item.id);
   if (wantedCount < MIN_WANTED_FOR_AUTOMATIC_DISCOGRAPHY) return { searches: 0, grabbed: 0 };
   if (ctx.automatic && !(await seasonSearchDue(item.id, DISCOGRAPHY_SEARCH_KEY))) return { searches: 0, grabbed: 0 };
   if (ctx.automatic && noIndexerAvailable(ctx.indexers, item.type)) return { searches: 0, grabbed: 0 };
   try {
-    const found = await searchAndGrabDiscography(item, forJudging, MIN_WANTED_FOR_AUTOMATIC_DISCOGRAPHY, ctx);
+    const found = await searchAndGrabDiscography(item, forJudging, AUTOMATIC_DISCOGRAPHY_JUDGE, ctx);
     await recordSeasonResult(item.id, DISCOGRAPHY_SEARCH_KEY, found.result, !!ctx.automatic);
     return { searches: 1, grabbed: found.result === "grabbed" ? 1 : 0 };
   } catch (err) {
     log.warn(`[scheduler] discography search failed for "${item.title}":`, (err as Error).message);
     return { searches: 1, grabbed: 0 };
+  }
+}
+
+/**
+ * The fallback for one missing album (Settings, off by default): the album's own search found nothing usable, so its artist's
+ * discography is looked for as well, and one that covers the album is taken even though it adds just that one. Looked for once
+ * per wait of the discography key's backoff (the one searchDiscographyFirst keeps, so an artist with several albums missing
+ * that was just searched for one is not searched again), and once per artist in a cycle. Returns how the search ended, or
+ * null when none was made.
+ */
+async function searchDiscographyFallback(
+  item: MediaItem,
+  subItemId: number,
+  ctx: BulkSearchContext,
+  tried: Set<number>,
+  reserveSlot: () => boolean
+): Promise<GrabResult | null> {
+  if (item.type !== "artist" || !discographyGrabsEnabled() || !discographyFallbackSingleEnabled()) return null;
+  if (tried.has(item.id)) return null;
+  tried.add(item.id);
+  try {
+    if (!(await seasonSearchDue(item.id, DISCOGRAPHY_SEARCH_KEY))) return null;
+    if (noIndexerAvailable(ctx.indexers, item.type)) return null;
+    const { albums } = await discographyJudgingAlbums(item.id);
+    // The album must still be one that is wanted (it may have been queued, or got its files, since its own search began).
+    if (!albums.some((album) => album.id === subItemId && album.monitored)) return null;
+    if (!reserveSlot()) return null;
+    const found = await searchAndGrabDiscography(item, albums, { minWanted: 1, minShare: 0, mustCover: subItemId }, ctx);
+    await recordSeasonResult(item.id, DISCOGRAPHY_SEARCH_KEY, found.result, true);
+    return found.result;
+  } catch (err) {
+    log.warn(`[scheduler] discography search (for one album) failed for "${item.title}":`, (err as Error).message);
+    return null;
   }
 }
 

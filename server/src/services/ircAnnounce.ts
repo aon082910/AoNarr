@@ -10,9 +10,13 @@ import { scoreRelease } from "./customFormatScoring.js";
 import { getBlocklistedTitles } from "./blocklist.js";
 import { downloadClientFromRow, mediaItemFromRow, qualityProfileFromRow } from "../db/mappers.js";
 import {
+  AUTOMATIC_DISCOGRAPHY_JUDGE,
+  DISCOGRAPHY_SEARCH_KEY,
   chooseBestResult,
+  discographyJudgingAlbums,
   existingFileQuality,
   grab,
+  grabDiscography,
   isAlreadyQueued,
   isNotYetReleased,
   isReleaseAvailableForSearch,
@@ -30,7 +34,8 @@ import { computeAbsoluteEpisodeNumber } from "./importer.js";
 import { GLOBAL_RANKING, rankingFromRow, rankingOf, sameQualityGroup, usesQualityTiers, type ProfileRanking } from "./quality.js";
 import { aliasSeasonsFor, aliasTitlesByItem, applyAliasSeason, resolveReleaseItemInLibrary, seasonEpisodeCounts } from "./releaseAliases.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
-import { wakeLeaf } from "./searchBackoff.js";
+import { wakeLeaf, wakeSeason } from "./searchBackoff.js";
+import { discographyGrabsEnabled, isDiscographyRelease, releaseNamesArtist, type DiscographyAlbum } from "./discography.js";
 import type { DownloadClient, SearchResult } from "../types/index.js";
 
 export interface IrcFeedRow {
@@ -91,6 +96,12 @@ export async function handleAnnounce(feed: IrcFeedRow, messageText: string): Pro
   if (clients.length === 0) return;
   const targetClient = pickClientForProtocol(clients, feed.protocol);
   if (!targetClient) return;
+
+  // A discography is a release for many albums of an artist, never a film or an episode: it is judged on its own.
+  if (isDiscographyRelease(releaseTitle)) {
+    await grabDiscographyAnnounce(feed, releaseTitle, downloadUrl, parsed.quality, targetClient);
+    return;
+  }
 
   // An announce is unsolicited: which item it names is decided library-wide, with aliases, and two
   // items both claiming it is a reason to grab nothing (Sonarr's MultipleSeriesFoundException).
@@ -304,6 +315,55 @@ async function grabSubItemAnnounce(feed: IrcFeedRow, releaseTitle: string, downl
   return false;
 }
 
+/**
+ * A discography announced for an artist (Lidarr's DiscographySpecification): the one monitored artist whose name the release
+ * carries is judged for it as a search for a discography judges one (two or more albums missing and a quarter of the albums
+ * it covers, none of them unreleased, a release that names another artist turned away), against the albums nothing is
+ * downloading yet, and grabbed for those albums. The same switch as the search turns it off.
+ */
+async function grabDiscographyAnnounce(feed: IrcFeedRow, releaseTitle: string, downloadUrl: string, quality: string, targetClient: DownloadClient): Promise<boolean> {
+  if (!discographyGrabsEnabled()) {
+    log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}": discography grabs are switched off`);
+    return false;
+  }
+  const artists = ((await db.prepare("SELECT * FROM media_items WHERE monitored = 1 AND type = 'artist'").all()) as any[])
+    .map(mediaItemFromRow)
+    .filter((item) => releaseNamesArtist(releaseTitle, item.title));
+  if (artists.length > 1) {
+    log.info(`[irc:${feed.name}] "${releaseTitle}" names ${artists.length} artists (${artists.map((a) => `"${a.title}"`).join(", ")}); not grabbing`);
+    return false;
+  }
+  const artist = artists[0];
+  if (!artist) return false;
+  const result: SearchResult = {
+    indexerId: null,
+    indexerName: `irc:${feed.name}`,
+    title: releaseTitle,
+    size: 0,
+    seeders: null,
+    leechers: null,
+    publishDate: null, // the announce's own time is not the post's date; blocklist entries match on size and title instead
+    downloadUrl,
+    protocol: feed.protocol,
+    category: null,
+  };
+  return serializeForTarget(`discography:${artist.id}`, async () => {
+    const { albums, wantedCount, queuedCount } = await discographyJudgingAlbums(artist.id);
+    if (wantedCount === 0) {
+      if (queuedCount > 0) log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}" for "${artist.title}": a download already covers every album it would add`);
+      return false;
+    }
+    // The search's own tests of a discography judge it: the artist it names, the years it spans, the albums it would add (each
+    // turned-away release is logged with its reason there).
+    const named = await chooseBestResult([result], [], "", null, 0, null, new Set(), artist.type, null, null, artist.id, {
+      name: { title: artist.title },
+      discography: { albums, ...AUTOMATIC_DISCOGRAPHY_JUDGE },
+    });
+    if (!named) return false;
+    return tryGrabMatch(artist, null, null, releaseTitle, downloadUrl, quality, feed, targetClient, { albums });
+  });
+}
+
 /** The item's delay profile, picked the way the scheduled search picks it: the first tag-scoped
  * profile matching one of its tags (in saved order), else the untagged default. An announce is
  * seconds old, so any positive delay holds it back (the scheduled search grabs the release once it
@@ -347,7 +407,9 @@ async function tryGrabMatch(
   downloadUrl: string,
   quality: string,
   feed: IrcFeedRow,
-  targetClient: DownloadClient
+  targetClient: DownloadClient,
+  /** A discography: the artist's albums as it is judged against them. It is for those albums, not for the artist's own file. */
+  discography?: { albums: DiscographyAlbum[] }
 ): Promise<boolean> {
   const profileRow = item.qualityProfileId ? await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(item.qualityProfileId) : null;
   const profile = profileRow ? qualityProfileFromRow(profileRow) : null;
@@ -358,7 +420,7 @@ async function tryGrabMatch(
   if (allowedQualities.length > 0 && !allowedQualities.includes(quality)) return false;
 
   // A target that has its file is replaced only by a real upgrade, with auto-upgrade on and the profile allowing it.
-  const onDisk = await existingFileQuality(item, episodeId, subItemId);
+  const onDisk = discography ? undefined : await existingFileQuality(item, episodeId, subItemId);
   const existingFile = onDisk === undefined ? null : await existingFileRecord(item, episodeId, subItemId);
   if (onDisk !== undefined && (!tiered || !existingFile || getSetting("autoUpgradeEnabled") !== "1")) return false;
 
@@ -374,7 +436,8 @@ async function tryGrabMatch(
   if (await delayProfileHoldsBack(item.id, feed.protocol, quality, tiered ? profile?.cutoff ?? null : null, rankingOf(profile))) {
     log.info(`[irc:${feed.name}] not grabbing "${releaseTitle}" for "${item.title}": held back by its delay profile`);
     // The scheduled search grabs it once it has aged, so the target must be due for one at the next cycle.
-    await wakeLeaf(episodeId ? "episodes" : subItemId ? "sub_items" : "media_items", episodeId ?? subItemId ?? item.id);
+    if (discography) await wakeSeason(item.id, DISCOGRAPHY_SEARCH_KEY);
+    else await wakeLeaf(episodeId ? "episodes" : subItemId ? "sub_items" : "media_items", episodeId ?? subItemId ?? item.id);
     return false;
   }
 
@@ -401,7 +464,9 @@ async function tryGrabMatch(
   // A client scoped to tags takes only titles carrying one of them; the one picked before the title was known may not.
   const clientForTitle = pickClientForProtocol(await rowsToDownloadClients(), feed.protocol, { itemTags: await tagIdsOfItem(item.id) }) ?? null;
   if (!clientForTitle) return false;
-  const grabbed = await grab(clientForTitle, item, episodeId, subItemId, chosen, 0, null, "irc");
+  const grabbed = discography
+    ? await grabDiscography(clientForTitle, item, chosen, discography.albums, AUTOMATIC_DISCOGRAPHY_JUDGE, "irc")
+    : await grab(clientForTitle, item, episodeId, subItemId, chosen, 0, null, "irc");
   if (grabbed) log.info(`[irc:${feed.name}] instant-grabbed "${releaseTitle}" for "${item.title}"`);
   return grabbed;
 }

@@ -14,6 +14,11 @@ export function discographyGrabsEnabled(): boolean {
   return getSetting("discographyGrabs") !== "0";
 }
 
+/** Whether an album whose own search found nothing may be looked for in a discography (Settings, default off). */
+export function discographyFallbackSingleEnabled(): boolean {
+  return getSetting("discographyFallbackSingle") === "1";
+}
+
 /** An automatic search takes a discography only when it would add at least this many missing albums:
  * for fewer, the album's own release is the better download. A release picked by hand has no minimum. */
 export const MIN_WANTED_FOR_AUTOMATIC_DISCOGRAPHY = 2;
@@ -54,6 +59,8 @@ export interface DiscographyJudgeOptions {
   minWanted: number;
   /** The share of the albums it covers that must be missing (0 to 1): a discography of forty albums is not taken for two. */
   minShare?: number;
+  /** An album the release has to add (the one whose own search found nothing, for a discography taken as its fallback). */
+  mustCover?: number;
   /** Whether an album's release date is still ahead (scheduler.isNotYetReleased). */
   isUnreleased: (releaseDate: string | null) => boolean;
 }
@@ -83,6 +90,10 @@ export function judgeDiscography(releaseTitle: string, albums: DiscographyAlbum[
   const unreleased = covered.find((album) => options.isUnreleased(album.releaseDate));
   if (unreleased) {
     return { ok: false, reason: `It would include "${unreleased.title}", which is not out yet`, covered, wanted };
+  }
+  if (options.mustCover != null && !wanted.some((album) => album.id === options.mustCover)) {
+    const wantedAlbum = albums.find((album) => album.id === options.mustCover);
+    return { ok: false, reason: `It does not cover the album${wantedAlbum ? ` "${wantedAlbum.title}"` : ""} that was looked for`, covered, wanted };
   }
   if (wanted.length < options.minWanted) {
     return {

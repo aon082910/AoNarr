@@ -2586,8 +2586,11 @@ export async function placeAlbumFiles(params: {
   /** The anchor's folder is known to hold this album and no other download's files (a folder of a discography the
    * caller matched to the album): it is not judged by its name. */
   ownFolder?: boolean;
+  /** The caller tells of the import itself (a discography sends one notification for all its albums): the album's history row is
+   * written, its own "imported" notification is not sent. */
+  quiet?: boolean;
 }): Promise<{ destFolder: string; fileCount: number; leftInPlace: number; anchorDest: string | null; sourceFolder: string | null }> {
-  const { itemId, subItemId, anchorFile, quality, releaseTitle, downloadPath, category, onlyAnchor = false, batchClaims, refuseDowngrade, ownFolder = false } = params;
+  const { itemId, subItemId, anchorFile, quality, releaseTitle, downloadPath, category, onlyAnchor = false, batchClaims, refuseDowngrade, ownFolder = false, quiet = false } = params;
 
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
@@ -3025,7 +3028,7 @@ export async function placeAlbumFiles(params: {
       item.id,
       importedHistoryData({ destFolder, fileCount: movedCount, subItemId, quality: quality ?? null })
     );
-    await notifyImported(item.title, `${movedCount} file(s) into ${path.basename(destFolder)}`, destFolder, { mediaItemId: item.id });
+    if (!quiet) await notifyImported(item.title, `${movedCount} file(s) into ${path.basename(destFolder)}`, destFolder, { mediaItemId: item.id });
   }
   if (movedCount > 0) {
     // artist.nfo and artist.jpg go in the folder above the albums, when the naming template gives the artist one.
@@ -3039,6 +3042,28 @@ export async function placeAlbumFiles(params: {
     await notifyManualInteractionRequired(item.title, reason, { mediaItemId: item.id });
   }
   return { destFolder, fileCount: movedCount, leftInPlace, anchorDest, sourceFolder: sharedSourceDir ? null : albumSourceDir };
+}
+
+/**
+ * The one "imported" notification of a discography: how many of the albums it was for went in and which are left, instead of one
+ * notification per album (placeDiscographyFiles places them quietly). Albums that already had their files are not part of the count.
+ * Nothing is sent when no album went in.
+ */
+async function notifyDiscographyImported(item: { id: number; title: string }, targetSubItemIds: number[], done: DiscographyImport): Promise<void> {
+  if (done.imported.length === 0) return;
+  const had = new Set(done.alreadyHad);
+  const placed = new Set(done.imported.map((album) => album.subItemId));
+  const total = targetSubItemIds.filter((id) => !had.has(id)).length;
+  const leftIds = targetSubItemIds.filter((id) => !had.has(id) && !placed.has(id));
+  let text = `imported ${done.imported.length} of ${total} album${total === 1 ? "" : "s"}`;
+  if (leftIds.length > 0) {
+    const rows = (await db
+      .prepare(`SELECT title FROM sub_items WHERE id IN (${leftIds.map(() => "?").join(",")}) ORDER BY release_date, id`)
+      .all(...leftIds)) as { title: string }[];
+    const shown = rows.slice(0, 5).map((row) => row.title);
+    text += `, ${leftIds.length} left: ${shown.join(", ")}${rows.length > shown.length ? `, and ${rows.length - shown.length} more` : ""}`;
+  }
+  await notifyImported(`${item.title} - Discography: ${total} album${total === 1 ? "" : "s"}`, text, done.imported[0].destFolder, { mediaItemId: item.id });
 }
 
 /** A disc folder of a multi-disc album ("CD1", "Disc 2"): not an album of its own. */
@@ -3183,6 +3208,8 @@ export async function placeDiscographyFiles(params: {
         refuseDowngrade,
         // The folder was told to hold this album and only it: it is the album's own, whatever it is called.
         ownFolder: true,
+        // The discography is told of once for all its albums (notifyDiscographyImported), not once per album.
+        quiet: true,
       });
       result.imported.push({ subItemId: album.id, title: album.title, destFolder: placedAlbum.destFolder, fileCount: placedAlbum.fileCount });
       placed.add(album.id);
@@ -4002,6 +4029,7 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
     });
     leftFilesBehind = done.leftBehind;
     releaseDir = releaseRoot;
+    await notifyDiscographyImported(item, discographyTargets, done);
     // The albums this download has settled, imported or not in it, no longer wait on it. An album whose folder was found
     // and could not be placed keeps its link: the row stays, parked, and holds it from the searches (and from a second
     // grab of the same release) until the admin has seen why.
