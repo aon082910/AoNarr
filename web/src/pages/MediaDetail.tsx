@@ -1288,7 +1288,7 @@ export default function MediaDetail() {
     // The server picks an enabled client matching the release's protocol (usenet → SABnzbd,
     // torrent → qBittorrent/debrid) — the first client in the list isn't necessarily either.
     try {
-      await api.post(`/search/${id}/grab`, {
+      const queued = await api.post<{ note?: string }>(`/search/${id}/grab`, {
         downloadUrl: result.downloadUrl,
         indexerId: result.indexerId,
         title: result.title,
@@ -1306,7 +1306,8 @@ export default function MediaDetail() {
         force: options.force ?? false,
         overrides: overrides ?? [],
       });
-      notify.success(`Sent "${result.title}" to download client.`);
+      // A collection grabbed from a book it does not say it holds is queued for that book as well, and says so.
+      notify.success(`Sent "${result.title}" to download client.${queued?.note ? ` ${queued.note}` : ""}`);
       load();
     } catch (e) {
       // The identity gate (enforcing) or the blocklist refused the release once; the admin decides. A copy already queued
