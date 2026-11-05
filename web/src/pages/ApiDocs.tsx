@@ -36,10 +36,9 @@ function loadStylesheet(href: string): void {
 }
 
 /**
- * Self-hosted Swagger UI (no external CDN) against GET /api/openapi.json — covers the core
- * resources for anyone scripting against AoNarr directly, not every single admin-settings route.
- * The admin API key already in localStorage is attached to every "Try it out" request so it works
- * without re-entering it.
+ * Self-hosted Swagger UI (no external CDN) against GET /api/openapi.json, which the server generates from
+ * every route it has registered (about 400 operations, in a group per resource). The admin API key already
+ * in localStorage is attached to every "Try it out" request so it works without re-entering it.
  */
 export default function ApiDocs() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -53,6 +52,10 @@ export default function ApiDocs() {
         url: withBase("/api/openapi.json"),
         domNode: containerRef.current,
         presets: [window.SwaggerUIBundle.presets.apis],
+        // With this many operations nothing is opened until asked for, and a filter box finds one by name or path.
+        docExpansion: "none",
+        defaultModelsExpandDepth: -1,
+        filter: true,
         requestInterceptor: (req: any) => {
           // Many operations have no request body, so Swagger sends them without a Content-Type;
           // with Authentication disabled this header is all that keeps them from looking like a
@@ -78,10 +81,11 @@ export default function ApiDocs() {
     <div>
       <h1>API Docs</h1>
       <p style={{ color: "var(--muted)" }}>
-        Covers the core resources — media, search/grab, queue, indexers, download clients,
-        requests, root folders, quality profiles. Not every admin-settings route is documented
-        here; see the server source under <code>src/routes</code> for the complete list. "Try it
-        out" uses your admin API key automatically.
+        Every route the server answers under <code>/api</code>, generated from the routes themselves and
+        grouped by resource. The core resources (media, search and grab, the queue, indexers, download
+        clients, requests, root folders, quality profiles) carry notes on what they take and return; the
+        rest lists the method, path, parameters and who may call it. "Try it out" uses your admin API key
+        automatically.
       </p>
       <div ref={containerRef} style={{ background: "#fff", borderRadius: 8, overflow: "hidden" }} />
     </div>

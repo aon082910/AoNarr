@@ -312,28 +312,36 @@ export async function requireAuthStrict(req: Request, res: Response, next: NextF
   return authenticate(req, res, next, false);
 }
 
+/**
+ * Whether a request to this /api path (as req.path sees it under the /api mount: "/auth/login") needs no credential at
+ * all. Some of these carry a token of their own (a feed, a webhook, a share link) that the route checks. The generated
+ * OpenAPI document (openapi.ts) asks this too, with route templates ("/share/:token"), so those paths are marked open there.
+ */
+export function isOpenApiPath(method: string, path: string): boolean {
+  return (
+    path === "/health" ||
+    path === "/auth/login" ||
+    path === "/auth/login/totp" ||
+    path === "/auth/setup" ||
+    path === "/auth/setup-status" ||
+    path === "/metrics" ||
+    path === "/calendar.ics" ||
+    path === "/theme.css" ||
+    path === "/webhooks/media-server" ||
+    path === "/webhooks/overseerr" ||
+    path === "/discord/interactions" ||
+    path.startsWith("/share/") ||
+    path.startsWith("/iptv/m3u/") ||
+    path.startsWith("/iptv/stream/") ||
+    path.startsWith("/opds") ||
+    path.startsWith("/media/local-artwork/") ||
+    (method === "GET" && REMOTE_ARTWORK_RELAY_PATH.test(path)) ||
+    path.startsWith("/invite/")
+  );
+}
+
 async function authenticate(req: Request, res: Response, next: NextFunction, openPaths: boolean) {
-  if (
-    openPaths &&
-    (req.path === "/health" ||
-    req.path === "/auth/login" ||
-    req.path === "/auth/login/totp" ||
-    req.path === "/auth/setup" ||
-    req.path === "/auth/setup-status" ||
-    req.path === "/metrics" ||
-    req.path === "/calendar.ics" ||
-    req.path === "/theme.css" ||
-    req.path === "/webhooks/media-server" ||
-    req.path === "/webhooks/overseerr" ||
-    req.path === "/discord/interactions" ||
-    req.path.startsWith("/share/") ||
-    req.path.startsWith("/iptv/m3u/") ||
-    req.path.startsWith("/iptv/stream/") ||
-    req.path.startsWith("/opds") ||
-    req.path.startsWith("/media/local-artwork/") ||
-    (req.method === "GET" && REMOTE_ARTWORK_RELAY_PATH.test(req.path)) ||
-    req.path.startsWith("/invite/"))
-  ) {
+  if (openPaths && isOpenApiPath(req.method, req.path)) {
     next();
     return;
   }

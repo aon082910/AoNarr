@@ -1,215 +1,266 @@
+import type { Express } from "express";
+import { isOpenApiPath } from "./middleware/auth.js";
+import { appUrlBase } from "./services/urlBase.js";
+import { HAND_WRITTEN_OPERATIONS } from "./openapiHand.js";
+import { walkRoutes, type RouteEntry, type RouteMethod, type RouteWalk } from "./openapiRoutes.js";
+import { STARR_APP_KEYS } from "./starr/apps.js";
+
 /**
- * Hand-curated OpenAPI 3.0 spec covering the core resources — not every single route in the app
- * (there are ~40 route files); this documents the ones most useful for scripting against AoNarr
- * directly (media CRUD, search/grab, queue, indexers, download clients, requests, root folders,
- * quality profiles) rather than attempting exhaustive 1:1 coverage of every admin-settings
- * endpoint. Kept as a plain object (not generated from the route files) so it can't silently drift
- * from reality without a human noticing at review time — update it by hand alongside route changes.
+ * The OpenAPI 3.0 document of the native API (GET /api/openapi.json), generated from the routes the app has registered
+ * (openapiRoutes.ts), so a route cannot exist without an entry. Each route gets a skeleton: method, path, parameters,
+ * who may call it, the shape of an error. The operations in openapiHand.ts (the core resources, with notes on request
+ * and response written by hand) are laid over their skeleton. tests/openapiCoverage.test.ts fails when the two drift.
+ * The Starr mounts (/sonarr and the others) have documents of their own (starr/openapi.ts).
  */
-export const openApiSpec = {
-  openapi: "3.0.3",
-  info: {
-    title: "AoNarr API",
-    version: "0.1.0",
-    description:
-      "Self-hosted media manager API. Authenticate with either the admin API key (`X-Api-Key` header) " +
-      "or a household session token (`X-Session-Token` header, from POST /auth/login). " +
-      "This spec covers the core resources; see the server source under src/routes for the complete route list.",
-  },
-  servers: [{ url: "/api" }],
-  components: {
-    securitySchemes: {
-      ApiKeyAuth: { type: "apiKey", in: "header", name: "X-Api-Key" },
-      SessionTokenAuth: { type: "apiKey", in: "header", name: "X-Session-Token" },
+
+type Json = Record<string, any>;
+
+const API_PREFIX = "/api";
+const METHOD_ORDER: RouteMethod[] = ["get", "post", "put", "patch", "delete"];
+/** Methods that take a JSON body. */
+const BODY_METHODS = new Set<RouteMethod>(["post", "put", "patch"]);
+
+/** The mounts of the Starr-compatible apps: their routes have documents of their own, so they are not listed here. */
+export const STARR_MOUNTS = STARR_APP_KEYS.map((key) => `/${key}`);
+
+/** The routes of the native API: every route the app has registered except the Starr mounts. */
+export function nativeRoutes(app: Express): RouteWalk {
+  return walkRoutes(app, STARR_MOUNTS);
+}
+
+const isParam = (segment: string): boolean => segment.startsWith(":");
+const words = (segment: string): string => segment.replace(/[-_.]+/g, " ");
+const capitalize = (text: string): string => (text ? text[0].toUpperCase() + text.slice(1) : text);
+const pascal = (text: string): string => text.split(/[^A-Za-z0-9]+/).filter(Boolean).map(capitalize).join("");
+
+/** Words that read the same for one and for many. */
+const UNCOUNTED = new Set(["series", "news", "metadata", "status", "analysis"]);
+
+/** "profiles" is "profile", "entries" is "entry", "aliases" is "alias"; "status", "series" and "class" stay as they are. */
+function singular(phrase: string): string {
+  if (UNCOUNTED.has(phrase.split(" ").pop()!) || phrase.endsWith("media")) return phrase;
+  if (/movies$/.test(phrase)) return phrase.slice(0, -1);
+  if (/ies$/.test(phrase)) return phrase.replace(/ies$/, "y");
+  if (/(sses|uses|ases)$/.test(phrase)) return phrase.slice(0, -2);
+  if (/(ss|us|is)$/.test(phrase) || !/s$/.test(phrase)) return phrase;
+  return phrase.slice(0, -1);
+}
+
+/** Whether a path word names a collection ("media" does, a file name such as "calendar.ics" does not). */
+function isPlural(segment: string): boolean {
+  const phrase = words(segment);
+  if (phrase === "media") return true;
+  return !segment.includes(".") && !UNCOUNTED.has(phrase.split(" ").pop()!) && /s$/.test(phrase) && !/(ss|us|is)$/.test(phrase);
+}
+
+/** Words that name something done to a thing: "POST /indexers/{id}/test" is "Test indexer {id}". */
+const ACTIONS = new Set([
+  "add", "apply", "approve", "cancel", "check", "clear", "convert", "dismiss", "download", "enable", "disable", "export", "fetch",
+  "grab", "identify", "import", "map", "merge", "move", "pause", "preview", "purge", "refresh", "regenerate", "register", "reject",
+  "remove", "rename", "reorder", "rematch", "reset", "resolve", "restore", "resume", "retag", "retry", "run", "scan", "search",
+  "select", "send", "share", "split", "start", "stop", "sync", "test", "unsubscribe", "subscribe", "validate", "verify", "write",
+]);
+
+/** A path as words, a parameter as "{name}" and a resource just before a parameter in the singular: ["indexers", ":id"] is "indexer {id}". */
+function describePath(segments: string[]): string {
+  return segments
+    .map((segment, i) => {
+      if (isParam(segment)) return `{${segment.slice(1)}}`;
+      const phrase = words(segment);
+      return segments[i + 1] !== undefined && isParam(segments[i + 1]) ? singular(phrase) : phrase;
+    })
+    .join(" ");
+}
+
+/** A short human text from the method and the path ("List media", "Get media {id}", "Test indexer {id}"). */
+export function summaryFor(method: RouteMethod, segments: string[]): string {
+  if (segments.length === 0) return method === "get" ? "API root" : `${capitalize(method)} API root`;
+  const last = segments[segments.length - 1];
+  const lastIsParam = isParam(last);
+  const lastWords = words(last);
+  const before = segments.slice(0, -1);
+  switch (method) {
+    case "get":
+      return `${!lastIsParam && isPlural(last) ? "List" : "Get"} ${describePath(segments)}`;
+    case "put":
+    case "patch":
+      return `Update ${describePath(segments)}`;
+    case "delete":
+      return `Delete ${describePath(segments)}`;
+    case "post": {
+      if (lastIsParam) return `Post ${describePath(segments)}`;
+      const target = describePath(before);
+      const phrase = lastWords.split(" ");
+      // "test", "approve" and "scan-import" name what is done to the thing before them.
+      if (ACTIONS.has(phrase[0])) return `${capitalize(lastWords)}${phrase.length > 1 && target ? " for" : ""}${target ? ` ${target}` : ""}`;
+      if (before.length === 0) return isPlural(last) ? `Create ${singular(lastWords)}` : `Post ${lastWords}`;
+      // A plural names what is added to the thing (to a collection under an {id}) or what is created.
+      if (isPlural(last)) return isParam(before[before.length - 1]) ? `Add ${singular(lastWords)} to ${target}` : `Create ${describePath([...before, singular(last)])}`;
+      return isParam(before[before.length - 1]) ? `Post ${target} ${lastWords}` : capitalize(describePath(segments));
+    }
+  }
+}
+
+/** A stable name for the operation: "getMediaById", "postIndexersByIdTest". */
+export function operationIdFor(method: RouteMethod, segments: string[]): string {
+  return method + segments.map((segment) => (isParam(segment) ? `By${pascal(segment.slice(1))}` : pascal(segment))).join("");
+}
+
+/** A path parameter is an integer when it is a row id by name (":id", ":episodeId", ":seasonNumber"); the rest (tokens, keys, names, kinds) are text. */
+function parameterSchema(name: string): Json {
+  return /^(id|.+Id|.+Number)$/.test(name) ? { type: "integer" } : { type: "string" };
+}
+
+const ERROR_BODY = (schema: string): Json => ({ "application/json": { schema: { $ref: `#/components/schemas/${schema}` } } });
+const refResponse = (name: string): Json => ({ $ref: `#/components/responses/${name}` });
+
+/** The shape of every refusal and failure the server answers with, so it can be documented once. */
+const COMMON_COMPONENTS = {
+  schemas: {
+    Error: { type: "object", required: ["error"], properties: { error: { type: "string" } } },
+    RateLimited: {
+      type: "object",
+      required: ["error"],
+      properties: { error: { type: "string" }, retryAfterSeconds: { type: "integer", description: "How long the address stays locked out" } },
     },
   },
-  security: [{ ApiKeyAuth: [] }, { SessionTokenAuth: [] }],
-  paths: {
-    "/health": {
-      get: { summary: "Health check", security: [], responses: { "200": { description: "OK" } } },
-    },
-    "/media": {
-      get: {
-        summary: "List library items",
-        parameters: [
-          { name: "type", in: "query", schema: { type: "string" } },
-          { name: "tagId", in: "query", schema: { type: "integer" } },
-        ],
-        responses: { "200": { description: "Array of media items" } },
-      },
-      post: {
-        summary: "Add a media item",
-        requestBody: { content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "201": { description: "Created" }, "409": { description: "Possible duplicate" } },
-      },
-    },
-    "/media/{id}": {
-      get: { summary: "Get one media item with children (episodes/sub-items)", responses: { "200": { description: "OK" } } },
-      patch: { summary: "Update a media item (monitored, quality profile, root folder, ...)", responses: { "200": { description: "OK" } } },
-      delete: { summary: "Remove a media item from the library", responses: { "204": { description: "Deleted" } } },
-    },
-    "/media/export.csv": {
-      get: { summary: "Download the library as CSV", parameters: [{ name: "type", in: "query", schema: { type: "string" } }], responses: { "200": { description: "CSV file" } } },
-    },
-    "/media/{id}/season/{seasonNumber}/monitor": {
-      patch: { summary: "Bulk monitor/unmonitor every episode in one season", responses: { "200": { description: "Updated episodes" } } },
-    },
-    "/search/{mediaItemId}": {
-      get: {
-        summary: "Manual search: live indexer search for one media item, episode, or sub-item",
-        parameters: [
-          { name: "mediaItemId", in: "path", required: true, schema: { type: "integer" } },
-          { name: "episodeId", in: "query", schema: { type: "integer" } },
-          { name: "subItemId", in: "query", schema: { type: "integer" } },
-          { name: "seasonNumber", in: "query", schema: { type: "integer" } },
-          { name: "detail", in: "query", description: "1: answer {results, indexers} instead of the bare array; indexers says which indexers answered", schema: { type: "string", enum: ["1"] } },
-        ],
-        responses: {
-          "200": {
-            description:
-              "Annotated search results in the order an automatic search would choose from (serverRank): quality, format score, blocklist status, age, group, packaging, and rejections [{code, reason, type: permanent|temporary}] with approved/rejected flags; alternates are the same release on other indexers",
-          },
-        },
-      },
-    },
-    "/search/{mediaItemId}/grab": {
-      post: {
-        summary: "Manually grab a specific search result for this media item",
-        description:
-          "Body: downloadUrl, title, protocol, indexerId, episodeId/subItemId/seasonNumber, alternates (other links tried in turn when the client refuses the release), force (overrides the blocklist, the identity gate and the already-queued check) and overrides (rejection codes the caller accepted; recorded as a forced grab).",
-        parameters: [{ name: "mediaItemId", in: "path", required: true, schema: { type: "integer" } }],
-        responses: { "201": { description: "Queue item created" } },
-      },
-    },
-    "/search/bulk": {
-      post: { summary: "Search-and-grab the best release for a list of targets", responses: { "200": { description: "Results per target" } } },
-    },
-    "/activity/queue": {
-      get: { summary: "Current download queue", responses: { "200": { description: "Queue items" } } },
-    },
-    "/indexers": {
-      get: { summary: "List indexers", responses: { "200": { description: "OK" } } },
-      post: { summary: "Add an indexer (torznab/newznab/rss/ddl)", responses: { "201": { description: "Created" } } },
-    },
-    "/indexers/{id}": {
-      patch: { summary: "Update an indexer", responses: { "200": { description: "OK" } } },
-      delete: { summary: "Remove an indexer", responses: { "204": { description: "Deleted" } } },
-    },
-    "/indexers/{id}/test": {
-      post: { summary: "Test an indexer with a sample search", responses: { "200": { description: "{ ok, resultCount | error }" } } },
-    },
-    "/download-clients": {
-      get: { summary: "List download clients", responses: { "200": { description: "OK" } } },
-      post: { summary: "Add a download client", responses: { "201": { description: "Created" } } },
-    },
-    "/notifications/connections": {
-      get: { summary: "List notification connections (secrets show as ********)", responses: { "200": { description: "OK" } } },
-      post: {
-        summary: "Add a notification connection",
-        description:
-          "Body: name, kind (discord, slack, webhook, telegram, pushover, ntfy, gotify, matrix, twilio, email, customScript, webPush), config (the kind's fields; GET /notifications/connections/meta lists them), events (names, or omit for the defaults), tagIds, enabled. A webhook takes url, method (POST or PUT), headers, username/password and payloadStyle (aonarr or starr).",
-        responses: { "201": { description: "Created" }, "400": { description: "Unknown kind, a missing required field or a bad value, with the reason" } },
-      },
-    },
-    "/notifications/connections/meta": {
-      get: { summary: "The kinds and their fields, the events, and each message template with its default and tokens", responses: { "200": { description: "OK" } } },
-    },
-    "/notifications/connections/{id}": {
-      put: {
-        summary: "Edit a notification connection (a secret sent back as ******** keeps the stored value)",
-        responses: { "200": { description: "OK" } },
-      },
-      delete: { summary: "Delete a notification connection", responses: { "204": { description: "Deleted" } } },
-    },
-    "/notifications/connections/{id}/test": {
-      post: { summary: "Send the test message to this connection, whatever its events say", responses: { "200": { description: "{ ok } or { ok: false, error }, without any secret or full URL" } } },
-    },
-    "/quality-profiles": {
-      get: {
-        summary: "List quality profiles (allowedQualities, cutoff, qualityGroups, qualityOrder: the order the profile ranks the quality ladder in, worst to best, or null for the global order of /qualities)",
-        responses: { "200": { description: "OK" } },
-      },
-      post: {
-        summary:
-          "Create a quality profile. qualityOrder (optional, a list of different quality names on the ladder, worst to best) gives the profile its own ranking; every allowed quality it leaves out is put into the stored list by its place on the ladder, and a file of a quality that is not listed ranks where it belongs among the listed ones; null or [] ranks by the global order",
-        responses: { "201": { description: "Created" } },
-      },
-    },
-    "/quality-profiles/{id}": {
-      patch: {
-        summary: "Edit a quality profile. qualityOrder sets, or with null / [] resets, the order the profile ranks the ladder in (completed with the allowed qualities it leaves out); a quality newly allowed is put into an existing order by its place on the ladder when the order is not sent",
-        responses: { "200": { description: "OK" } },
-      },
-    },
-    "/root-folders": {
-      get: { summary: "List root folders (with live free/total disk space)", responses: { "200": { description: "OK" } } },
-      post: { summary: "Add a root folder", responses: { "201": { description: "Created" } } },
-    },
-    "/root-folders/{id}": {
-      patch: {
-        summary: "Edit a root folder: name, quota, minimum free space (grabs pause below it), and the defaults for what is added into it (quality profile, metadata profile, monitor choices, tags)",
-        responses: { "200": { description: "OK" } },
-      },
-    },
-    "/metadata-profiles": {
-      get: { summary: "List metadata profiles (which releases an artist or author lists)", responses: { "200": { description: "OK" } } },
-      post: { summary: "Create a metadata profile", responses: { "201": { description: "Created" } } },
-    },
-    "/metadata-profiles/{id}": {
-      put: { summary: "Edit a metadata profile", responses: { "200": { description: "OK" } } },
-      delete: { summary: "Delete a metadata profile (refused while a title or root folder uses it)", responses: { "204": { description: "Deleted" } } },
-    },
-    "/import-lists": {
-      get: { summary: "List import lists", responses: { "200": { description: "OK" } } },
-      post: {
-        summary: "Add an import list, with monitor, monitorNewItems, searchOnAdd, minimumAvailability, cleanLevel and tagIds",
-        responses: { "201": { description: "Created" } },
-      },
-    },
-    "/requests": {
-      get: { summary: "List requests (own, or all for admins)", responses: { "200": { description: "OK" } } },
-      post: { summary: "Submit a request (household users only)", responses: { "201": { description: "Created" } } },
-    },
-    "/requests/{id}/approve": {
-      post: { summary: "Approve a request, creating the library entry (admin only)", responses: { "200": { description: "OK" } } },
-    },
-    "/requests/{id}/reject": {
-      post: { summary: "Reject a request (admin only)", responses: { "200": { description: "OK" } } },
-    },
-    "/requests/stats": {
-      get: { summary: "Per-user request counts, approval rate, and storage (admin only)", responses: { "200": { description: "OK" } } },
-    },
-    "/users": {
-      get: { summary: "List household user accounts (admin only)", responses: { "200": { description: "OK" } } },
-      post: { summary: "Create a household user account (admin only)", responses: { "201": { description: "Created" } } },
-    },
-    "/dashboard/recently-added": {
-      get: { summary: "Most recently added library items", responses: { "200": { description: "OK" } } },
-    },
-    "/dashboard/recently-watched": {
-      get: { summary: "Most recently watched library items", responses: { "200": { description: "OK" } } },
-    },
-    "/wanted/missing": {
-      get: { summary: "Everything monitored with no file yet", responses: { "200": { description: "OK" } } },
-    },
-    "/wanted/calendar": {
-      get: {
-        summary: "Upcoming episode/album/book release dates in a date range",
-        parameters: [
-          { name: "start", in: "query", required: true, schema: { type: "string", format: "date" } },
-          { name: "end", in: "query", required: true, schema: { type: "string", format: "date" } },
-        ],
-        responses: { "200": { description: "OK" } },
-      },
-    },
-    "/system/status": {
-      get: { summary: "Version, library counts, queue size, disk space", responses: { "200": { description: "OK" } } },
-    },
-    "/system/health": {
-      get: { summary: "Indexer reachability, stuck queue items, pending requests", responses: { "200": { description: "OK" } } },
-    },
-    "/metrics": {
-      get: { summary: "Prometheus text-exposition metrics", security: [], responses: { "200": { description: "OK" } } },
-    },
+  responses: {
+    Unauthorized: { description: "Missing or invalid credentials (X-Api-Key or X-Session-Token)", content: ERROR_BODY("Error") },
+    Forbidden: { description: "Admin access required", content: ERROR_BODY("Error") },
+    TooManyRequests: { description: "Too many failed authentication attempts from this address; try again after retryAfterSeconds", content: ERROR_BODY("RateLimited") },
+    Failure: { description: "Any other error: the request was refused or failed, with the reason", content: ERROR_BODY("Error") },
   },
 };
+
+/** "/media/{id}/season/{n}": the shape two spellings of one path share, whatever the parameters are called. */
+const shapeOf = (template: string): string => template.replace(/\{[^}]+\}/g, "{}");
+
+/** The group an operation is listed under: the first part of its path, without a file extension ("calendar.ics" is "calendar"). */
+function tagFor(segments: string[]): string {
+  const first = segments[0];
+  return first && !isParam(first) ? first.replace(/\.[A-Za-z0-9]+$/, "") : "root";
+}
+
+function generatedOperation(route: RouteEntry, segments: string[], outside: boolean, taken: Set<string>, urlBase: string): Json {
+  const params = segments.filter(isParam).map((s) => s.slice(1));
+  // Routes under /api are behind the credential check except the paths it lets through; a route outside /api never meets it.
+  const open = outside || isOpenApiPath(route.method.toUpperCase(), `/${segments.map((s) => (isParam(s) ? "1" : s)).join("/")}`);
+  let operationId = operationIdFor(route.method, segments);
+  for (let n = 2; taken.has(operationId); n++) operationId = `${operationIdFor(route.method, segments)}_${n}`;
+  taken.add(operationId);
+
+  const responses: Json = { "200": { description: "OK" } };
+  if (!open) {
+    responses["401"] = refResponse("Unauthorized");
+    responses["429"] = refResponse("TooManyRequests");
+  }
+  if (route.admin) responses["403"] = refResponse("Forbidden");
+  responses.default = refResponse("Failure");
+
+  return {
+    operationId,
+    tags: [tagFor(segments)],
+    summary: summaryFor(route.method, segments),
+    ...(route.admin ? { description: "Admin only: the admin API key or an administrator's session.", "x-aonarr-admin-only": true } : {}),
+    ...(params.length > 0 ? { parameters: params.map((name) => ({ name, in: "path", required: true, schema: parameterSchema(name) })) } : {}),
+    ...(BODY_METHODS.has(route.method) ? { requestBody: { required: false, content: { "application/json": { schema: { type: "object" } } } } } : {}),
+    responses,
+    ...(open ? { security: [] } : {}),
+    ...(outside ? { "x-aonarr-outside-api": true, servers: [{ url: urlBase || "/" }] } : {}),
+  };
+}
+
+/** The hand-written parts of an operation win over the generated skeleton; the skeleton fills in what they leave out. */
+function overlay(generated: Json, hand: Json): Json {
+  const merged: Json = { ...generated, ...hand };
+  const handParameters: Json[] = hand.parameters ?? [];
+  const parameters = [...handParameters, ...(generated.parameters ?? []).filter((g: Json) => !handParameters.some((h) => h.name === g.name && h.in === g.in))];
+  if (parameters.length > 0) merged.parameters = parameters;
+  const handResponses: Json = hand.responses ?? {};
+  // The skeleton's plain 200 would sit beside the 201 or 204 the hand-written entry names.
+  const handSucceeds = Object.keys(handResponses).some((code) => /^2\d\d$/.test(code));
+  const skeleton: Json = { ...generated.responses };
+  if (handSucceeds) delete skeleton["200"];
+  merged.responses = { ...skeleton, ...handResponses };
+  return merged;
+}
+
+/**
+ * The document for the routes the app has now. Pass the URL base the instance is served under: nginx cuts it off before
+ * a request reaches the server, but Swagger's "Try it out" is sent by the browser and needs it.
+ */
+export function buildOpenApiDocument(app: Express, urlBase = ""): Json {
+  const { routes } = nativeRoutes(app);
+  const hand = new Map<string, { path: string; operations: Record<string, Json> }>();
+  for (const [path, operations] of Object.entries(HAND_WRITTEN_OPERATIONS)) hand.set(shapeOf(path), { path, operations });
+
+  const operationIds = new Set<string>();
+  const paths: Record<string, Record<string, Json>> = {};
+  const tags = new Set<string>();
+  const ordered = [...routes].sort((a, b) => a.path.localeCompare(b.path) || METHOD_ORDER.indexOf(a.method) - METHOD_ORDER.indexOf(b.method));
+  for (const route of ordered) {
+    const outside = !(route.path === API_PREFIX || route.path.startsWith(`${API_PREFIX}/`));
+    const relative = outside ? route.path : route.path.slice(API_PREFIX.length) || "/";
+    const segments = relative.split("/").filter(Boolean);
+    const template = `/${segments.map((s) => (isParam(s) ? `{${s.slice(1)}}` : s)).join("/")}`;
+    let operation = generatedOperation(route, segments, outside, operationIds, urlBase);
+    const written = hand.get(shapeOf(template));
+    // A hand-written entry whose parameters are named differently from the route's would describe a path it does not match.
+    if (!outside && written && written.path === template && written.operations[route.method]) operation = overlay(operation, written.operations[route.method]);
+    (paths[template] ??= {})[route.method] = operation;
+    tags.add(operation.tags[0]);
+  }
+
+  return {
+    openapi: "3.0.3",
+    info: {
+      title: "AoNarr API",
+      version: "0.1.0",
+      description:
+        "Self-hosted media manager API. Authenticate with either the admin API key (`X-Api-Key` header) " +
+        "or a household session token (`X-Session-Token` header, from POST /auth/login). " +
+        "Every route the server answers under /api is listed here, grouped by the first part of its path. The core resources " +
+        "(media, search and grab, the queue, indexers, download clients, requests, root folders, quality profiles) carry notes " +
+        "on request and response; the other operations give the method, path, path parameters, whether the call needs an " +
+        "administrator (`x-aonarr-admin-only`) or no credential, and the shape of an error.",
+    },
+    servers: [{ url: `${urlBase}${API_PREFIX}` }],
+    tags: [...tags].sort().map((name) => ({ name })),
+    components: {
+      securitySchemes: {
+        ApiKeyAuth: { type: "apiKey", in: "header", name: "X-Api-Key" },
+        SessionTokenAuth: { type: "apiKey", in: "header", name: "X-Session-Token" },
+      },
+      ...COMMON_COMPONENTS,
+    },
+    security: [{ ApiKeyAuth: [] }, { SessionTokenAuth: [] }],
+    paths,
+  };
+}
+
+const documents = new WeakMap<Express, Map<string, Json>>();
+
+/** The document for this app, built once per URL base: the routers do not change after start-up. */
+export function openApiDocument(app: Express): Json {
+  const base = appUrlBase();
+  let byBase = documents.get(app);
+  if (!byBase) documents.set(app, (byBase = new Map()));
+  let document = byBase.get(base);
+  if (!document) byBase.set(base, (document = buildOpenApiDocument(app, base)));
+  return document;
+}
+
+/** "METHOD /path" of every hand-written operation that no registered route answers: a description left behind by a route that was renamed or removed. */
+export function staleHandWrittenOperations(app: Express): string[] {
+  const { routes } = nativeRoutes(app);
+  const live = new Set(
+    routes
+      .filter((r) => r.path.startsWith(`${API_PREFIX}/`))
+      .map((r) => `${r.method} ${r.path.slice(API_PREFIX.length).replace(/:([A-Za-z0-9_]+)/g, "{$1}")}`)
+  );
+  const stale: string[] = [];
+  for (const [path, operations] of Object.entries(HAND_WRITTEN_OPERATIONS)) {
+    for (const method of Object.keys(operations)) if (!live.has(`${method} ${path}`)) stale.push(`${method.toUpperCase()} ${path}`);
+  }
+  return stale;
+}
