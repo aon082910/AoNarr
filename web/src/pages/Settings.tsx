@@ -3363,6 +3363,8 @@ export default function Settings() {
                   </p>
                   {choice("scanOnAdd", "Scan the disk when a title is added", "1", [["1", "On: link files that are already there (default)"], ["0", "Off"]])}
                   {choice("discographyGrabs", "Download an artist's discography", "1", [["1", "On: when two or more albums are missing, one discography fills them (default)"], ["0", "Off: albums are searched one by one"]])}
+                  {choice("discographyFallbackSingle", "Look for a discography when one album is missing", "0", [["0", "Off (default)"], ["1", "On: when one album is missing and its own search found nothing, also look for a discography"]])}
+                  {help("Automatic search only, and only after the album's own search found no usable release. The discography is looked for once per wait of the artist's search backoff, and one that holds an album that is not out yet is never taken. RSS feeds and IRC announces take a discography whenever the setting above is on, with two or more albums missing.")}
                   {choice("removeFolderOnDelete", "Delete with files also takes the title's folder", "1", [["1", "On: artwork, NFO, subtitles and extras go to the recycle bin (default)"], ["0", "Off: only the files"]])}
                   {choice("deleteEmptyFolders", "Remove folders left empty by deleting one file", "0", [["0", "Off (default)"], ["1", "On"]])}
                   {choice("fileDate", "Date imported files by", "none", [["none", "The download time (default)"], ["localAirDate", "The air date (local time)"], ["utcAirDate", "The air date (UTC)"]])}

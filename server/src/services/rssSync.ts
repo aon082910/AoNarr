@@ -21,10 +21,15 @@ import { existingFileRecord } from "./fileRelease.js";
 import { isRootFolderOverQuota } from "./rootFolderSelect.js";
 import { airedFrontierFor, episodeNotAired, episodePlanFor, seasonPlanFor } from "./searchPlan.js";
 import { scopeAllows } from "./tagScope.js";
+import { discographyGrabsEnabled, isDiscographyRelease, releaseNamesArtist, type DiscographyAlbum } from "./discography.js";
 import { RSS_UNMATCHED_PER_RUN, recordRssDecisions, strongerDecision, type RssDecisionInput, type RssOutcome } from "./rssDecisions.js";
 import { recordLeafOutcome, recordSeasonSearch, wakeLeaf, wakeSeason } from "./searchBackoff.js";
 import {
+  AUTOMATIC_DISCOGRAPHY_JUDGE,
+  DISCOGRAPHY_SEARCH_KEY,
   chooseBestResult,
+  discographyJudgingAlbums,
+  grabDiscography,
   type TargetName,
   isNotYetReleased,
   siblingTitlesOf,
@@ -196,6 +201,8 @@ type Group =
   | { kind: "single"; key: string; item: MediaItem; releases: SearchResult[] }
   | { kind: "episode"; key: string; item: MediaItem; ep: any; releases: SearchResult[] }
   | { kind: "sub"; key: string; item: MediaItem; sub: any; releases: SearchResult[] }
+  /** A discography of an artist: many of its albums in one release (the albums are read when it is judged). */
+  | { kind: "discography"; key: string; item: MediaItem; releases: SearchResult[] }
   | { kind: "season"; key: string; item: MediaItem; season: SeasonGroup; episodes: any[]; releases: SearchResult[] };
 
 export interface RssSyncSummary {
@@ -337,6 +344,19 @@ async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<
       continue;
     }
     const episodeShaped = parsed.seasonNumber != null || (parsed.episodeNumbers?.length ?? 0) > 0 || parsed.isFullSeason || !!parsed.airDate || parsed.absoluteEpisode != null;
+
+    // A discography names an artist (it holds many of its albums), never a film or an album: the artist whose name it carries, if
+    // exactly one, is judged for it. The setting turns discographies off for every way they come in.
+    if (isDiscographyRelease(release.title)) {
+      if (!discographyGrabsEnabled()) {
+        unmatch(release, "discography grabs are switched off (Settings > Media Management)");
+        continue;
+      }
+      const artists = [...wanted.collections.values()].map((c) => c.item).filter((item) => item.type === "artist" && releaseNamesArtist(release.title, item.title));
+      if (artists.length === 1) add({ kind: "discography", key: `discography:${artists[0].id}`, item: artists[0], releases: [release] });
+      else unmatch(release, artists.length > 1 ? `${nameOf(parsed)} could be more than one artist with missing albums` : `no artist with missing albums is named ${nameOf(parsed)}`);
+      continue;
+    }
 
     // An album, book or comic issue that the name could be: the parent is named in the release and the sub-item passes the
     // name tests of a search (chooseBestResult on this one release).
@@ -511,6 +531,8 @@ async function decideGroup(group: Group, env: DecideEnv, trace: DecideTrace): Pr
   let episodeId: number | null = null;
   let seasonNumber: number | null = null;
   let subItemName: TargetName | null = null;
+  /** For a discography: the artist's albums as it is judged against them. */
+  let discographyAlbums: DiscographyAlbum[] | undefined;
   let target = null as Awaited<ReturnType<typeof episodePlanFor>>["target"];
   let pack: ReturnType<typeof packContextFor>;
   let upgradeFromRank: number | null = null;
@@ -542,6 +564,12 @@ async function decideGroup(group: Group, env: DecideEnv, trace: DecideTrace): Pr
     // A missing album, book or issue: a search's name tests judge it, and nothing is on disk to upgrade.
     if (await isAlreadyQueued(item.id, null, group.sub.id)) return skip("already queued");
     subItemName = { title: group.sub.title, parentTitle: item.title, siblingTitles: await siblingTitlesOf(item, group.sub.id), ...(await yearFieldsOf(item, group.sub)) };
+  } else if (group.kind === "discography") {
+    // The same terms as a search for one (two or more missing albums, a quarter of the albums it covers, none unreleased), against
+    // the albums nothing is downloading yet: a discography already queued for them is not taken again.
+    const judging = await discographyJudgingAlbums(item.id);
+    if (judging.wantedCount === 0 && judging.queuedCount > 0) return skip("a download already covers every album it would add");
+    discographyAlbums = judging.albums;
   } else if (group.kind === "episode") {
     episodeId = group.ep.id;
     if (await isAlreadyQueued(item.id, group.ep.id, null)) return skip("already queued");
@@ -604,6 +632,7 @@ async function decideGroup(group: Group, env: DecideEnv, trace: DecideTrace): Pr
         pack,
         // A season pack is judged by the pack guards, which count what it upgrades by the upgrade rules.
         packJudgesUpgrades: group.kind === "season",
+        ...(discographyAlbums ? { discography: { albums: discographyAlbums, ...AUTOMATIC_DISCOGRAPHY_JUDGE } } : {}),
         onRejected: (r, reason) => {
           if (!trace.rejections.has(r.downloadUrl)) trace.rejections.set(r.downloadUrl, reason);
         },
@@ -615,7 +644,10 @@ async function decideGroup(group: Group, env: DecideEnv, trace: DecideTrace): Pr
       results,
       usable,
       (remaining) => choose(remaining, delayProfile),
-      (client, chosen) => grab(client, item, episodeId, group.kind === "sub" ? group.sub.id : null, chosen, 0, seasonNumber, env.source),
+      (client, chosen) =>
+        discographyAlbums
+          ? grabDiscography(client, item, chosen, discographyAlbums, AUTOMATIC_DISCOGRAPHY_JUDGE, env.source)
+          : grab(client, item, episodeId, group.kind === "sub" ? group.sub.id : null, chosen, 0, seasonNumber, env.source),
       { itemId: item.id, indexers: env.indexers }
     );
   } catch (err) {
@@ -644,6 +676,7 @@ async function decideGroup(group: Group, env: DecideEnv, trace: DecideTrace): Pr
   env.grabbedUrls.add(outcome.chosen.result.downloadUrl);
   env.directBudget.consume(outcome.client);
   if (group.kind === "season") await recordSeasonSearch(item.id, group.season.scene, true);
+  else if (group.kind === "discography") await recordSeasonSearch(item.id, DISCOGRAPHY_SEARCH_KEY, true);
   else if (group.kind === "sub") await recordLeafOutcome("sub_items", group.sub.id, true);
   else await recordLeafOutcome(group.kind === "episode" ? "episodes" : "media_items", group.kind === "episode" ? group.ep.id : item.id, true);
   return "grabbed";
@@ -654,6 +687,7 @@ async function wake(group: Group): Promise<void> {
   if (group.kind === "single") await wakeLeaf("media_items", group.item.id);
   else if (group.kind === "episode") await wakeLeaf("episodes", group.ep.id);
   else if (group.kind === "sub") await wakeLeaf("sub_items", group.sub.id);
+  else if (group.kind === "discography") await wakeSeason(group.item.id, DISCOGRAPHY_SEARCH_KEY);
   else await wakeSeason(group.item.id, group.season.scene);
 }
 
@@ -787,6 +821,7 @@ async function itemsReleaseCouldName(release: SearchResult, types: string[] | un
 
   const tokens = releaseNameTokens(parsed);
   const releaseKey = ` ${identityKey(release.title)} `;
+  const discography = isDiscographyRelease(release.title);
   const near = new Set<number>();
   for (const item of items) {
     if (usesQualityTiers(item.type)) {
@@ -794,7 +829,8 @@ async function itemsReleaseCouldName(release: SearchResult, types: string[] | un
     } else {
       // An artist, author or series is named when the whole of its title is in the name of the release (matchCollectionRelease).
       const key = identityKey(item.title);
-      if (key && releaseKey.includes(` ${key} `)) near.add(item.id);
+      // A discography spells its artist as matchReleases reads it ("P!nk" as "Pink"), which is looser than the title test.
+      if ((key && releaseKey.includes(` ${key} `)) || (discography && item.type === "artist" && releaseNamesArtist(release.title, item.title))) near.add(item.id);
     }
     if (near.size > MAX_NARROWED_ITEMS) return null;
   }
