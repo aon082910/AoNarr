@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 import { log } from "./logger.js";
 import { writeFileAtomic } from "./atomicWrite.js";
-import { isLocalAddress } from "./networkAddress.js";
+import { isLocalAddress, v6ToBigInt } from "./networkAddress.js";
 import { fetchMediaServerArtwork, isMediaServerArtworkRef } from "./mediaServer.js";
 import { fetchScreenscraperArtwork, isScreenscraperArtworkRef } from "./metadata.js";
 
@@ -51,6 +52,63 @@ function sizedUrls(url: string): string[] {
   return full === url ? [url] : [full, url];
 }
 
+/** IPv4 ranges RFC 6890 sets aside (private, shared, loopback, link-local, documentation, benchmarking, multicast, reserved): never a picture host. */
+const SPECIAL_USE_V4: readonly (readonly [base: string, bits: number])[] = [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24],
+  ["192.0.2.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 4],
+  ["240.0.0.0", 4],
+];
+
+function v4Number(address: string): number {
+  return address.split(".").reduce((acc, part) => acc * 256 + Number(part), 0);
+}
+
+function specialUseV4(n: number): boolean {
+  return SPECIAL_USE_V4.some(([base, bits]) => n >>> (32 - bits) === v4Number(base) >>> (32 - bits));
+}
+
+const NAT64_WELL_KNOWN = (v6ToBigInt("64:ff9b::") as bigint) >> 32n;
+const NAT64_LOCAL_USE = (v6ToBigInt("64:ff9b:1::") as bigint) >> 80n;
+
+/** An IPv6 address that is itself special-use, or carries a special-use IPv4 address (mapped, NAT64, 6to4). */
+function specialUseV6(address: bigint): boolean {
+  if (address >> 32n === 0n) return true; // ::/96: unspecified, loopback and the deprecated IPv4-compatible form
+  if (address >> 32n === 0xffffn) return specialUseV4(Number(address & 0xffffffffn)); // ::ffff:a.b.c.d
+  if (address >> 32n === NAT64_WELL_KNOWN) return specialUseV4(Number(address & 0xffffffffn)); // 64:ff9b::a.b.c.d
+  if (address >> 80n === NAT64_LOCAL_USE) return true; // 64:ff9b:1::/48, local use only
+  if (address >> 112n === 0x2002n) return specialUseV4(Number((address >> 80n) & 0xffffffffn)); // 6to4: the IPv4 address follows 2002:
+  if (address >> 64n === 0x0100000000000000n) return true; // 100::/64, discard only
+  if (address >> 96n === 0x20010db8n) return true; // documentation
+  if (address >> 118n === 0x3fbn) return true; // fec0::/10, site-local
+  return address >> 120n === 0xffn; // multicast
+}
+
+/**
+ * Whether `hostname` is an address (or a name) a picture is never fetched from: what isLocalAddress knows, plus the other special-use
+ * ranges, so `192.0.0.192`, `198.18.0.1`, a NAT64 `64:ff9b::7f00:1` or a 6to4 `2002:7f00:1::` do not reach a LAN host that way.
+ * Only the text is judged, as everywhere else in the app (isLocalAddress is left as it is: it also routes the proxy and decides the
+ * certificate rules): a public name whose DNS record points at a private address, such as `127.0.0.1.nip.io`, is not caught.
+ */
+export function isNonPublicHost(hostname: string): boolean {
+  if (isLocalAddress(hostname)) return true;
+  let host = hostname.trim().toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+  if (net.isIPv4(host)) return specialUseV4(v4Number(host));
+  const v6 = net.isIPv6(host) ? v6ToBigInt(host) : null;
+  return v6 != null && specialUseV6(v6);
+}
+
 /** Why a URL is not fetched for artwork, or null. A stored URL can be set by hand, and this server is the one that asks for it. */
 function urlProblem(raw: string): string | null {
   let url: URL;
@@ -61,7 +119,7 @@ function urlProblem(raw: string): string | null {
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") return `a ${url.protocol} URL`;
   if (url.username || url.password) return "a URL with credentials in it";
-  if (isLocalAddress(url.hostname)) return "a URL on a local address";
+  if (isNonPublicHost(url.hostname)) return "a URL on a local address";
   return null;
 }
 

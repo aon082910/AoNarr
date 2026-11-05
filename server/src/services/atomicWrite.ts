@@ -11,8 +11,15 @@ import { applyConfiguredPermissions } from "./filePermissions.js";
  */
 const TEMP_PREFIX = ".aonarr-tmp-";
 
+/**
+ * The temp name is the prefix, 12 hex digits and only the destination's extension, never its base name: a destination
+ * whose name just fits the file system (255 bytes; a CJK name costs 3 bytes a character) would otherwise get a temp name
+ * 25 bytes too long and fail where the direct write that came before this worked. The extension is at most a few bytes
+ * for any real file name, and one that is longer than 16 bytes is not carried over (it is no extension of a picture or an NFO).
+ */
 function tempNextTo(dest: string): string {
-  return path.join(path.dirname(dest), `${TEMP_PREFIX}${crypto.randomBytes(6).toString("hex")}-${path.basename(dest)}`);
+  const ext = path.extname(dest);
+  return path.join(path.dirname(dest), `${TEMP_PREFIX}${crypto.randomBytes(6).toString("hex")}${ext.length <= 16 ? ext : ""}`);
 }
 
 export function writeFileAtomicSync(dest: string, data: string | Buffer): void {

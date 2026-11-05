@@ -23,6 +23,7 @@ export default function MetadataFilesSettings({ settings, saveSetting }: Props) 
   const nfoMusic = settings.nfoMusicEnabled === "1";
   const images = settings.writeImagesOnImport === "1";
   const overwrite = settings.overwriteMetadataFiles === "1";
+  const overwriteInJob = settings.overwriteMetadataFilesInJob === "1";
   const posterFanart = settings.imagesPosterFanart !== "0";
   const seasonPosters = settings.imagesSeasonPosters !== "0";
   const episodeThumbs = settings.imagesEpisodeThumbs !== "0";
@@ -72,6 +73,14 @@ export default function MetadataFilesSettings({ settings, saveSetting }: Props) 
         {cell(overwrite, "Replace files that are already there", (on) => saveSetting("overwriteMetadataFiles", on ? "1" : "0"))}
         Replace pictures that are already there, and refresh show, artist and album NFO files AoNarr wrote (an NFO from another tool is still kept)
       </label>
+      <p style={{ color: "var(--danger)", fontSize: "0.78rem", margin: "2px 0 4px 22px" }}>
+        With this on, a run downloads and replaces every picture it is asked to write, including pictures you replaced by hand. "Write files now" and
+        the "Write Files" button on a title do that; the weekly Metadata Files job does it only when the box below is on too.
+      </p>
+      <label style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: 22 }}>
+        {cell(overwriteInJob, "Replace files in the weekly Metadata Files job too", (on) => saveSetting("overwriteMetadataFilesInJob", on ? "1" : "0"), !overwrite)}
+        Also replace them in the weekly Metadata Files job (with this on, the job downloads and replaces every picture each week, including ones you replaced by hand)
+      </label>
 
       <table style={{ marginTop: "0.75rem" }}>
         <thead>
@@ -102,7 +111,7 @@ export default function MetadataFilesSettings({ settings, saveSetting }: Props) 
           <tr>
             <td>
               TV shows, anime, sports, courses
-              <div style={{ color: "var(--muted)", fontSize: "0.75rem" }}>tvshow.nfo and an NFO per episode; follows the row above until you change it</div>
+              <div style={{ color: "var(--muted)", fontSize: "0.75rem" }}>tvshow.nfo and an NFO per episode, also for season packs; follows the row above until you change it</div>
             </td>
             <td style={centered}>{cell(nfoTv, "NFO files for shows", (on) => saveSetting("nfoTvEnabled", on ? "1" : "0"))}</td>
             <td style={centered}>

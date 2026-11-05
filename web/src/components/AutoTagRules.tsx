@@ -433,6 +433,10 @@ function RuleForm({
               ))}
             </div>
           )}
+          <p style={{ color: "var(--muted)", fontSize: "0.78rem", margin: "4px 0 0" }}>
+            A title the list added keeps matching it for good, even if the list drops it later. A title that was in your library already matches while
+            the list holds it, and stops matching when the list no longer does (also when the list comes back empty).
+          </p>
         </fieldset>
 
         <label htmlFor={id("match")} style={{ marginTop: 10 }}>

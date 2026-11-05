@@ -2340,7 +2340,12 @@ export async function placeFile(params: {
       } catch {
         // malformed external_ids on an old row — write the show's NFO without unique ids
       }
-      writeTvShowNfoIfMissing(path.join(rootFolder.path, ...folderSegments), { type: item.type, title: item.title, year: item.year, overview: item.overview, posterUrl: item.posterUrl, externalIds });
+      // Not into a folder another show keeps files in (a naming template that gives two shows one folder): the NFO would
+      // describe the first show to Kodi for both. The library job refuses such a folder the same way.
+      const showFolder = path.join(rootFolder.path, ...folderSegments);
+      if ((await trackedFileInside(showFolder, item.id)) === null) {
+        writeTvShowNfoIfMissing(showFolder, { type: item.type, title: item.title, year: item.year, overview: item.overview, posterUrl: item.posterUrl, externalIds });
+      }
     }
   }
   // Pictures beside the file (poster and fanart, the show's season posters, the episode's still) when switched on under

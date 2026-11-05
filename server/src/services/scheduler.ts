@@ -4657,7 +4657,8 @@ export function startScheduler() {
   });
 
   // NFO and picture files for the titles already in the library (metadataFiles.ts). Off until switched on: it writes files, and
-  // the same run is one click away from Settings, Metadata Files ("Write files now") or the Jobs page.
+  // the same run is one click away from Settings, Metadata Files ("Write files now") or the Jobs page. The scheduled run does not
+  // replace files that are there even with "Replace files" on, unless overwriteMetadataFilesInJob is on too (see runMetadataFilesJob).
   registerJob({
     key: "writeMetadataFiles",
     name: "Metadata Files",
@@ -4665,9 +4666,9 @@ export function startScheduler() {
     defaultSchedule: "10 5 * * 0",
     heavy: true,
     defaultOff: true,
-    run: async (signal) => {
+    run: async (signal, info) => {
       const { runMetadataFilesJob } = await import("./metadataFiles.js");
-      await runMetadataFilesJob(signal);
+      await runMetadataFilesJob(signal, info);
     },
   });
 

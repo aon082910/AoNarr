@@ -668,3 +668,199 @@ describe("a preview and applying a rule to the library", () => {
     expect(await tagsOf(ids[0])).toEqual([]);
   });
 });
+
+describe("an import list that comes back empty (review Low 11)", () => {
+  async function setup() {
+    const profile = Number((await db.prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES ('P', '[\"SD\"]', 'SD')").run()).lastInsertRowid);
+    expect(profile).toBeGreaterThan(0);
+    for (const type of ["movie", "series"]) {
+      await db.prepare("INSERT INTO root_folders (path, media_type) VALUES (?, ?)").run(fs.mkdtempSync(path.join(tmpRoot, `${type}-`)), type);
+    }
+    const result = await db.prepare("INSERT INTO import_lists (name, type, url, enabled) VALUES ('Trakt picks', 'trakt', 'https://trakt.tv/users/t/lists/l', 1)").run();
+    return (await db.prepare("SELECT * FROM import_lists WHERE id = ?").get(Number(result.lastInsertRowid))) as ImportListRow;
+  }
+  const traktReturns = (movies: { title: string; tmdb: number }[]) => {
+    setSetting("traktClientId", "test-client");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => movies.map((m) => ({ movie: { title: m.title, year: 2024, ids: { tmdb: m.tmdb, trakt: m.tmdb } } })) })
+    );
+  };
+
+  it("takes a tag back from a title it merely held, keeps it on a title it added, and tags the held one again when the list refills", async () => {
+    const l = await setup();
+    const t = await tag("trakt");
+    await rule({ name: "On the list", listIds: [l.id], tagIds: [t], removeWhenUnmatched: true });
+    const existing = await item("Existing", { ids: { tmdb: "8601" } });
+    traktReturns([
+      { title: "Existing", tmdb: 8601 },
+      { title: "Brand New", tmdb: 8602 },
+    ]);
+    await syncImportList(l);
+    const brandNew = Number(((await db.prepare("SELECT id FROM media_items WHERE title = 'Brand New'").get()) as { id: number }).id);
+    expect(await tagsOf(existing)).toEqual(["trakt"]);
+    expect(await tagsOf(brandNew)).toEqual(["trakt"]);
+
+    traktReturns([]); // the list was emptied
+    await syncImportList(l);
+
+    expect(await tagsOf(existing)).toEqual([]);
+    expect(await claimsOf(existing)).toEqual([]);
+    // What the list added keeps matching it for good (its source_list_id), as the file header says.
+    expect(await tagsOf(brandNew)).toEqual(["trakt"]);
+    // An empty answer is not trusted enough to change what the list is recorded as holding.
+    const entries = (await db.prepare("SELECT entry_key FROM import_list_entries WHERE list_id = ? ORDER BY entry_key").all(l.id)) as { entry_key: string }[];
+    expect(entries.map((e) => e.entry_key)).toEqual(["movie:tmdb:8601", "movie:tmdb:8602"]);
+
+    traktReturns([{ title: "Existing", tmdb: 8601 }]);
+    await syncImportList(l);
+    expect(await tagsOf(existing)).toEqual(["trakt"]);
+  });
+
+  it("leaves the tags of a rule without remove_when_unmatched, a hand-set tag and the titles of other lists alone", async () => {
+    const l = await setup();
+    const other = Number((await db.prepare("INSERT INTO import_lists (name, type, url) VALUES ('Other', 'trakt', 'u')").run()).lastInsertRowid);
+    const keep = await tag("keep");
+    const byHand = await tag("by-hand");
+    const elsewhere = await tag("elsewhere");
+    await rule({ name: "Sticky", listIds: [l.id], tagIds: [keep] });
+    await rule({ name: "Trim", listIds: [l.id], tagIds: [byHand], removeWhenUnmatched: true });
+    await rule({ name: "Other list", listIds: [other], tagIds: [elsewhere], removeWhenUnmatched: true });
+    const existing = await item("Existing", { ids: { tmdb: "8701" } });
+    await db.prepare("INSERT INTO import_list_entries (list_id, entry_key) VALUES (?, 'movie:tmdb:8701')").run(other);
+    await db.prepare("INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)").run(existing, byHand); // set by hand before the rule looked
+    traktReturns([{ title: "Existing", tmdb: 8701 }]);
+    await syncImportList(l);
+    await autoTag.evaluateRulesForItem(existing);
+    expect(await tagsOf(existing)).toEqual(["by-hand", "elsewhere", "keep"]);
+
+    traktReturns([]);
+    await syncImportList(l);
+
+    expect(await tagsOf(existing)).toEqual(["by-hand", "elsewhere", "keep"]);
+  });
+});
+
+describe("the cached rules and a rule written while they load (review Low 12 a)", () => {
+  it("does not keep the rules a load read before a write, and the next look sees the write", async () => {
+    const t = await tag("cached");
+    const r = await rule({ name: "Horror", genres: ["Horror"], tagIds: [t] });
+    const first = await item("First", { genres: ["Horror"] });
+    const second = await item("Second", { genres: ["Horror"] });
+    const instance = await (await import("../src/db/index.js")).initDb();
+    const realPrepare = instance.prepare.bind(instance);
+    let interleaved = false;
+    const spy = vi.spyOn(instance, "prepare").mockImplementation(((sql: string) => {
+      const statement = realPrepare(sql);
+      if (interleaved || !/FROM auto_tag_rules ORDER BY/.test(sql)) return statement;
+      // The rules have been read; before the load can finish, the admin switches the rule off.
+      return {
+        ...statement,
+        all: async (...params: unknown[]) => {
+          const rows = await statement.all(...params);
+          interleaved = true;
+          await autoTag.updateAutoTagRule(r.id, { enabled: false });
+          return rows;
+        },
+      };
+    }) as typeof instance.prepare);
+    try {
+      await autoTag.evaluateRulesForItem(first);
+      expect(interleaved).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The stale rules were not cached for the next ten seconds.
+    await autoTag.evaluateRulesForItem(second);
+    expect(await tagsOf(second)).toEqual([]);
+    expect(await tagsOf(first)).toEqual([]);
+  });
+});
+
+describe("a tag set by hand while a rule is adding it (review Low 12 b)", () => {
+  /** Runs `handAdd` once, right after the first statement that writes the tag or its claim for the rule's add has finished. */
+  async function withHandAddBetween(handAdd: () => Promise<void>, work: () => Promise<void>): Promise<void> {
+    const instance = await (await import("../src/db/index.js")).initDb();
+    const realPrepare = instance.prepare.bind(instance);
+    let fired = false;
+    const spy = vi.spyOn(instance, "prepare").mockImplementation(((sql: string) => {
+      const statement = realPrepare(sql);
+      if (fired || !/^\s*INSERT INTO media_item_(tags|auto_tags)\b/.test(sql)) return statement;
+      return {
+        ...statement,
+        run: async (...params: unknown[]) => {
+          const result = await statement.run(...params);
+          fired = true;
+          await handAdd();
+          return result;
+        },
+      };
+    }) as typeof instance.prepare);
+    try {
+      await work();
+      expect(fired).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("ends as the admin's tag: present, with no claim, so remove_when_unmatched never takes it", async () => {
+    const t = await tag("owned");
+    await rule({ name: "Horror", genres: ["Horror"], tagIds: [t], removeWhenUnmatched: true });
+    const m = await item("Slasher", { genres: ["Horror"] });
+    const handAdd = async () => {
+      // What POST /api/media/:id/tags does: insert the tag, then take the claims away.
+      await db.prepare("INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING").run(m, t);
+      await autoTag.releaseAutoOwnership([m], t);
+    };
+
+    await withHandAddBetween(handAdd, async () => void (await autoTag.evaluateRulesForItem(m)));
+
+    expect(await tagsOf(m)).toEqual(["owned"]);
+    expect(await claimsOf(m)).toEqual([]);
+    // The title stops matching: the tag is the admin's, so it stays.
+    await db.prepare("UPDATE media_items SET genres = ? WHERE id = ?").run(JSON.stringify(["Comedy"]), m);
+    await autoTag.evaluateRulesForItem(m);
+    expect(await tagsOf(m)).toEqual(["owned"]);
+  });
+
+  it("an undisturbed add still writes the tag and its claim, and counts the tag as added", async () => {
+    const t = await tag("plain");
+    await rule({ name: "Horror", genres: ["Horror"], tagIds: [t], removeWhenUnmatched: true });
+    const m = await item("Slasher", { genres: ["Horror"] });
+
+    expect(await autoTag.evaluateRulesForItem(m)).toEqual({ added: 1, removed: 0 });
+
+    expect(await tagsOf(m)).toEqual(["plain"]);
+    expect(await claimsOf(m)).toHaveLength(1);
+  });
+
+  it("leaves no claim behind when the tag cannot be written", async () => {
+    const t = await tag("fails");
+    await rule({ name: "Horror", genres: ["Horror"], tagIds: [t] });
+    const m = await item("Slasher", { genres: ["Horror"] });
+    const instance = await (await import("../src/db/index.js")).initDb();
+    const realPrepare = instance.prepare.bind(instance);
+    const spy = vi.spyOn(instance, "prepare").mockImplementation(((sql: string) => {
+      const statement = realPrepare(sql);
+      if (!/^\s*INSERT INTO media_item_tags\b/.test(sql)) return statement;
+      return {
+        ...statement,
+        run: async () => {
+          throw new Error("disk is full");
+        },
+      };
+    }) as typeof instance.prepare);
+    try {
+      expect(await autoTag.evaluateRulesForItem(m)).toEqual({ added: 0, removed: 0 });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await tagsOf(m)).toEqual([]);
+    expect(await claimsOf(m)).toEqual([]);
+    // And the next look, with the database working again, adds it.
+    expect(await autoTag.evaluateRulesForItem(m)).toEqual({ added: 1, removed: 0 });
+  });
+});
