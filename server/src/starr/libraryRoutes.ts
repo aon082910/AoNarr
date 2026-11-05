@@ -23,7 +23,8 @@ import {
   titleRows,
   type LibraryContext,
 } from "./libraryResources.js";
-import { flag, idList, images, numericId, parseExternalIds, slugOf, validationFailure } from "./shapes.js";
+import { flag, idList, images, numericId, pagedBody, pagingOf, parseExternalIds, slugOf, validationFailure } from "./shapes.js";
+import { childOrder, listTitles, sendChildren } from "./libraryList.js";
 import type { StarrRoutes } from "./router.js";
 
 /** Titles and their parts: list, get, look up, add, edit and delete. */
@@ -340,16 +341,8 @@ export function registerLibraryRoutes(r: StarrRoutes): void {
   const parent = app.parent;
   const parentCapital = pascal(parent);
 
-  r.get(`/${parent}`, `All ${parent}s`, async (req) => {
-    const ctx = await loadContext(app);
-    let rows = await titleRows(app);
-    const tvdb = req.query.tvdbId;
-    const tmdb = req.query.tmdbId;
-    const external = (row: any) => parseExternalIds(row.external_ids);
-    if (tvdb !== undefined && tvdb !== "") rows = rows.filter((row) => external(row).tvdb === String(tvdb));
-    if (tmdb !== undefined && tmdb !== "") rows = rows.filter((row) => external(row).tmdb === String(tmdb));
-    return titleResources(ctx, rows);
-  });
+  // One unpaged array, as a Starr app answers it; `page` or `pageSize` asks for the paged envelope (libraryList.ts).
+  r.get(`/${parent}`, `All ${parent}s (page and pageSize page it; sortKey and sortDirection sort a page)`, async (req, res) => listTitles(req, res, app));
 
   if (app.key === "sonarr" || app.key === "radarr") {
     // Declared before /:id, which would take "lookup" for an id.
@@ -509,8 +502,10 @@ export function registerLibraryRoutes(r: StarrRoutes): void {
   if (app.child === "album" || app.child === "book") {
     const child = app.child;
     const childKey = app.childKey as string;
-    r.get(`/${child}`, `${pascal(child)}s of an ${parent}`, async (req) => {
+    r.get(`/${child}`, `${pascal(child)}s of an ${parent} (page and pageSize page it)`, async (req, res) => {
       const ctx = await loadContext(app);
+      const paging = req.query.page !== undefined || req.query.pageSize !== undefined ? pagingOf(req, "releaseDate", "ascending") : null;
+      const order = childOrder(paging);
       const parentId = req.query[app.parentKey] === undefined ? null : numericId(String(req.query[app.parentKey]), app.parentKey);
       const ids = idList(req.query[`${child}Ids`]);
       const f = typeFilter(app);
@@ -524,13 +519,16 @@ export function registerLibraryRoutes(r: StarrRoutes): void {
         where.push(`s.id IN (${ids.map(() => "?").join(",")})`);
         params.push(...ids);
       }
-      const rows = (await db.prepare(`SELECT s.* FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE ${where.join(" AND ")} ORDER BY s.release_date, s.id`).all(...params)) as any[];
-      let titles = new Map<number, unknown>();
+      const rows = (await db.prepare(`SELECT s.* FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE ${where.join(" AND ")} ORDER BY ${order.sql}`).all(...params)) as any[];
       if (flag(req.query[`include${parentCapital}`])) {
-        const resources = await titleResources(ctx, await titleRows(app, [...new Set(rows.map((x) => Number(x.media_item_id)))]));
-        titles = new Map(resources.map((t) => [Number(t.id), t]));
+        // The list that embeds its title is built the long way (and is not kept).
+        const shown = paging ? rows.slice(paging.offset, paging.offset + paging.pageSize) : rows;
+        const resources = await titleResources(ctx, await titleRows(app, [...new Set(shown.map((x) => Number(x.media_item_id)))]));
+        const titles = new Map<number, unknown>(resources.map((t) => [Number(t.id), t]));
+        const records = shown.map((row) => subItemResource(ctx, app, row, { artist: titles.get(Number(row.media_item_id)) }));
+        return paging ? pagedBody({ ...paging, sortKey: order.key }, records, rows.length) : records;
       }
-      return rows.map((row) => subItemResource(ctx, app, row, { artist: titles.get(Number(row.media_item_id)) }));
+      return sendChildren(req, res, ctx, rows, paging ? { request: paging, key: order.key } : null, parentId === null && ids.length === 0);
     });
     r.put(`/${child}/monitor`, `Monitor or unmonitor ${child}s`, async (req) => {
       const ids = idList(req.body?.[`${child}Ids`]);
