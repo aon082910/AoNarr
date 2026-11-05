@@ -25,8 +25,17 @@ export interface AlbumFolder {
   files: number;
 }
 
+/** One disc of an album that lies in a folder of its own. */
+export interface DiscFolder {
+  path: string;
+  disc: number;
+}
+
 export type FolderMatch =
-  | { kind: "album"; albumId: number; target: boolean }
+  /** `by: "tags"`: the folder's name did not say which album it is, its files' tags did (discographyTags.ts). `discs`: the album's
+   * discs lie in folders of their own, which the tags show to be one album; every one of those folders carries the same list,
+   * in disc order, and the album is placed from all of them together. */
+  | { kind: "album"; albumId: number; target: boolean; by?: "tags"; discs?: DiscFolder[] }
   | { kind: "unmatched"; reason: string }
   | { kind: "ambiguous"; reason: string }
   | { kind: "duplicate"; reason: string; albumId: number };
@@ -62,7 +71,7 @@ export function albumWords(title: string): string[] {
   return foldedWords(editionlessTitle(title)).filter((word) => word !== "the" && !EDITION_WORDS.has(word) && !DISC_WORD.test(word));
 }
 
-function sameWords(a: string[], b: string[]): boolean {
+export function sameWords(a: string[], b: string[]): boolean {
   return a.length > 0 && a.length === b.length && a.every((word, i) => word === b[i]);
 }
 
