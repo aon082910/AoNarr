@@ -116,6 +116,34 @@ const NEW_GRADES: [string, string, string?][] = [
   ["Movie.Name.2010.1080p.RAW-HD.TrueHD-GRP.mkv", "Raw-HD"],
   ["Movie.Name.2024.CAM.x264-GRP.mkv", "CAM"],
   ["Movie.Name.2024.HDTS.x264-GRP.mkv", "TELESYNC"],
+  // the review's real captures (M1): a bare or unambiguous capture word after the title still grades
+  ["Movie.2018.CAM.x264-GRP", "CAM"],
+  ["Movie.2018.HDCAM.x264-GRP", "CAM"],
+  ["Movie.2018.TS.x264-GRP", "TELESYNC"],
+  ["Movie.2018.TELESYNC.XviD-GRP", "TELESYNC"],
+  ["Movie.2018.DVDSCR.XviD-GRP", "DVDSCR"],
+  ["Movie.2018.WORKPRINT-GRP", "WORKPRINT"],
+  ["Movie.2018.SCR.XviD-GRP", "DVDSCR"],
+  ["Movie Name (2018) 1080p CAM x264", "CAM"],
+  ["[CAM] Movie Name (2018)", "CAM"],
+  // ...also when the word stands right before the year or a quality word, so a capture is never graded as the
+  // WEB-DL its resolution alone would make of it
+  ["Movie.Name.CAM.1080p-GRP", "CAM"],
+  ["Movie.Name.CAM.2018.1080p.x264-GRP", "CAM"],
+  ["Movie.Name.TS.1080p.x264-GRP", "TELESYNC"],
+  ["Movie.Name.WORKPRINT.1080p-GRP", "WORKPRINT"],
+  ["Movie.Name.SCREENER.2018.XviD-GRP", "DVDSCR"],
+  ["Movie.Name.TELECINE.x264-GRP", "TELECINE"],
+  ["Movie.Name.R5.LiNE.XviD-GRP", "REGIONAL"],
+  ["Movie.Name.R5.2009.DVDRip.XviD-GRP", "REGIONAL"],
+  // Raw-HD is a capture of the broadcast: with a source of its own in the name, that source is the tier (L9)
+  ["Movie.2019.1080p.RAW-HD.x264-GRP", "Raw-HD"],
+  ["Movie.2019.1080p.HDTV.MPEG2.RAW-HD-GRP", "Raw-HD"],
+  ["Movie.2019.1080p.REMUX.RAW-HD-GRP", "Remux-1080p"],
+  ["Movie.2019.RAWHD.1080p.BluRay.x264-GRP", "Bluray-1080p"],
+  ["Movie.2019.1080p.WEB-DL.RAWHD-GRP", "WEBDL-1080p"],
+  ["Movie.2019.RAW-HD.DVDRip-GRP", "DVD"],
+  ["Show.S01E01.Raw.HD.Footage.720p.HDTV.x264-GRP", "HDTV-720p"],
 ];
 
 describe("the grades of the tiers added to the ladder (ST14)", () => {
@@ -140,5 +168,56 @@ describe("the grades of the tiers added to the ladder (ST14)", () => {
     const name = "Movie.Name.2010.1080p.BluRay.AVC.DTS-HD.MA.5.1-GRP";
     expect(parseReleaseTitle(name)).toMatchObject({ rawDisc: true, quality: "BR-DISK" });
     expect(parseReleaseTitle(name, FILE_NAME)).toMatchObject({ rawDisc: false, quality: "Bluray-1080p" });
+  });
+});
+
+// Round 30f review M1: a title or an episode's title that is a capture word is no capture. These graded Unknown before
+// the ladder was extended (the library scan stores that as no quality, which no cutoff is ever under); naming the tiers
+// made the same hit CAM and the like, permanently under every cutoff.
+describe("a capture word in a title is no capture (M1)", () => {
+  const TITLES = [
+    "Cam (2018).mkv",
+    "Cam Girl (2014).mkv",
+    "The Cam Show (2020).mkv",
+    "Show - S01E01 - Cam Night.mkv",
+    "Show - S01E02 - The TS Report.mkv",
+    "Screener.2016.mkv",
+    "The Workprint (2010).mkv",
+    "The Scr (2014).mkv",
+    "Telecine (2012).mkv",
+    "Regional (2014).mkv",
+    "The Regional (2014).mkv",
+  ];
+
+  it.each(TITLES)("%s grades Unknown, as a release and as a file, and names no source", (name) => {
+    for (const parsed of [parseReleaseTitle(name), parseReleaseTitle(name, FILE_NAME)]) {
+      expect(parsed.quality).toBe("Unknown");
+      expect(parsed.source).toBeNull();
+    }
+  });
+
+  it("keeps the film's title whole, with the word in it", () => {
+    expect(parseReleaseTitle("The Workprint (2010).mkv").title).toBe("The Workprint");
+    expect(parseReleaseTitle("The Cam Show (2020).mkv").title).toBe("The Cam Show");
+  });
+
+  it("lets a real source decide, as before, for a title that is a capture word", () => {
+    expect(parseReleaseTitle("Cam.2018.1080p.WEB-DL.x264-GRP").quality).toBe("WEBDL-1080p");
+    expect(parseReleaseTitle("Cam (2018) 1080p.mkv", FILE_NAME).quality).toBe("WEBDL-1080p");
+    expect(parseReleaseTitle("The.Cam.2018.1080p.BluRay.x264-GRP").quality).toBe("Bluray-1080p");
+    expect(parseReleaseTitle("Show.S01E01.Episode.Cam.Night.720p.HDTV.x264-GRP").quality).toBe("HDTV-720p");
+  });
+
+  it("still reads the unambiguous spellings of a capture anywhere in the name", () => {
+    expect(parseReleaseTitle("Movie.Name.HDCAM.x264-GRP").quality).toBe("CAM");
+    expect(parseReleaseTitle("Movie.Name.1080p.HDTS-GRP").quality).toBe("TELESYNC");
+    expect(parseReleaseTitle("Movie Name HDTC").quality).toBe("TELECINE");
+    expect(parseReleaseTitle("Movie.Name.TELESYNC.XviD-GRP").quality).toBe("TELESYNC");
+    expect(parseReleaseTitle("Movie.Name.2018.DVDSCR.XviD-GRP", FILE_NAME).quality).toBe("DVDSCR");
+  });
+
+  it("reads a capture word only from the tags in the custom format source too", () => {
+    expect(parseReleaseTitle("Movie.2018.CAM.x264-GRP").source).toBe("Cam");
+    expect(parseReleaseTitle("Cam (2018).mkv").source).toBeNull();
   });
 });

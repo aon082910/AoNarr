@@ -3,7 +3,8 @@ import { clientIp, requireAdmin } from "../middleware/auth.js";
 import crypto from "node:crypto";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { invalidateQualityRankCache, parseQualityGroups, parseQualityOrder, reconcileQualityOrder } from "../services/quality.js";
+import { extendProfileForLadder, invalidateQualityRankCache, parseQualityGroups, parseQualityOrder, reconcileQualityOrder, templatePredatesLadderExtension } from "../services/quality.js";
+import { EXTENDED_LADDER_TIERS } from "../db/qualityLadder.js";
 import { buildOtpauthUrl, generateBase32Secret, verifyTotp } from "../services/totp.js";
 import { getSetting, setSetting, deleteSetting, getAllSettings } from "../services/settingsStore.js";
 import { applySocksProxySetting, verifyOutboundDispatcher } from "../services/socksProxy.js";
@@ -312,16 +313,34 @@ settingsRouter.post(
         for (let i = 0; i < order.length; i++) await db.prepare("UPDATE qualities SET rank = ? WHERE id = ?").run(i, idByName.get(order[i]));
       }
 
+      // A template made before the ladder was extended says "SD" for what is now several tiers: its profiles get what
+      // the migration gave every profile that allowed SD or DVD (the tiers beside them, and SD as one group with them),
+      // or the import would take that away again. Only the tiers this instance has are added.
+      const predatesExtension = templatePredatesLadderExtension(b.qualityProfiles);
+      const ladderNow = predatesExtension ? new Set(((await db.prepare("SELECT name FROM qualities").all()) as { name: string }[]).map((r) => r.name)) : new Set<string>();
+      const ladderTiers = EXTENDED_LADDER_TIERS.filter((name) => ladderNow.has(name));
       for (const p of b.qualityProfiles ?? []) {
+        let allowedQualities = p.allowedQualities;
+        let groupsToStore: string[][] | null = p.qualityGroups === undefined ? null : parseQualityGroups(p.qualityGroups);
+        if (predatesExtension && Array.isArray(allowedQualities) && allowedQualities.every((n: unknown) => typeof n === "string")) {
+          // (A backup from before groups leaves the profile's own groups alone: the step starts from those.)
+          const ownGroups =
+            groupsToStore ?? parseQualityGroups(((await db.prepare("SELECT quality_groups FROM quality_profiles WHERE name = ?").get(p.name)) as { quality_groups: string | null } | undefined)?.quality_groups);
+          const extended = extendProfileForLadder(allowedQualities, ownGroups, ladderTiers);
+          if (extended.changed) {
+            allowedQualities = extended.allowed;
+            groupsToStore = extended.groups;
+          }
+        }
         // A backup from before profiles had an order leaves the profile's own order alone, with what the backup newly
-        // allows put into it (a quality the order leaves out would rank below every listed one).
+        // allows put into it (so the stored order names every allowed quality, as when a profile is saved).
         let qualityOrder = parseQualityOrder(p.qualityOrder);
         let qualityOrderSent = p.qualityOrder !== undefined;
-        if (!qualityOrderSent && Array.isArray(p.allowedQualities)) {
+        if (!qualityOrderSent && Array.isArray(allowedQualities)) {
           const own = (await db.prepare("SELECT quality_order FROM quality_profiles WHERE name = ?").get(p.name)) as { quality_order: string | null } | undefined;
           const ownOrder = parseQualityOrder(own?.quality_order);
           if (ownOrder) {
-            qualityOrder = reconcileQualityOrder(ownOrder, p.allowedQualities);
+            qualityOrder = reconcileQualityOrder(ownOrder, allowedQualities);
             qualityOrderSent = true;
           }
         }
@@ -340,7 +359,7 @@ settingsRouter.post(
           )
           .run({
             ...p,
-            allowedQualities: JSON.stringify(p.allowedQualities),
+            allowedQualities: JSON.stringify(allowedQualities),
             maxSizeGb: p.maxSizeGb ?? null,
             // A backup from before the flag existed keeps the cap at the cutoff.
             preferCutoffQuality: p.preferCutoffQuality === false ? 0 : 1,
@@ -349,7 +368,7 @@ settingsRouter.post(
             upgradeAllowed: p.upgradeAllowed === undefined || p.upgradeAllowed === null ? null : p.upgradeAllowed === false ? 0 : 1,
             cutoffFormatScore: p.cutoffFormatScore === undefined || p.cutoffFormatScore === null || !Number.isInteger(Number(p.cutoffFormatScore)) ? null : Number(p.cutoffFormatScore),
             minUpgradeFormatScore: p.minUpgradeFormatScore === undefined || p.minUpgradeFormatScore === null || !Number.isInteger(Number(p.minUpgradeFormatScore)) ? null : Number(p.minUpgradeFormatScore),
-            qualityGroups: p.qualityGroups === undefined ? null : JSON.stringify(parseQualityGroups(p.qualityGroups)),
+            qualityGroups: groupsToStore === null ? null : JSON.stringify(groupsToStore),
             // A backup from before profiles had a language leaves the profile's own language alone.
             language: normalizeProfileLanguage(p.language),
             languageSent: p.language === undefined ? 0 : 1,

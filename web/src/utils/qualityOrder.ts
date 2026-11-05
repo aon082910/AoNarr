@@ -2,15 +2,22 @@ import type { Quality, QualityProfile } from "../types.js";
 
 /**
  * The ladder in the order a profile ranks it, worst to best. Mirrors the server (quality.ts orderedRank): a profile with
- * no order of its own ranks by the global order; with one, the qualities it leaves out come first (in the global order)
- * and the qualities it lists follow in its order.
+ * no order of its own ranks by the global order; with one, the qualities it lists keep its order and each one it leaves
+ * out stands in front of the first listed quality that is higher on the global ladder (after the last when none is), in
+ * global order among those of the same place.
  */
 export function profileLadder(profile: Pick<QualityProfile, "qualityOrder">, qualities: Quality[]): string[] {
   const global = [...qualities].sort((a, b) => a.rank - b.rank).map((q) => q.name);
   const listed = (profile.qualityOrder ?? []).filter((name) => global.includes(name));
   if (listed.length === 0) return global;
-  const inOrder = new Set(listed);
-  return [...global.filter((name) => !inOrder.has(name)), ...listed];
+  const globalRank = new Map(global.map((name, index) => [name, index]));
+  const ladder = [...listed];
+  for (const name of global) {
+    if (ladder.includes(name)) continue;
+    const before = ladder.findIndex((other) => (globalRank.get(other) as number) > (globalRank.get(name) as number));
+    ladder.splice(before < 0 ? ladder.length : before, 0, name);
+  }
+  return ladder;
 }
 
 /** The profile's allowed qualities, worst to best, in the order it ranks them. */

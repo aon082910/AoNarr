@@ -45,7 +45,7 @@ describe("qualityOrder on the quality profile API", () => {
   });
 
   it("leaves the order alone when a request does not mention it", async () => {
-    const created = await post({ ...base, name: "order-keep", qualityOrder: ["Bluray-1080p", "WEBDL-1080p"] });
+    const created = await post({ ...base, name: "order-keep", allowedQualities: ["WEBDL-1080p", "Bluray-1080p"], qualityOrder: ["Bluray-1080p", "WEBDL-1080p"] });
     const patched = await patch(created.body.id, { minFormatScore: 5 });
     expect(patched.status).toBe(200);
     expect(patched.body.qualityOrder).toEqual(["Bluray-1080p", "WEBDL-1080p"]);
@@ -92,6 +92,50 @@ describe("qualityOrder on the quality profile API", () => {
   });
 });
 
+describe("an order saved with fewer qualities than the profile allows is completed (30f review H1)", () => {
+  const allowedThree = ["HDTV-1080p", "WEBDL-1080p", "Bluray-1080p", "Remux-1080p"];
+
+  it("puts each allowed quality the order leaves out where it belongs on the ladder, and keeps what was sent", async () => {
+    // Lower than the listed ones goes in front of them, higher after them, and the profile's own WEB-over-disc order is kept.
+    const created = await post({ ...base, name: "order-short", allowedQualities: allowedThree, cutoff: "Bluray-1080p", qualityOrder: ["Bluray-1080p", "WEBDL-1080p"] });
+    expect(created.status).toBe(201);
+    expect(created.body.qualityOrder).toEqual(["HDTV-1080p", "Bluray-1080p", "WEBDL-1080p", "Remux-1080p"]);
+    expect(JSON.parse((await stored(created.body.id))!)).toEqual(["HDTV-1080p", "Bluray-1080p", "WEBDL-1080p", "Remux-1080p"]);
+
+    // A PATCH that sends only the order is completed with the allowed list the profile has.
+    const patched = await patch(created.body.id, { qualityOrder: ["WEBDL-1080p", "Remux-1080p"] });
+    expect(patched.status).toBe(200);
+    expect(patched.body.qualityOrder).toEqual(["HDTV-1080p", "WEBDL-1080p", "Bluray-1080p", "Remux-1080p"]);
+    // One that sends the allowed list too is completed with that list, not the stored one.
+    const both = await patch(created.body.id, { allowedQualities: ["WEBDL-1080p", "Bluray-1080p"], qualityOrder: ["Bluray-1080p"] });
+    expect(both.body.qualityOrder).toEqual(["WEBDL-1080p", "Bluray-1080p"]);
+  });
+
+  it("keeps an order of exactly the allowed qualities (what the editor saves) as it was sent", async () => {
+    const created = await post({ ...base, name: "order-whole", allowedQualities: allowedThree, cutoff: "Bluray-1080p", qualityOrder: ["Remux-1080p", "Bluray-1080p", "WEBDL-1080p", "HDTV-1080p"] });
+    expect(created.body.qualityOrder).toEqual(["Remux-1080p", "Bluray-1080p", "WEBDL-1080p", "HDTV-1080p"]);
+    const reordered = await patch(created.body.id, { qualityOrder: ["HDTV-1080p", "WEBDL-1080p", "Remux-1080p", "Bluray-1080p"] });
+    expect(reordered.body.qualityOrder).toEqual(["HDTV-1080p", "WEBDL-1080p", "Remux-1080p", "Bluray-1080p"]);
+  });
+
+  it("takes nothing out of an order, adds nothing for an allowed list that means everything, and still answers 404 for no such profile", async () => {
+    const extra = await post({ ...base, name: "order-extra", allowedQualities: ["WEBDL-1080p"], cutoff: "WEBDL-1080p", qualityOrder: ["WEBDL-1080p", "Bluray-1080p"] });
+    expect(extra.body.qualityOrder).toEqual(["WEBDL-1080p", "Bluray-1080p"]);
+    const everything = await post({ ...base, name: "order-everything", allowedQualities: [], cutoff: "WEBDL-1080p", qualityOrder: ["Bluray-1080p"] });
+    expect(everything.status).toBe(201);
+    expect(everything.body.qualityOrder).toEqual(["Bluray-1080p"]);
+    expect((await patch(999999, { qualityOrder: ["WEBDL-1080p"] })).status).toBe(404);
+  });
+
+  it("ranks the file the way the completed order does: a better file than any the profile allows stays above its cutoff", async () => {
+    const created = await post({ ...base, name: "order-rank", allowedQualities: ["WEBDL-1080p", "Bluray-1080p"], cutoff: "Bluray-1080p", qualityOrder: ["WEBDL-1080p", "Bluray-1080p"] });
+    const { rankingFromRow, isUnderCutoff } = await import("../src/services/quality.js");
+    const row = (await db.prepare("SELECT quality_groups, quality_order, cutoff FROM quality_profiles WHERE id = ?").get(created.body.id)) as any;
+    expect(isUnderCutoff("Remux-2160p", row.cutoff, rankingFromRow(row))).toBe(false);
+    expect(isUnderCutoff("HDTV-720p", row.cutoff, rankingFromRow(row))).toBe(true);
+  });
+});
+
 describe("a deleted quality leaves the profiles' orders", () => {
   it("drops the tier from every order, and an order left empty is the default again", async () => {
     await db.prepare("INSERT INTO qualities (name, rank) VALUES ('Order-Temp-A', (SELECT MAX(rank) + 1 FROM qualities))").run();
@@ -101,7 +145,7 @@ describe("a deleted quality leaves the profiles' orders", () => {
     const both = await post({ ...base, name: "del-both", allowedQualities: ["WEBDL-1080p", "Order-Temp-A"], cutoff: "WEBDL-1080p", qualityOrder: ["Order-Temp-A", "WEBDL-1080p"] });
     // The tier is only in the order, not allowed: the order still loses it.
     const onlyOrdered = await post({ ...base, name: "del-only-order", allowedQualities: ["WEBDL-1080p"], cutoff: "WEBDL-1080p", qualityOrder: ["WEBDL-1080p", "Order-Temp-B"] });
-    const alone = await post({ ...base, name: "del-alone", allowedQualities: ["Order-Temp-B", "WEBDL-1080p"], cutoff: "WEBDL-1080p", qualityOrder: ["Order-Temp-B"] });
+    const alone = await post({ ...base, name: "del-alone", allowedQualities: ["Order-Temp-B"], cutoff: "Order-Temp-B", qualityOrder: ["Order-Temp-B"] });
     const idOf = async (name: string) => ((await db.prepare("SELECT id FROM qualities WHERE name = ?").get(name)) as { id: number }).id;
 
     expect((await authed(request(app).delete(`/api/qualities/${await idOf("Order-Temp-A")}`))).status).toBe(204);
@@ -162,7 +206,7 @@ describe("the settings template carries a profile's order", () => {
 
 describe("the Starr API lists a profile's qualities in its order", () => {
   it("puts the qualities a profile lists last, in its order", async () => {
-    const created = await post({ ...base, name: "starr-ordered", qualityOrder: ["Bluray-1080p", "WEBDL-1080p"] });
+    const created = await post({ ...base, name: "starr-ordered", allowedQualities: ["WEBDL-1080p", "Bluray-1080p"], qualityOrder: ["Bluray-1080p", "WEBDL-1080p"] });
     const res = await authed(request(app).get(`/radarr/api/v3/qualityprofile/${created.body.id}`));
     expect(res.status).toBe(200);
     const names: string[] = res.body.items.map((i: any) => i.quality.name);

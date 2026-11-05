@@ -131,13 +131,13 @@ export const openApiSpec = {
       },
       post: {
         summary:
-          "Create a quality profile. qualityOrder (optional, a list of different quality names on the ladder, worst to best) gives the profile its own ranking: a quality it leaves out ranks below every listed one; null or [] ranks by the global order",
+          "Create a quality profile. qualityOrder (optional, a list of different quality names on the ladder, worst to best) gives the profile its own ranking; every allowed quality it leaves out is put into the stored list by its place on the ladder, and a file of a quality that is not listed ranks where it belongs among the listed ones; null or [] ranks by the global order",
         responses: { "201": { description: "Created" } },
       },
     },
     "/quality-profiles/{id}": {
       patch: {
-        summary: "Edit a quality profile. qualityOrder sets, or with null / [] resets, the order the profile ranks the ladder in; a quality newly allowed is put into an existing order by its place on the ladder when the order is not sent",
+        summary: "Edit a quality profile. qualityOrder sets, or with null / [] resets, the order the profile ranks the ladder in (completed with the allowed qualities it leaves out); a quality newly allowed is put into an existing order by its place on the ladder when the order is not sent",
         responses: { "200": { description: "OK" } },
       },
     },
