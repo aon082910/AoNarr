@@ -41,7 +41,7 @@ export interface TrashProfileFile {
  * AoNarr's ladder has TRaSH's quality names (SDTV, WEBDL-480p, DVD-R, Raw-HD, BR-DISK, CAM, ... since the ladder was
  * extended to Starr's), so a name maps to itself. These are what a standard-definition name stood in for before,
  * and still does on an install whose admin deleted that tier: one SD tier for every standard-definition source, and
- * the DVD tier for DVD-R.
+ * the DVD tier for DVD-R. Sonarr's two remux names are plain aliases.
  */
 const QUALITY_FALLBACKS: Record<string, string> = {
   SDTV: "SD",
@@ -50,6 +50,9 @@ const QUALITY_FALLBACKS: Record<string, string> = {
   "Bluray-480p": "SD",
   "Bluray-576p": "SD",
   "DVD-R": "DVD",
+  // Sonarr's names for the remux tiers; AoNarr's ladder calls them Remux-1080p and Remux-2160p.
+  "Bluray-1080p Remux": "Remux-1080p",
+  "Bluray-2160p Remux": "Remux-2160p",
 };
 
 function aonarrQuality(name: string, rankByName: Map<string, number>): string | null {

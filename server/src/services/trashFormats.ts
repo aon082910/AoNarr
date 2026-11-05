@@ -82,6 +82,23 @@ function fieldMap(fields: TrashSpecification["fields"]): Record<string, unknown>
   return (fields as Record<string, unknown> | undefined) ?? {};
 }
 
+/**
+ * A pattern from a TRaSH specification as AoNarr will run it (a JS RegExp with the "i" flag, see customFormatScoring), or
+ * null when it cannot be. TRaSH writes .NET regular expressions: a leading inline `(?i)` is the flag AoNarr always sets
+ * and is dropped; other .NET-only syntax (a `]` as the first member of a character class, for example) does not compile
+ * in JS, and a pattern that does not compile would silently never match, so the spec is reported as skipped instead.
+ */
+function portablePattern(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const pattern = value.replace(/^\(\?i\)/, "");
+  try {
+    new RegExp(pattern, "i");
+  } catch {
+    return null;
+  }
+  return pattern;
+}
+
 function finiteNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
@@ -97,12 +114,25 @@ function translateSpec(spec: TrashSpecification, app: TrashApp | undefined): any
   const f = fieldMap(spec.fields);
   const negate = !!spec.negate;
   switch (spec.implementation) {
-    case "ReleaseTitleSpecification":
-      return typeof f.value === "string" ? { type: "title", patterns: [f.value], negate } : null;
-    case "ReleaseGroupSpecification":
-      return typeof f.value === "string" ? { type: "releaseGroup", patterns: [f.value], negate } : null;
-    case "EditionSpecification":
-      return typeof f.value === "string" ? { type: "edition", patterns: [f.value], negate } : null;
+    case "ReleaseTitleSpecification": {
+      const pattern = portablePattern(f.value);
+      return pattern !== null ? { type: "title", patterns: [pattern], negate } : null;
+    }
+    case "ReleaseGroupSpecification": {
+      const pattern = portablePattern(f.value);
+      return pattern !== null ? { type: "releaseGroup", patterns: [pattern], negate } : null;
+    }
+    case "EditionSpecification": {
+      const pattern = portablePattern(f.value);
+      return pattern !== null ? { type: "edition", patterns: [pattern], negate } : null;
+    }
+    case "YearSpecification": {
+      // Radarr only. A year spec with no bounds would match every release with a year: skipped like a bound-less size spec.
+      const min = finiteNumber(f.min);
+      const max = finiteNumber(f.max);
+      if (app !== "radarr" || (min === null && max === null)) return null;
+      return { type: "year", minYear: min, maxYear: max, negate };
+    }
     case "SizeSpecification": {
       const min = finiteNumber(f.min);
       const max = finiteNumber(f.max);
