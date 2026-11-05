@@ -45,6 +45,7 @@ let settings: typeof import("../src/services/settingsStore.js");
 let registry: typeof import("../src/services/settingsRegistry.js");
 let rss: typeof import("../src/services/rssSync.js");
 let irc: typeof import("../src/services/ircAnnounce.js");
+let pendingJob: typeof import("../src/services/pendingReleases.js");
 let importer: typeof import("../src/services/importer.js");
 let config: (typeof import("../src/config.js"))["config"];
 let addDownload: ReturnType<typeof vi.fn>;
@@ -57,6 +58,7 @@ beforeAll(async () => {
   registry = await import("../src/services/settingsRegistry.js");
   rss = await import("../src/services/rssSync.js");
   irc = await import("../src/services/ircAnnounce.js");
+  pendingJob = await import("../src/services/pendingReleases.js");
   importer = await import("../src/services/importer.js");
   ({ config } = await import("../src/config.js"));
 });
@@ -273,7 +275,56 @@ describe("an RSS feed that lists a discography", () => {
     const decisions = await decisionRows();
     expect(decisions).toHaveLength(2);
     for (const decision of decisions) expect(decision).toMatchObject({ outcome: "unmatched" });
-    expect(decisions[0].reason).toContain("no artist with missing albums is named");
+    expect(decisions[0].reason).toContain("no monitored artist is named");
+  });
+
+  it("is judged for no artist when a complete namesake of the artist is monitored too (L5), as an announce is", async () => {
+    await insertClient();
+    const indexerId = await insertIndexer();
+    // "Pink" has every album and "P!nk" is missing three: the release names both spellings, so it names one artist for sure of neither.
+    const complete = await insertArtist("Pink");
+    await insertAlbum(complete, "Can't Take Me Home", "2000-04-04", { hasFile: 1 });
+    const incomplete = await insertArtist("P!nk");
+    for (const [title, date] of [["Funhouse", "2008-10-24"], ["The Truth About Love", "2012-09-14"], ["Beautiful Trauma", "2017-10-13"]]) await insertAlbum(incomplete, title, date);
+    feed(release("Pink - Discography (2000-2019) [FLAC]", { indexerId }));
+
+    await rss.runRssSync();
+
+    expect(await queueRows()).toHaveLength(0);
+    expect(addDownload).not.toHaveBeenCalled();
+    const [decision] = await decisionRows();
+    expect(decision).toMatchObject({ outcome: "unmatched" });
+    expect(decision.reason).toContain("more than one artist");
+  });
+
+  it("is judged for the one artist when the namesake is not monitored", async () => {
+    await insertClient();
+    const indexerId = await insertIndexer();
+    const complete = await insertArtist("Pink");
+    await insertAlbum(complete, "Can't Take Me Home", "2000-04-04", { hasFile: 1 });
+    await db.prepare("UPDATE media_items SET monitored = 0 WHERE id = ?").run(complete);
+    const incomplete = await insertArtist("P!nk");
+    for (const [title, date] of [["Funhouse", "2008-10-24"], ["The Truth About Love", "2012-09-14"]]) await insertAlbum(incomplete, title, date);
+    feed(release("Pink - Discography (2000-2019) [FLAC]", { indexerId }));
+
+    await rss.runRssSync();
+
+    expect((await queueRows()).map((r) => r.media_item_id)).toEqual([incomplete]);
+  });
+
+  it("says the artist it names has nothing missing, when it is the one monitored artist of that name", async () => {
+    await insertClient();
+    const indexerId = await insertIndexer();
+    const artistId = await insertArtist("Queen");
+    await insertAlbum(artistId, "Queen", "1973-07-13", { hasFile: 1 });
+    // Something else is wanted, or the sync has nothing to do at all.
+    await insertAlbum(await insertArtist("Other Band"), "Record", "2000-01-01");
+    feed(release(DISCOGRAPHY, { indexerId }));
+
+    await rss.runRssSync();
+
+    expect(await queueRows()).toHaveLength(0);
+    expect(await decisionRows()).toEqual([expect.objectContaining({ outcome: "unmatched", media_item_id: artistId, reason: expect.stringContaining("has no missing album") })]);
   });
 
   it("does not grab it twice: a second listing of it, or another copy of it, finds the albums on their way", async () => {
@@ -339,6 +390,63 @@ describe("an RSS feed that lists a discography", () => {
     expect(await queueRows()).toHaveLength(0);
     expect((await decisionRows())[0].outcome).toBe("held");
     expect(await backoff.seasonSearchDue(artistId, scheduler.DISCOGRAPHY_SEARCH_KEY)).toBe(true);
+  });
+
+  it("keeps a discography the delay profile holds against its artist, and grabs it as a discography once the delay has ended (L6)", async () => {
+    await insertClient();
+    const indexerId = await insertIndexer();
+    const { artistId, albums } = await queen();
+    await db.prepare("INSERT INTO delay_profiles (tag_id, enable_usenet, enable_torrent, usenet_delay_minutes, torrent_delay_minutes, bypass_if_highest_quality, order_index) VALUES (NULL, 1, 1, 0, 600, 0, 0)").run();
+    feed(release(DISCOGRAPHY, { indexerId, publishDate: new Date().toISOString() }));
+
+    await rss.runRssSync();
+
+    const held = (await db.prepare("SELECT * FROM pending_releases").all()) as any[];
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ media_item_id: artistId, leaf_table: "media_items" });
+    expect(Number(held[0].leaf_id)).toBe(artistId);
+    expect(JSON.parse(held[0].release).title).toBe(DISCOGRAPHY);
+    expect(await queueRows()).toHaveLength(0);
+
+    // Inside its delay it waits.
+    expect(await pendingJob.runPendingReleases()).toEqual({ checked: 1, grabbed: 0 });
+    expect(await queueRows()).toHaveLength(0);
+
+    // The delay ends: the release is judged again as a discography and queued for the albums it adds.
+    const stored = JSON.parse(held[0].release);
+    await db.prepare("UPDATE pending_releases SET release = ? WHERE id = ?").run(JSON.stringify({ ...stored, publishDate: "2020-01-01T00:00:00Z" }), held[0].id);
+    expect(await pendingJob.runPendingReleases()).toEqual({ checked: 1, grabbed: 1 });
+    const [row] = await queueRows();
+    expect(row).toMatchObject({ media_item_id: artistId, sub_item_id: null, episode_id: null, title: DISCOGRAPHY });
+    expect(await targetsOf(row.id)).toEqual([...albums].sort(byId));
+    expect(addDownload).toHaveBeenCalledTimes(1);
+    expect(await db.prepare("SELECT id FROM pending_releases").all()).toHaveLength(0);
+  });
+
+  it("drops a held discography whose albums were taken meanwhile, and when discography grabs are switched off", async () => {
+    await insertClient();
+    const indexerId = await insertIndexer();
+    const { artistId, albums } = await queen();
+    await db.prepare("INSERT INTO delay_profiles (tag_id, enable_usenet, enable_torrent, usenet_delay_minutes, torrent_delay_minutes, bypass_if_highest_quality, order_index) VALUES (NULL, 1, 1, 0, 600, 0, 0)").run();
+    const keep = async () => {
+      await db.prepare("DELETE FROM pending_releases").run();
+      await db
+        .prepare("INSERT INTO pending_releases (media_item_id, leaf_table, leaf_id, release, pending_key) VALUES (?, 'media_items', ?, ?, ?)")
+        .run(artistId, artistId, JSON.stringify(release(DISCOGRAPHY, { indexerId, publishDate: "2020-01-01T00:00:00Z" })), `media_items:${artistId}:${Math.random()}`);
+    };
+
+    await keep();
+    for (const id of albums) await db.prepare("UPDATE sub_items SET has_file = 1 WHERE id = ?").run(id);
+    expect(await pendingJob.runPendingReleases()).toEqual({ checked: 1, grabbed: 0 });
+    expect(await db.prepare("SELECT id FROM pending_releases").all()).toHaveLength(0);
+    expect(await queueRows()).toHaveLength(0);
+
+    await db.prepare("UPDATE sub_items SET has_file = 0").run();
+    settings.setSetting("discographyGrabs", "0");
+    await keep();
+    expect(await pendingJob.runPendingReleases()).toEqual({ checked: 1, grabbed: 0 });
+    expect(await db.prepare("SELECT id FROM pending_releases").all()).toHaveLength(0);
+    expect(await queueRows()).toHaveLength(0);
   });
 
   it("resets the discography search's wait when it grabs one", async () => {
@@ -411,6 +519,22 @@ describe("a pushed release (POST /release/push)", () => {
     settings.setSetting("discographyGrabs", "0");
     const off = await lidarr(push({ downloadUrl: "https://tracker.example/dl/discography-3.torrent" }));
     expect(off.body[0].approved).toBe(false);
+    expect(await queueRows()).toHaveLength(0);
+  });
+
+  it("is judged for no artist when a complete namesake is monitored too (L5)", async () => {
+    await insertClient();
+    await insertIndexer();
+    const complete = await insertArtist("Pink");
+    await insertAlbum(complete, "Can't Take Me Home", "2000-04-04", { hasFile: 1 });
+    const incomplete = await insertArtist("P!nk");
+    await insertAlbum(incomplete, "Funhouse", "2008-10-24");
+    await insertAlbum(incomplete, "The Truth About Love", "2012-09-14");
+
+    const res = await lidarr(push({ title: "Pink - Discography (2008-2012) [FLAC]" }));
+
+    expect(res.body[0]).toMatchObject({ approved: false });
+    expect(JSON.stringify(res.body[0].rejections)).toContain("more than one artist");
     expect(await queueRows()).toHaveLength(0);
   });
 
@@ -498,6 +622,19 @@ describe("an IRC announce of a discography", () => {
     expect(await backoff.seasonSearchDue(artistId, scheduler.DISCOGRAPHY_SEARCH_KEY)).toBe(true);
   });
 
+  it("is not grabbed when a complete namesake is monitored too (L5): the feed and the announce agree", async () => {
+    await insertClient();
+    const complete = await insertArtist("Pink");
+    await insertAlbum(complete, "Can't Take Me Home", "2000-04-04", { hasFile: 1 });
+    const incomplete = await insertArtist("P!nk");
+    await insertAlbum(incomplete, "Funhouse", "2008-10-24");
+    await insertAlbum(incomplete, "The Truth About Love", "2012-09-14");
+
+    await announce("Pink - Discography (2008-2012) [FLAC]");
+
+    expect(await queueRows()).toHaveLength(0);
+  });
+
   it("is not mistaken for a film of the same name", async () => {
     await insertClient();
     const { artistId } = await queen();
@@ -545,6 +682,60 @@ describe("the fallback for one missing album", () => {
     expect(await targetsOf(rows[0].id)).toEqual([missing]);
     // The album counts as found, so its own search does not wait.
     expect(Number(((await db.prepare("SELECT auto_search_misses FROM sub_items WHERE id = ?").get(missing)) as any).auto_search_misses)).toBe(0);
+  });
+
+  // The fallback takes a discography for ONE album, so a release that covers a library of dozens is not the download for it: the
+  // folders of the albums it did not need stay in the download (M4).
+  describe("the most albums it takes a discography for", () => {
+    async function artistWithOwned(owned: number): Promise<number> {
+      const artistId = await insertArtist("Queen");
+      const missing = await insertAlbum(artistId, "A Night at the Opera", "1975-11-21");
+      for (let i = 0; i < owned; i++) await insertAlbum(artistId, `Owned ${i}`, `${1976 + i}-01-01`, { hasFile: 1 });
+      return missing;
+    }
+
+    it("refuses a discography that covers more than fifteen albums", async () => {
+      await insertClient();
+      await insertIndexer();
+      await artistWithOwned(15);
+      settings.setSetting("discographyFallbackSingle", "1");
+      discographyAnswer();
+
+      await scheduler.runAutoSearch();
+
+      expect(discographyQueries()).toEqual(["Queen discography"]);
+      expect(await queueRows()).toHaveLength(0);
+      expect(addDownload).not.toHaveBeenCalled();
+    });
+
+    it("takes one that covers fifteen", async () => {
+      await insertClient();
+      await insertIndexer();
+      const missing = await artistWithOwned(14);
+      settings.setSetting("discographyFallbackSingle", "1");
+      discographyAnswer();
+
+      await scheduler.runAutoSearch();
+
+      const rows = await queueRows();
+      expect(rows).toHaveLength(1);
+      expect(await targetsOf(rows[0].id)).toEqual([missing]);
+    });
+
+    it("counts only the albums the years of the release span", async () => {
+      await insertClient();
+      await insertIndexer();
+      const missing = await artistWithOwned(20);
+      settings.setSetting("discographyFallbackSingle", "1");
+      // 1975-1980 holds six of the twenty-one albums.
+      answers((query) => (isDiscographyQuery(query) ? [release("Queen - Discography (1975-1980) [FLAC]")] : []));
+
+      await scheduler.runAutoSearch();
+
+      const rows = await queueRows();
+      expect(rows).toHaveLength(1);
+      expect(await targetsOf(rows[0].id)).toEqual([missing]);
+    });
   });
 
   it("still takes the album's own release when it has one, and does not look for a discography", async () => {

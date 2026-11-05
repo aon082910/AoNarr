@@ -66,7 +66,7 @@ import { rootFolderUnmountedReason } from "./rootFolderCheck.js";
 import { isTitleMoving } from "./titleMoveLock.js";
 import { discographyAlbumsOf, queueTargetIds } from "./discography.js";
 import { matchAlbumFolders, type DiscFolder } from "./discographyMatch.js";
-import { matchFoldersByTags, readFileAlbumTags } from "./discographyTags.js";
+import { matchFoldersByTags, readFileAlbumTags, TAG_FILES_PER_FOLDER } from "./discographyTags.js";
 import { addToBlocklist } from "./blocklist.js";
 import { wakeLeaf } from "./searchBackoff.js";
 import { chooseFilePerBook, matchBookFiles, type BookFile } from "./bookCollectionImport.js";
@@ -3188,6 +3188,14 @@ export async function placeDiscographyFiles(params: {
   }
   const folders = Array.from(byFolder, ([folder, list]) => ({ path: folder, name: path.basename(folder), files: list.length }));
   const albumRows = await discographyAlbumsOf(itemId);
+  // The tag step weighs a folder with more files than it reads against the tracks the library lists for the album it names.
+  const trackCounts = new Map<number, number>();
+  if (folders.some((folder) => folder.files > TAG_FILES_PER_FOLDER)) {
+    const counted = (await db
+      .prepare("SELECT sub_item_id, COUNT(*) AS c FROM tracks WHERE sub_item_id IN (SELECT id FROM sub_items WHERE media_item_id = ?) GROUP BY sub_item_id")
+      .all(itemId)) as { sub_item_id: number | string; c: number | string }[];
+    for (const row of counted) trackCounts.set(Number(row.sub_item_id), Number(row.c));
+  }
   // An album that gained its files while the discography downloaded is no longer wanted from it (unless the admin
   // picked its folder): replacing it is a decision for the admin.
   const albums = albumRows.map((album) => ({
@@ -3195,6 +3203,7 @@ export async function placeDiscographyFiles(params: {
     title: album.title,
     releaseDate: album.releaseDate,
     target: targetSubItemIds.includes(album.id) && (!album.hasFile || !!onlyFolder),
+    trackCount: trackCounts.get(album.id) ?? null,
   }));
   const hasFileNow = new Set(albumRows.filter((album) => album.hasFile).map((album) => album.id));
   const nameMatches = matchAlbumFolders(folders, item.title, albums);
@@ -4477,10 +4486,18 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
   notifyQueueChanged();
   await recordGroupSuccess(parseReleaseTitle(queueItem.title).releaseGroup);
 
+  // A discography or a collection that left album or book folders behind: those folders are the torrent's own data. Removing the
+  // torrent, even without its data, would leave them in the downloads folder owned by nothing (no seeding, no row pointing at them,
+  // for ever), so it stays in its client, which goes on owning and seeding what is left. (A single album or episode left behind
+  // keeps the old way: the client lets go of it and the data stays.)
+  const keepForWhatIsLeft = leftFilesBehind && (discographyTargets.length > 0 || collectionTargets.length > 0);
   // Hardlink and symlink imports exist to keep the download seeding in its client: removing it
   // there, even without its data, stopped seeding right after the import (a hit-and-run on a
   // private tracker) and left Seed Goal Cleanup nothing to act on.
-  if (getSetting("removeCompletedDownloads") !== "0" && strategyDeletesSourceData()) {
+  const removesDownload = getSetting("removeCompletedDownloads") !== "0" && strategyDeletesSourceData();
+  if (removesDownload && keepForWhatIsLeft) {
+    log.info(`[importer] "${queueItem.title}" stays in its download client: folders of it were not imported and are still its data`);
+  } else if (removesDownload) {
     await removeQueueItemDownload(queueItem, !leftFilesBehind);
   } else if (currentImportStrategy() === "hardlink" && !leftFilesBehind) {
     // Everything of the download is now in the library by hardlink (or, across filesystems, as a copy): the

@@ -15,8 +15,15 @@ import { probeAudioTags, type AudioFileTags } from "./ffprobe.js";
  * better than the name (no tag, a different artist, several albums in one folder) the folder is left as it was.
  */
 
-/** Files read per folder: the first track by name, the middle one and the last. */
-export const TAG_FILES_PER_FOLDER = 3;
+/**
+ * Files read per folder: every audio file of it, up to this many. The folders looked at here are the ones whose NAME says nothing
+ * ("misc rips", "B-sides"), which are the likeliest to hold tracks of several albums, so a few files cannot speak for the folder:
+ * all of them must agree. Past the cap the files read are spread evenly over the folder, and the album must have about as many
+ * tracks as the folder has files (see identifyFolderByTags).
+ */
+export const TAG_FILES_PER_FOLDER = 40;
+/** Tag text is quoted in a reason (which is stored and sent in a notification) at most this long. */
+const QUOTED_TAG_CHARS = 80;
 /** Folders read per release: a discography of dozens of oddly named folders is for a manual import, not for hundreds of ffprobe runs. */
 export const TAG_FOLDERS_PER_RELEASE = 12;
 /** How long one file's tags may take. */
@@ -36,6 +43,9 @@ export interface FileAlbumTags {
   /** The disc this file is on and how many discs the release has. */
   disc: number | null;
   discTotal: number | null;
+  /** The track's number on its disc and how many tracks the disc has, when the file says. */
+  track?: number | null;
+  trackTotal?: number | null;
 }
 
 /** Reads one file's tags; null when it cannot (never throws). Injected so the decision needs no ffprobe. */
@@ -80,7 +90,26 @@ export function fileAlbumTagsFrom(tags: AudioFileTags | null): FileAlbumTags | n
     year: year ? Number(year) : null,
     disc: tags.disc ?? null,
     discTotal: tags.discTotal ?? null,
+    // Only when the file has them: a file with no track tag reads as it always did.
+    ...(tags.track != null ? { track: tags.track } : {}),
+    ...(tags.trackTotal != null ? { trackTotal: tags.trackTotal } : {}),
   };
+}
+
+/**
+ * A tag's text as it is quoted in a reason. A reason is stored on the queue row, shown on the queue page and sent in a
+ * notification, and a tag is whatever the release's uploader wrote (ffprobe hands over up to 10 MB of it): it is cut short, its
+ * control characters and line breaks become spaces, and an "@" is spelled out so that "@everyone" mentions nobody.
+ */
+export function quotedTag(text: string): string {
+  const clean = text
+    .slice(0, QUOTED_TAG_CHARS * 2)
+    .replace(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]+/gu, " ")
+    .replace(/@/g, "(at)")
+    .replace(/\s+/g, " ")
+    .trim();
+  const chars = [...clean];
+  return chars.length > QUOTED_TAG_CHARS ? `${chars.slice(0, QUOTED_TAG_CHARS - 3).join("")}...` : clean;
 }
 
 /** `work`, or null once `ms` have passed (the work is not cancelled; its late answer is dropped). */
@@ -107,7 +136,7 @@ export const readFileAlbumTags: TagReader = async (file) => {
   }
 };
 
-/** The files to read of a folder: the first by name, the middle one and the last (all of them when there are no more than `count`). */
+/** The files to read of a folder: all of them when there are no more than `count`, else `count` spread evenly over it (the first and the last among them). */
 export function sampleFiles(files: string[], count = TAG_FILES_PER_FOLDER): string[] {
   const sorted = [...files].sort();
   if (sorted.length <= count) return sorted;
@@ -140,28 +169,43 @@ interface FolderIdentity {
   discTotal: number | null;
   /** The sampled files are on more than one disc: the folder holds several discs itself. */
   severalDiscs: boolean;
+  /** How many tracks the files' tags say the disc has; null when they say none or disagree. */
+  trackTotal: number | null;
+  /** The track numbers of the folder's files, when every file of it was read and has one. */
+  trackNumbers: number[] | null;
 }
 
 type TagVerdict = ({ kind: "album" } & FolderIdentity) | { kind: "unmatched"; reason: string } | { kind: "ambiguous"; reason: string };
 
 /**
- * What the tags of a folder's sampled files say. Every file must name an album and the artist, the artist must be the library's,
- * and all the files must name one album; that album must be one of the artist's (a year breaks a tie between two of one title).
+ * More files than the album has tracks that a folder may hold and still be the album: the tags say how many discs there are, and
+ * a disc more than the tracks (a bonus disc, a hidden track) is allowed; a one-disc album gets a few for hidden tracks.
  */
-export function identifyFolderByTags(files: FileAlbumTags[], artist: string, albums: MatchableAlbum[]): TagVerdict {
+function filesAllowedFor(trackCount: number, discTotal: number | null): number {
+  return trackCount + (discTotal != null && discTotal > 1 ? Math.ceil(trackCount / discTotal) : 3);
+}
+
+/**
+ * What the tags of a folder's files say. Every file must name an album and the artist, the artist must be the library's, and all
+ * the files must name one album (a file of another makes the folder ambiguous: it holds tracks of different albums); that album must
+ * be one of the artist's (a year breaks a tie between two of one title). `fileCount` is how many audio files the folder holds; when
+ * that is more than the files read (a folder past the cap) the album has to have about that many tracks, or the unread files could
+ * be anything.
+ */
+export function identifyFolderByTags(files: FileAlbumTags[], artist: string, albums: MatchableAlbum[], fileCount = files.length): TagVerdict {
   if (files.length === 0) return { kind: "unmatched", reason: "it has no tags to read" };
   if (files.some((f) => !f.album)) return { kind: "unmatched", reason: "a file of it has no album tag" };
   for (const f of files) {
     if (!f.artist) return { kind: "unmatched", reason: "a file of it names no artist" };
-    if (isVariousArtists(f.artist)) return { kind: "unmatched", reason: `it is tagged as a compilation by "${f.artist}", not an album of ${artist}` };
-    if (!sameArtist(f.artist, artist)) return { kind: "unmatched", reason: `it is tagged as an album by "${f.artist}", not by ${artist}` };
+    if (isVariousArtists(f.artist)) return { kind: "unmatched", reason: `it is tagged as a compilation by "${quotedTag(f.artist)}", not an album of ${artist}` };
+    if (!sameArtist(f.artist, artist)) return { kind: "unmatched", reason: `it is tagged as an album by "${quotedTag(f.artist)}", not by ${artist}` };
   }
   // The album a file names, with a disc marker taken off ("Album (Disc 2)" is Album); the whole title is tried first.
   const readings = files.map((f) => ({ whole: albumWords(f.album!), plain: albumWords(f.album!.replace(DISC_MARKER, " ")) }));
   const keys = new Set(readings.map((r) => (r.plain.length > 0 ? r.plain : r.whole).join(" ")));
   if (keys.size > 1) {
-    const names = [...new Set(files.map((f) => `"${f.album}"`))];
-    return { kind: "ambiguous", reason: `its files carry different album tags (${names.slice(0, 3).join(", ")}${names.length > 3 ? ", ..." : ""})` };
+    const names = [...new Set(files.map((f) => `"${quotedTag(f.album!)}"`))];
+    return { kind: "ambiguous", reason: `it holds tracks of different albums (${names.slice(0, 3).join(", ")}${names.length > 3 ? ", ..." : ""})` };
   }
   const tagged = files[0].album!;
   const reading = readings[0];
@@ -169,23 +213,34 @@ export function identifyFolderByTags(files: FileAlbumTags[], artist: string, alb
     const words = albumWords(album.title);
     return words.length > 0 && (sameWords(reading.whole, words) || sameWords(reading.plain, words));
   });
-  if (matches.length === 0) return { kind: "unmatched", reason: `its album tag "${tagged}" is not the name of any album of this artist` };
+  if (matches.length === 0) return { kind: "unmatched", reason: `its album tag "${quotedTag(tagged)}" is not the name of any album of this artist` };
   if (matches.length > 1) {
     const years = new Set(files.flatMap((f) => (f.year != null ? [f.year] : [])));
     const byYear = years.size === 1 ? matches.filter((album) => albumYear(album.releaseDate) === [...years][0]) : [];
     if (byYear.length !== 1) {
-      return { kind: "ambiguous", reason: `its album tag "${tagged}" fits ${matches.length} albums and its year tag does not tell which` };
+      return { kind: "ambiguous", reason: `its album tag "${quotedTag(tagged)}" fits ${matches.length} albums and its year tag does not tell which` };
     }
     matches = byYear;
   }
   const discs = new Set(files.flatMap((f) => (f.disc != null ? [f.disc] : [])));
   const totals = new Set(files.flatMap((f) => (f.discTotal != null ? [f.discTotal] : [])));
+  const discTotal = totals.size === 1 ? [...totals][0] : null;
+  if (fileCount > files.length) {
+    // Part of the folder was not read. It is the album only if it is no bigger than the album could be.
+    const tracks = Number(matches[0].trackCount) || 0;
+    if (tracks <= 0) return { kind: "ambiguous", reason: `it holds ${fileCount} files, more than were read, and the album's tracks are not known to tell whether they are all of it` };
+    const allowed = filesAllowedFor(tracks, discTotal);
+    if (fileCount > allowed) return { kind: "ambiguous", reason: `it holds ${fileCount} files, and "${matches[0].title}" has ${tracks} tracks: it looks like more than the one album` };
+  }
+  const trackTotals = new Set(files.flatMap((f) => (f.trackTotal != null ? [f.trackTotal] : [])));
   return {
     kind: "album",
     albumId: matches[0].id,
     disc: discs.size === 1 && files.every((f) => f.disc != null) ? [...discs][0] : null,
-    discTotal: totals.size === 1 ? [...totals][0] : null,
+    discTotal,
     severalDiscs: discs.size > 1,
+    trackTotal: trackTotals.size === 1 ? [...trackTotals][0] : null,
+    trackNumbers: files.length === fileCount && files.every((f) => f.track != null) ? files.map((f) => f.track!) : null,
   };
 }
 
@@ -196,8 +251,9 @@ function withTagReason(previous: FolderMatch, kind: "unmatched" | "ambiguous", r
 
 /**
  * The second step of telling a discography's folders apart. The name step's matches come in; of the folders it left `unmatched` or
- * `ambiguous` (only those: a folder it matched is never read, and a tag never overrides a name) the first dozen have the tags of a
- * few files read, and each is matched to one of the artist's albums when the tags say so.
+ * `ambiguous` (only those: a folder it matched is never read, and a tag never overrides a name) the first dozen have the tags of
+ * their files read (every file, up to TAG_FILES_PER_FOLDER), and each is matched to one of the artist's albums when the tags of all
+ * of them say so.
  *
  * Folders of one album laid side by side ("Album CD1", "Album CD2": the name step leaves them whole) are one album when the tags
  * agree on it: the same artist and album, different disc numbers running from 1, and as many folders as the tags say there are discs.
@@ -250,7 +306,7 @@ export async function matchFoldersByTags(
     unreadableInARow = 0;
     // A file that could not be read leaves the folder to its name: half a picture is not enough to name an album.
     if (readable.length < read.length) continue;
-    const verdict = identifyFolderByTags(readable, options.artist, albums);
+    const verdict = identifyFolderByTags(readable, options.artist, albums, folder.audioFiles.length);
     if (verdict.kind === "album") identities.set(folder.path, verdict);
     else refused.set(folder.path, verdict);
   }
@@ -309,7 +365,8 @@ export async function matchFoldersByTags(
 /**
  * The discs of an album found in several folders, in order, or why they are not that. The folders must be one disc each (not a
  * folder that holds several), with different disc numbers running 1, 2, 3 ..., and when the tags say how many discs the release has
- * it is as many as there are folders.
+ * it is as many as there are folders. Each disc but the last must also be whole: the import counts a disc's tracks after the files
+ * of the discs before it, so a disc that is short of a track (a bad rip) would put every later disc one title off.
  */
 function discsOfGroup(group: ({ folder: TagFolder } & FolderIdentity)[], handPicked: boolean): DiscFolder[] | string {
   if (group.some((g) => g.severalDiscs || g.disc == null)) return "a folder holds several discs or names none";
@@ -321,6 +378,19 @@ function discsOfGroup(group: ({ folder: TagFolder } & FolderIdentity)[], handPic
   const totals = new Set(group.flatMap((g) => (g.discTotal != null ? [g.discTotal] : [])));
   if (totals.size > 1) return "they disagree on how many discs there are";
   if (totals.size === 1 && [...totals][0] !== group.length && !handPicked) return `the tags say ${[...totals][0]} discs and ${group.length} are here`;
+  // A disc's tracks are counted after the files of the discs before it (the last disc's count moves nothing). Where the tags give the
+  // number of tracks a disc has, or number its files, an earlier disc that disagrees is short of a track or holds an extra one.
+  const ordered = [...group].sort((a, b) => a.disc! - b.disc!);
+  const filesInGroup = ordered.reduce((sum, g) => sum + g.folder.audioFiles.length, 0);
+  for (const g of ordered.slice(0, -1)) {
+    const files = g.folder.audioFiles.length;
+    // The same total on every disc that is the album's whole count ("1/24" on a disc of twelve) says nothing of this disc.
+    const albumWide = g.trackTotal === filesInGroup && ordered.every((o) => o.trackTotal === g.trackTotal);
+    if (g.trackTotal != null && g.trackTotal !== files && !albumWide) return `disc ${g.disc} ("${g.folder.name}") has ${files} files and its tags say it has ${g.trackTotal} tracks`;
+    if (g.trackNumbers && [...g.trackNumbers].sort((a, b) => a - b).some((n, i) => n !== i + 1)) {
+      return `the track numbers in disc ${g.disc} ("${g.folder.name}") do not run from 1 to ${files} without a gap`;
+    }
+  }
   return group
     .map((g) => ({ path: g.folder.path, disc: g.disc! }))
     .sort((a, b) => a.disc - b.disc);

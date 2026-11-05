@@ -3,15 +3,20 @@ import { mediaItemFromRow } from "../db/mappers.js";
 import { log } from "./logger.js";
 import { episodePlanFor, subItemPlanFor } from "./searchPlan.js";
 import { getBlocklistedTitles } from "./blocklist.js";
-import { recordLeafOutcome } from "./searchBackoff.js";
+import { recordLeafOutcome, recordSeasonSearch } from "./searchBackoff.js";
+import { discographyGrabsEnabled, isDiscographyRelease } from "./discography.js";
 import { qualityRank } from "./quality.js";
 import { loadPending, pendingExpired, pruneForgotten, removePending, type PendingRow } from "./pendingStore.js";
 import {
+  AUTOMATIC_DISCOGRAPHY_JUDGE,
+  DISCOGRAPHY_SEARCH_KEY,
   chooseBestResult,
+  discographyJudgingAlbums,
   existingFileQuality,
   getQualityProfile,
   grab,
   grabBestRelease,
+  grabDiscography,
   isAlreadyQueued,
   loadDelayProfiles,
   noteUnavailableClient,
@@ -37,14 +42,65 @@ async function leafHasFile(row: PendingRow): Promise<boolean> {
   return !found || !!Number(found.has_file);
 }
 
+type JudgeContext = { delayProfiles: Awaited<ReturnType<typeof loadDelayProfiles>>; indexers: Awaited<ReturnType<typeof rowsToIndexers>>; clients: Awaited<ReturnType<typeof rowsToDownloadClients>>; unavailable: Map<number, string> };
+
+/**
+ * A discography the delay profile held (the RSS sync and a pushed release keep one against its artist): judged again as a
+ * discography, against the albums that are wanted now, and grabbed for those once its delay has ended. It is dropped when the
+ * setting is off, when nothing is wanted of it any more, or when the delay profile is gone (a search finds it then).
+ */
+async function judgeDiscographyOne(row: PendingRow, item: MediaItem, ctx: JudgeContext): Promise<boolean> {
+  const { albums, wantedCount } = await discographyJudgingAlbums(item.id);
+  const delayProfile = pickDelayProfile(ctx.delayProfiles, await tagIdsForMediaItem(item.id));
+  if (!discographyGrabsEnabled() || wantedCount === 0 || !delayProfile) {
+    await removePending(row.id);
+    return false;
+  }
+  const profile = await getQualityProfile(item.qualityProfileId);
+  const usable = ctx.clients.filter((c) => !ctx.unavailable.has(c.id));
+  const blocklisted = await getBlocklistedTitles(item.id);
+  const choose = (remaining: typeof row.release[]) =>
+    chooseBestResult(
+      remaining,
+      profile?.allowedQualities ?? [],
+      profile?.cutoff ?? "",
+      item.qualityProfileId,
+      profile?.minFormatScore ?? 0,
+      null,
+      blocklisted,
+      item.type,
+      delayProfile,
+      targetIdentityOf(item),
+      item.id,
+      { clients: usable, name: { title: item.title }, indexers: ctx.indexers, label: item.title, discography: { albums, ...AUTOMATIC_DISCOGRAPHY_JUDGE } }
+    );
+  try {
+    const outcome = await grabBestRelease([row.release], usable, choose, (client, chosen) => grabDiscography(client, item, chosen, albums, AUTOMATIC_DISCOGRAPHY_JUDGE, "auto"), {
+      itemId: item.id,
+      indexers: ctx.indexers,
+    });
+    if (outcome?.grabbed) {
+      await removePending(row.id);
+      await recordSeasonSearch(item.id, DISCOGRAPHY_SEARCH_KEY, true);
+      log.info(`[pending] grabbed the discography "${row.release.title}" for "${item.title}" once its delay ended`);
+      return true;
+    }
+  } catch (err) {
+    if (!noteUnavailableClient(err, ctx.unavailable)) log.warn(`[pending] "${row.release.title}" failed:`, (err as Error).message);
+  }
+  return false;
+}
+
 /** One saved release: true when it was grabbed. */
-async function judgeOne(row: PendingRow, ctx: { delayProfiles: Awaited<ReturnType<typeof loadDelayProfiles>>; indexers: Awaited<ReturnType<typeof rowsToIndexers>>; clients: Awaited<ReturnType<typeof rowsToDownloadClients>>; unavailable: Map<number, string> }): Promise<boolean> {
+async function judgeOne(row: PendingRow, ctx: JudgeContext): Promise<boolean> {
   const itemRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(row.mediaItemId);
   if (!itemRow) {
     await removePending(row.id);
     return false;
   }
   const item = mediaItemFromRow(itemRow) as MediaItem;
+  // The artist's own row is the leaf of a discography (an artist has no file of its own to wait for): not judged as one title.
+  if (item.type === "artist" && row.leafTable === "media_items" && isDiscographyRelease(row.release.title)) return judgeDiscographyOne(row, item, ctx);
   const episodeId = row.leafTable === "episodes" ? row.leafId : null;
   const subItemId = row.leafTable === "sub_items" ? row.leafId : null;
   if ((await leafHasFile(row)) || (await isAlreadyQueued(item.id, episodeId, subItemId))) {

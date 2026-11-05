@@ -175,17 +175,16 @@ describe("importing a discography", () => {
     await db.prepare("UPDATE sub_items SET has_file = 1 WHERE id = ?").run(albums.opera);
     setSetting("removeCompletedDownloads", "1");
     const queueId = await queueDiscography(artistId, [albums.queen, albums.queen2]);
-    const queueItem = (await queueRow(queueId)) as any;
 
     await importer.importQueueItem(queueId);
 
     expect((await albumRow(albums.queen)).has_file).toBe(1);
     expect((await albumRow(albums.queen2)).has_file).toBe(1);
     expect(fs.existsSync(path.join(downloadsDir, RELEASE, "1975 - A Night at the Opera", "01 - Death on Two Legs.flac"))).toBe(true);
-    // The client is told to keep the data: files of the download are still in use.
-    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
-    expect(removeQueueItemDownload.mock.calls[0][0]).toMatchObject({ id: queueItem.id });
-    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+    // The download stays in its client, with its data: the folders left in it are its own, and a torrent removed without its data
+    // would leave them in the downloads folder owned by nothing (M4). Only a download that is whole in the library is removed.
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
+    expect(markDownloadImported).not.toHaveBeenCalled();
   });
 
   it("finds the folder of the discography itself when the client reported none", async () => {

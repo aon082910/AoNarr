@@ -26,6 +26,14 @@ export const MIN_WANTED_FOR_AUTOMATIC_DISCOGRAPHY = 2;
 /** And at least this share of the albums it covers: two missing albums do not call for a discography of forty. */
 export const MIN_WANTED_SHARE_FOR_AUTOMATIC_DISCOGRAPHY = 0.25;
 
+/**
+ * The fallback for one missing album (discographyFallbackSingle) takes a discography that adds just that album, so the share bar
+ * above cannot apply to it; this bar does instead: a release covering more albums than this is not taken that way. Nothing else
+ * stops a 12-album or a 400-album discography being downloaded for one album, and the folders of the albums that were not wanted
+ * are left in the download (the client keeps it, but it is gigabytes for one record).
+ */
+export const FALLBACK_MAX_ALBUMS = 15;
+
 export interface DiscographyAlbum {
   id: number;
   title: string;
@@ -61,6 +69,8 @@ export interface DiscographyJudgeOptions {
   minShare?: number;
   /** An album the release has to add (the one whose own search found nothing, for a discography taken as its fallback). */
   mustCover?: number;
+  /** Most albums the release may cover, wanted or not (FALLBACK_MAX_ALBUMS for the fallback): a release of more is not a download for that few. */
+  maxCovered?: number;
   /** Whether an album's release date is still ahead (scheduler.isNotYetReleased). */
   isUnreleased: (releaseDate: string | null) => boolean;
 }
@@ -94,6 +104,9 @@ export function judgeDiscography(releaseTitle: string, albums: DiscographyAlbum[
   if (options.mustCover != null && !wanted.some((album) => album.id === options.mustCover)) {
     const wantedAlbum = albums.find((album) => album.id === options.mustCover);
     return { ok: false, reason: `It does not cover the album${wantedAlbum ? ` "${wantedAlbum.title}"` : ""} that was looked for`, covered, wanted };
+  }
+  if (options.maxCovered != null && covered.length > options.maxCovered) {
+    return { ok: false, reason: `It covers ${covered.length} albums; for the albums wanted, a discography of more than ${options.maxCovered} is not taken`, covered, wanted };
   }
   if (wanted.length < options.minWanted) {
     return {
@@ -170,16 +183,20 @@ export function releaseNamesArtist(releaseTitle: string, artist: string): boolea
 // Symbols an artist's name uses for a letter ("P!nk", "Ke$ha").
 const LETTER_SYMBOLS: Record<string, string> = { "!": "i", $: "s", "@": "a", "€": "e" };
 
-/** A name with the punctuation, spaces and a leading "The" taken out, for the spellings words cannot compare. */
+// A leading article is the word "The" and a space: "Them", "Theo" and "Theory" are names that begin with the same letters.
+const LEADING_THE = /^\s*the\s+(?=\S)/i;
+
+/** A name with the punctuation, spaces and a leading "The" (the word) taken out, for the spellings words cannot compare. */
 function compactName(text: string): string {
   const folded = text
+    .replace(LEADING_THE, "")
     .normalize("NFKD")
     .replace(/\p{M}/gu, "")
     .toLowerCase()
     .replace(/[!$@€]/g, (c) => LETTER_SYMBOLS[c] ?? c)
     .replace(/&/g, "and")
     .replace(/[^\p{L}\p{N}]+/gu, "");
-  return folded.length > 3 && folded.startsWith("the") ? folded.slice(3) : folded;
+  return folded;
 }
 
 /** The sub-items a queue row covers when it is a discography: empty for every other row. */

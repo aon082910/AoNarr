@@ -37,6 +37,7 @@ import {
   discographyAlbumsOf,
   discographyFallbackSingleEnabled,
   discographyGrabsEnabled,
+  FALLBACK_MAX_ALBUMS,
   isWantedAlbum,
   judgeDiscography,
   MIN_WANTED_FOR_AUTOMATIC_DISCOGRAPHY,
@@ -529,7 +530,7 @@ export interface ChooseOptions {
   /** The artist's discography is wanted (not an album): only a discography release naming the artist (`name`) that
    * passes judgeDiscography against these albums is taken, and the one adding the most missing albums comes first
    * among releases of the same format. */
-  discography?: { albums: DiscographyAlbum[]; minWanted: number; minShare?: number; mustCover?: number };
+  discography?: { albums: DiscographyAlbum[]; minWanted: number; minShare?: number; mustCover?: number; maxCovered?: number };
   /** The author's collection is wanted (not a book): only a collection naming the author (`name`) that passes judgeCollection
    * against these books is taken, and the one adding the most missing books comes first among releases of the same format. */
   collection?: { books: CollectionBook[]; minWanted: number; minShare?: number };
@@ -1119,6 +1120,7 @@ export async function chooseBestResult(
           minWanted: options.discography.minWanted,
           minShare: options.discography.minShare,
           mustCover: options.discography.mustCover,
+          maxCovered: options.discography.maxCovered,
           isUnreleased: isNotYetReleased,
         });
         if (!verdict.ok) {
@@ -2772,6 +2774,8 @@ export interface DiscographyJudge {
   minShare?: number;
   /** An album the release has to cover: the one whose own search found nothing, for the fallback. */
   mustCover?: number;
+  /** Most albums the release may cover (FALLBACK_MAX_ALBUMS for the fallback). */
+  maxCovered?: number;
 }
 
 /** The terms of a discography taken without the admin choosing it: by the automatic search, an RSS feed or an IRC announce. */
@@ -2914,7 +2918,7 @@ async function searchDiscographyFallback(
     // The album must still be one that is wanted (it may have been queued, or got its files, since its own search began).
     if (!albums.some((album) => album.id === subItemId && album.monitored)) return null;
     if (!reserveSlot()) return null;
-    const found = await searchAndGrabDiscography(item, albums, { minWanted: 1, minShare: 0, mustCover: subItemId }, ctx);
+    const found = await searchAndGrabDiscography(item, albums, { minWanted: 1, minShare: 0, mustCover: subItemId, maxCovered: FALLBACK_MAX_ALBUMS }, ctx);
     await recordSeasonResult(item.id, DISCOGRAPHY_SEARCH_KEY, found.result, true);
     return found.result;
   } catch (err) {

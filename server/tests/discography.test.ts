@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseReleaseTitle } from "../src/services/releaseParser.js";
-import { albumsCoveredBy, albumYear, judgeDiscography, releaseNamesArtist, type DiscographyAlbum } from "../src/services/discography.js";
+import { albumsCoveredBy, albumYear, FALLBACK_MAX_ALBUMS, judgeDiscography, releaseNamesArtist, type DiscographyAlbum } from "../src/services/discography.js";
 import { matchAlbumFolders, type MatchableAlbum } from "../src/services/discographyMatch.js";
 
 const NOW = new Date("2026-11-04T00:00:00Z");
@@ -184,8 +184,46 @@ describe("whose discography a release is", () => {
     ["The The - Discography", "The The", true],
     ["Дискография - Кино", "Кино", true],
     ["Pinkerton - Discography", "P!nk", false],
+    // A leading "the" is the article only when it is a word of its own (L4): "Them" and "Theo" are not "M" and "O" with a "the" in front.
+    ["M - Discography (1990-1995) [FLAC]", "Them", false],
+    ["Them - Discography (1964-1966) [FLAC]", "M", false],
+    ["Theo - Discography [FLAC]", "O", false],
+    ["O - Discography [FLAC]", "Theo", false],
+    ["Them - Discography (1964-1966) [FLAC]", "Them", true],
+    ["Theo - Discography [FLAC]", "Theo", true],
+    ["Theory of a Deadman - Discography", "Ory of a Deadman", false],
+    ["The Beatles - Discography (1962-1970)", "Beatles", true],
+    ["Beatles - Discography (1962-1970)", "The Beatles", true],
+    ["The The - Discography (1983-2000)", "The The", true],
   ])("%s for %s is %s", (title, artist, expected) => {
     expect(releaseNamesArtist(title, artist)).toBe(expected);
+  });
+});
+
+describe("the most albums a release may cover (the bar of the fallback for one album)", () => {
+  const fifteenFiled = Array.from({ length: 16 }, (_, i) => album(200 + i, `Record ${i}`, `${1970 + i}-01-01`, { hasFile: i > 0 }));
+  const judgeFor = (title: string, albums: DiscographyAlbum[], maxCovered?: number) =>
+    judgeDiscography(title, albums, { minWanted: 1, minShare: 0, mustCover: 200, maxCovered, isUnreleased });
+
+  it("is fifteen", () => {
+    expect(FALLBACK_MAX_ALBUMS).toBe(15);
+  });
+
+  it("refuses a discography that covers more albums than the bar, with the number in the reason", () => {
+    const verdict = judgeFor("Queen - Discography [FLAC]", fifteenFiled, FALLBACK_MAX_ALBUMS);
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) expect(verdict.reason).toBe("It covers 16 albums; for the albums wanted, a discography of more than 15 is not taken");
+  });
+
+  it("takes one that covers the bar exactly, and one whose years narrow it down to fewer albums", () => {
+    expect(judgeFor("Queen - Discography [FLAC]", fifteenFiled.slice(0, 15), FALLBACK_MAX_ALBUMS).ok).toBe(true);
+    // 1970-1984 holds 15 of the 16 albums.
+    expect(judgeFor("Queen - Discography (1970-1984) [FLAC]", fifteenFiled, FALLBACK_MAX_ALBUMS).ok).toBe(true);
+    expect(judgeFor("Queen - Discography (1970-1985) [FLAC]", fifteenFiled, FALLBACK_MAX_ALBUMS).ok).toBe(false);
+  });
+
+  it("is no bar at all when none is given", () => {
+    expect(judgeFor("Queen - Discography [FLAC]", fifteenFiled).ok).toBe(true);
   });
 });
 

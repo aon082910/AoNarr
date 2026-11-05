@@ -195,6 +195,9 @@ export interface AudioFileTags {
   /** The disc this track is on and how many discs the release has ("1/2", "2 of 2", or a separate total tag). */
   disc?: number | null;
   discTotal?: number | null;
+  /** The track's number on its disc and how many tracks the disc has ("3/12", or a separate total tag): a disc folder is checked against it. */
+  track?: number | null;
+  trackTotal?: number | null;
 }
 
 function wholeNumber(text: string | null | undefined): number | null {
@@ -202,11 +205,11 @@ function wholeNumber(text: string | null | undefined): number | null {
   return m && Number(m[1]) > 0 ? Number(m[1]) : null;
 }
 
-/** "2" and "2/3" are disc 2; "2/3" and a separate total tag say there are 3 discs. */
-function discNumbers(value: string | null, total: string | null): { disc: number | null; discTotal: number | null } {
+/** "2" and "2/3" are number 2 (of a disc, of a track); "2/3" and a separate total tag say there are 3 of them. */
+function numberAndTotal(value: string | null, total: string | null): { number: number | null; total: number | null } {
   const pair = /^\s*(\d{1,3})\s*(?:\/|of)\s*(\d{1,3})\s*$/i.exec(value ?? "");
-  if (pair) return { disc: wholeNumber(pair[1]), discTotal: wholeNumber(pair[2]) ?? wholeNumber(total) };
-  return { disc: wholeNumber(value), discTotal: wholeNumber(total) };
+  if (pair) return { number: wholeNumber(pair[1]), total: wholeNumber(pair[2]) ?? wholeNumber(total) };
+  return { number: wholeNumber(value), total: wholeNumber(total) };
 }
 
 /** An audio file's own tags (ID3/MP4/Vorbis) — container-level tags first, then the first audio
@@ -227,7 +230,8 @@ export async function probeAudioTags(filePath: string, options: { timeoutMs?: nu
     }
     const tag = (name: string) => tags.get(name) ?? null;
     const first = (...names: string[]) => names.map(tag).find((value) => value !== null) ?? null;
-    const discs = discNumbers(first("disc", "discnumber"), first("disctotal", "totaldiscs"));
+    const disc = numberAndTotal(first("disc", "discnumber"), first("disctotal", "totaldiscs"));
+    const track = numberAndTotal(first("track", "tracknumber"), first("tracktotal", "totaltracks"));
     return {
       artist: tag("artist"),
       albumArtist: tag("album_artist"),
@@ -236,7 +240,10 @@ export async function probeAudioTags(filePath: string, options: { timeoutMs?: nu
       title: tag("title"),
       // An album is dated by its first release (what the library holds), so a reissue's original date comes before its own.
       date: first("originaldate", "originalyear", "date", "year"),
-      ...discs,
+      disc: disc.number,
+      discTotal: disc.total,
+      track: track.number,
+      trackTotal: track.total,
     };
   } catch (err) {
     if (!options.quiet) logProbeFailure(filePath, err);
