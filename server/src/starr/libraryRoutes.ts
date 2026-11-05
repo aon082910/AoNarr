@@ -319,7 +319,7 @@ async function editTitle(req: any, app: StarrApp, id: number): Promise<any> {
 
   if (Array.isArray(b.tags)) {
     const wanted = new Set(idList(b.tags));
-    const rows = (await db.prepare("SELECT tag_id FROM media_item_tags WHERE media_item_id = ?").all(id)) as { tag_id: number }[];
+    const rows = (await db.prepare("SELECT tag_id FROM media_item_tags WHERE media_item_id = ? ORDER BY tag_id").all(id)) as { tag_id: number }[];
     const have = new Set(rows.map((r) => Number(r.tag_id)));
     for (const tagId of wanted) if (!have.has(tagId)) await callNative(req.app, "POST", `/api/media/${id}/tags`, { tagId });
     for (const tagId of have) if (!wanted.has(tagId)) await callNative(req.app, "DELETE", `/api/media/${id}/tags/${tagId}`);

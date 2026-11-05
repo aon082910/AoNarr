@@ -153,9 +153,13 @@ export function idList(value: unknown): number[] {
   return raw.map((v) => Number(v)).filter((n) => Number.isInteger(n) && n >= 0);
 }
 
-/** media_item_id to tag ids, for every item (the table is small next to the items it describes). */
+/**
+ * media_item_id to tag ids, for every item (the table is small next to the items it describes). Ordered by tag id: without an
+ * ORDER BY a database answers in the order the rows sit on disk (Postgres: the order they were written, which differs from one
+ * run to the next), and a list or its ETag would then change with no change in the data.
+ */
 export async function loadItemTags(): Promise<Map<number, number[]>> {
-  const rows = (await db.prepare("SELECT media_item_id, tag_id FROM media_item_tags").all()) as { media_item_id: number; tag_id: number }[];
+  const rows = (await db.prepare("SELECT media_item_id, tag_id FROM media_item_tags ORDER BY media_item_id, tag_id").all()) as { media_item_id: number; tag_id: number }[];
   const map = new Map<number, number[]>();
   for (const r of rows) {
     const list = map.get(Number(r.media_item_id)) ?? [];
