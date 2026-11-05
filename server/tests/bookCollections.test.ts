@@ -216,6 +216,25 @@ describe("what a collection covers", () => {
     expect(result.covered.map((b) => b.id)).toEqual([1, 2]);
   });
 
+  it("cannot place numbers that name no series when the author's numbered books are in several", () => {
+    const books = [
+      ...pratchett(),
+      book(20, "The Wee Free Men", "2003-05-01", { seriesName: "Tiffany Aching", seriesPosition: 1 }),
+      book(21, "A Hat Full of Sky", "2004-05-01", { seriesName: "Tiffany Aching", seriesPosition: 2 }),
+    ];
+    const parsed = parseReleaseTitle("Terry Pratchett - Books 1-5").collection!;
+    const result = coverageOf(parsed, [], books);
+    // "Books 1-5" of every series is not what the release holds: the library says so instead of counting seven books as its own.
+    expect(result.problem).toMatch(/does not say which series/);
+    expect(result.covered.map((b) => b.id)).toEqual([1, 2, 3, 4, 5, 20, 21]);
+    // With the series named, or with an author whose numbered books are all in one, there is nothing to ask.
+    const named = parseReleaseTitle("Terry Pratchett - Discworld Books 1-5").collection!;
+    const hint = analyzeCollectionName("Terry Pratchett - Discworld Books 1-5", "Terry Pratchett").hint;
+    expect(coverageOf(named, hint, books)).toMatchObject({ problem: null });
+    expect(coverageOf(named, hint, books).covered.map((b) => b.id)).toEqual([1, 2, 3, 4, 5]);
+    expect(coverageOf(parsed, [], pratchett()).problem).toBeNull();
+  });
+
   it("cannot place a series that none of the books is tagged with", () => {
     const parsed = parseReleaseTitle("Terry Pratchett - Rincewind Complete Series").collection!;
     const hint = analyzeCollectionName("Terry Pratchett - Rincewind Complete Series", "Terry Pratchett").hint;
@@ -342,6 +361,19 @@ describe("judging a collection", () => {
     const named = judgeCollection("Terry Pratchett - Discworld Books 1-9 [EPUB]", "Terry Pratchett", unplaced, options);
     expect((named as { reason: string }).reason).toMatch(/names "discworld"/);
     expect(named.wanted).toHaveLength(4);
+  });
+
+  it("refuses a range of no named series for an author with several, and hands back what it leaves open for a hand pick", () => {
+    const books = [
+      ...pratchett(),
+      book(20, "The Wee Free Men", "2003-05-01", { seriesName: "Tiffany Aching", seriesPosition: 1 }),
+      book(21, "A Hat Full of Sky", "2004-05-01", { seriesName: "Tiffany Aching", seriesPosition: 2 }),
+    ];
+    const verdict = judgeCollection("Terry Pratchett - Complete Collection (Books 1-5) [EPUB]", "Terry Pratchett", books, options);
+    expect(verdict.ok).toBe(false);
+    expect((verdict as { reason: string }).reason).toMatch(/does not say which series/);
+    expect(verdict.wanted).toHaveLength(7);
+    expect(judgeCollection("Terry Pratchett - Discworld Complete Collection (Books 1-5) [EPUB]", "Terry Pratchett", books, options).ok).toBe(true);
   });
 
   it("refuses a series that the library has no books of", () => {

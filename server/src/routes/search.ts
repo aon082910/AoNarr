@@ -778,9 +778,14 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
         multiTargets = judged.wanted.map((album) => album.id);
       }
     }
+    // What the response tells the admin when the grab is not quite what the release's name says.
+    let note: string | undefined;
     // An author's collection is the same: queued for every book it covers that is missing (those already downloading are left
     // out), and the importer files each book's file under its own book.
-    if (COLLECTION_ITEM_TYPES.has(item.type) && !b.episodeId && parsedTitle.collection) {
+    // A release that does not carry the author's exact name ("The Lord of the Rings Trilogy [EPUB]") is no collection of this author's
+    // as far as the library can tell, but the admin picked it for a book, so it is grabbed for that book as any release is.
+    const collectionNamesAuthor = parsedTitle.collection ? analyzeCollectionName(String(b.title), item.title).namesAuthor : false;
+    if (COLLECTION_ITEM_TYPES.has(item.type) && !b.episodeId && parsedTitle.collection && (collectionNamesAuthor || !b.subItemId)) {
       const books = await collectionBooksOf(item.id);
       let alreadyDownloading = 0;
       const judgedAgainst: CollectionBook[] = [];
@@ -802,6 +807,14 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
           forced = true;
         }
         multiTargets = judged.wanted.map((book) => book.id);
+        // The book the search was opened from is the admin's choice, whatever the release's name says it covers ("Good Omens" from a
+        // Discworld collection): it is queued as well, so that an import that does not find it searches for it on its own.
+        const picked = Number(b.subItemId) || 0;
+        if (picked > 0 && !judged.covered.some((book) => book.id === picked) && !(await isAlreadyQueued(item.id, null, picked))) {
+          multiTargets.push(picked);
+          const pickedBook = books.find((book) => book.id === picked);
+          note = `The release does not say it holds ${pickedBook ? `"${pickedBook.title}"` : "the book you searched for"}, so it was queued for it as well; if the download has no file for it, the book is searched for on its own.`;
+        }
       }
     }
     const verdict =
@@ -924,7 +937,7 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
     const queueRow = await db
       .prepare("SELECT * FROM queue WHERE media_item_id = ? AND title = ? AND download_client_id = ? ORDER BY id DESC LIMIT 1")
       .get(item.id, releaseTitle, client.id);
-    return queueItemFromRow(queueRow);
+    return note ? { ...queueItemFromRow(queueRow), note } : queueItemFromRow(queueRow);
   }
 }
 

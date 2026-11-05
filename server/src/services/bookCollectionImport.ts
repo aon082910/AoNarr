@@ -114,6 +114,16 @@ export function allBookKeys(books: MatchableBook[]): Map<number, string[][]> {
   return keys;
 }
 
+// Words a file is named when its name says nothing of the book ("book.epub", "content.mobi").
+const GENERIC_NAME_WORDS = new Set(["book", "books", "content", "contents", "file", "files", "main", "text", "novel", "untitled", "unknown", "download"]);
+
+/** Whether the words a file name reduces to say nothing of which book it is: none, only generic words, numbers or a hash, or the author's name alone. */
+function isGenericName(words: string[], ctx: Context): boolean {
+  if (words.length === 0) return true;
+  if (ctx.authorWords.length > 0 && sameWords(words, ctx.authorWords)) return true;
+  return words.every((word) => GENERIC_NAME_WORDS.has(word) || /^\d+$/.test(word) || /^[0-9a-f]{8,}$/.test(word));
+}
+
 /** Whether a segment of a file name is the author's name: spelled out, run together, last name first, initials left off, or the surname alone. */
 function isAuthor(segment: string, ctx: Context, allowSurname: boolean): boolean {
   const words = wordsOf(segment);
@@ -201,7 +211,8 @@ function addReadings(joined: string, ctx: Context, add: (words: string[]) => voi
 /**
  * Tells each file of a downloaded collection which book it is. A file holds a book when its name, taken off the author, the year,
  * the series and its number, the edition and the format, is the book's title; a book in a folder of its own may carry the title
- * in the folder's name instead (when the file's own name names none). A file that fits two books, or none, is left alone.
+ * in the folder's name instead, when the file's own name says nothing ("book", a hash, a bare number): a clear title that no book
+ * of the library has is another work, not the folder's. A file that fits two books, or none, is left alone.
  */
 export function matchBookFiles(files: BookFile[], author: string, books: MatchableBook[]): Map<string, FileMatch> {
   const authorWords = wordsOf(author);
@@ -241,9 +252,13 @@ export function matchBookFiles(files: BookFile[], author: string, books: Matchab
   }
   const result = new Map<string, FileMatch>();
   for (const file of files) {
-    let found = lookup(readings(file.name, ctx));
+    const own = readings(file.name, ctx);
+    let found = lookup(own);
     let via = file.name;
-    if (found.length === 0 && file.folder !== null) {
+    // The folder names the book only for a file whose own name says nothing ("book.epub", a hash, a bare number): a file with a
+    // clear title that the library does not list ("Mort/Eric.epub") is another work, and filing it as the folder's book would mark that
+    // book done with a file that is not its own.
+    if (found.length === 0 && file.folder !== null && own.every((words) => isGenericName(words, ctx))) {
       if ((stems.get(dirOf(file))?.size ?? 0) === 1) {
         found = lookup(readings(file.folder, ctx));
         via = file.folder;

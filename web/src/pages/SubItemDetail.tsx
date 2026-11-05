@@ -214,7 +214,7 @@ export default function SubItemDetail() {
 
   async function grab(result: SearchResult, options: { force?: boolean } = {}) {
     try {
-      await api.post(`/search/${mediaId}/grab`, {
+      const queued = await api.post<{ note?: string }>(`/search/${mediaId}/grab`, {
         downloadUrl: result.downloadUrl,
         indexerId: result.indexerId,
         title: result.title,
@@ -227,7 +227,7 @@ export default function SubItemDetail() {
         subItemId: Number(subItemId),
         force: options.force ?? false,
       });
-      notify.success(`Sent "${result.title}" to download client.`);
+      notify.success(`Sent "${result.title}" to download client.${queued?.note ? ` ${queued.note}` : ""}`);
       load();
     } catch (e) {
       // The blocklist or the identity gate refused the release once; the admin decides. A copy already queued or at the

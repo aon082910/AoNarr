@@ -15,6 +15,16 @@ vi.mock("../src/services/downloadClient.js", async (importOriginal) => ({
   getDownloadClientAdapter: (...args: unknown[]) => getDownloadClientAdapter(...args),
 }));
 
+// The grab's notification is recorded; everything else of the module is real.
+const notifyGrabbed = vi.fn();
+vi.mock("../src/services/notifications.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/services/notifications.js")>()),
+  notifyGrabbed: (...args: unknown[]) => {
+    notifyGrabbed(...args);
+    return Promise.resolve();
+  },
+}));
+
 let app: Express;
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let apiKey: string;
@@ -41,6 +51,7 @@ beforeEach(async () => {
   settings.setSetting("quietHoursEnabled", "0");
   settings.setSetting("searchWindowEnabled", "0");
   searchAllIndexers.mockReset().mockResolvedValue([]);
+  notifyGrabbed.mockReset();
   addDownload = vi.fn(async (_client: unknown, url: string) => ({ downloadId: url }));
   getDownloadClientAdapter.mockReset().mockReturnValue({ addDownload, getStatus: vi.fn(async () => []), removeDownload: vi.fn(async () => undefined) });
 });
@@ -774,5 +785,196 @@ describe("picking a collection by hand", () => {
     expect(res.status).toBe(201);
     expect(res.body.subItemId).toBe(stories);
     expect(await targetsOf(res.body.id)).toEqual([]);
+  });
+});
+
+describe("the notification of a grab for many books or albums", () => {
+  it("calls an author's collection a collection of books", async () => {
+    await insertClient();
+    const { authorId, books } = await terry();
+
+    await grabCollection(authorId, books);
+
+    expect(notifyGrabbed).toHaveBeenCalledTimes(1);
+    expect(notifyGrabbed.mock.calls[0][0]).toBe("Terry Pratchett - Collection: 5 books");
+    await db.prepare("DELETE FROM queue").run();
+    notifyGrabbed.mockClear();
+    await grabCollection(authorId, books.slice(0, 1), "Terry Pratchett - Bibliography (1983) [EPUB]");
+    expect(notifyGrabbed.mock.calls[0][0]).toBe("Terry Pratchett - Collection: 1 book");
+  });
+
+  it("still calls an artist's discography a discography of albums", async () => {
+    await insertClient();
+    const artistId = Number((await db.prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, status) VALUES ('artist', 'Queen', 'queen', 1, 0, 'missing')").run()).lastInsertRowid);
+    const albums: number[] = [];
+    for (const [i, title] of ["Queen", "Queen II", "Innuendo"].entries()) albums.push(await insertBook(artistId, title, `${1973 + i}-01-01`));
+    const item = await mediaItem(artistId);
+    const client = (await db.prepare("SELECT * FROM download_clients LIMIT 1").get()) as any;
+    const { downloadClientFromRow } = await import("../src/db/mappers.js");
+
+    await scheduler.grab(downloadClientFromRow(client) as any, item, null, null, { result: release("Queen - Discography [FLAC]") as any, quality: "Unknown" }, 0, null, "auto", { targetSubItemIds: albums });
+
+    expect(notifyGrabbed.mock.calls[0][0]).toBe("Queen - Discography: 3 albums");
+  });
+
+  it("says collection and books for a collection picked by hand", async () => {
+    await insertClient();
+    const { authorId } = await terry();
+
+    const res = await request(app)
+      .post(`/api/search/${authorId}/grab`)
+      .set("X-Api-Key", apiKey)
+      .send({ title: COLLECTION, downloadUrl: "magnet:?xt=urn:btih:abc", protocol: "torrent", size: 300_000_000 });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(notifyGrabbed).toHaveBeenCalledTimes(1));
+    expect(notifyGrabbed.mock.calls[0][0]).toBe("Terry Pratchett - Collection: 5 books");
+  });
+});
+
+describe("a collection that lost books to other downloads between the search and the grab", () => {
+  /** Three of the five books get a download of their own. */
+  async function queueThree(authorId: number, books: number[]) {
+    for (const id of books.slice(0, 3)) await db.prepare("INSERT INTO queue (media_item_id, sub_item_id, title, status) VALUES (?, ?, ?, 'downloading')").run(authorId, id, `Book ${id}`);
+  }
+
+  it("is refused when what is left is under the bar it was judged by", async () => {
+    await insertClient();
+    const { authorId, books } = await terry();
+    await queueThree(authorId, books);
+    const item = await mediaItem(authorId);
+    const client = (await db.prepare("SELECT * FROM download_clients LIMIT 1").get()) as any;
+    const { downloadClientFromRow } = await import("../src/db/mappers.js");
+    const grabWith = (bar: Record<string, number>) =>
+      scheduler.grab(downloadClientFromRow(client) as any, item, null, null, { result: release(COLLECTION) as any, quality: "Unknown" }, 0, null, "auto", { targetSubItemIds: books, ...bar });
+
+    // Two books are left: under the minimum of three, and under 30% of the five it covers.
+    expect(await grabWith({ minOpen: 3, minShare: 0.3, judgedCovered: 5 })).toBe(false);
+    expect(await grabWith({ minOpen: 1, minShare: 0.5, judgedCovered: 5 })).toBe(false);
+    expect(addDownload).not.toHaveBeenCalled();
+    expect((await queueRows()).filter((r) => r.sub_item_id == null)).toHaveLength(0);
+
+    // Without a bar (a hand pick, or an old caller) the books that are left are grabbed as they always were; and a bar that is met passes.
+    expect(await grabWith({ minOpen: 2, minShare: 0.3, judgedCovered: 5 })).toBe(true);
+    const [row] = (await queueRows()).filter((r) => r.sub_item_id == null);
+    expect(await targetsOf(row.id)).toEqual(sorted(books.slice(3)));
+  });
+
+  it("leaves the release alone in the automatic search, which then looks for the books on their own", async () => {
+    await insertClient();
+    const { authorId, books } = await terry();
+    searchAllIndexers.mockImplementation(async (_indexers: unknown, query: string) => {
+      if (!isCollectionQuery(query)) return [];
+      // The slow indexer round: meanwhile three of the books are grabbed on their own.
+      await queueThree(authorId, books);
+      return [release(COLLECTION)];
+    });
+
+    await scheduler.searchAndGrabTargets([{ mediaItemId: authorId }]);
+
+    expect(addDownload).not.toHaveBeenCalled();
+    expect((await queueRows()).filter((r) => r.sub_item_id == null)).toHaveLength(0);
+  });
+});
+
+describe("picking a release by hand that does not carry the author's exact name", () => {
+  const send = (authorId: number, body: Record<string, unknown>) =>
+    request(app)
+      .post(`/api/search/${authorId}/grab`)
+      .set("X-Api-Key", apiKey)
+      .send({ downloadUrl: "magnet:?xt=urn:btih:abc", protocol: "torrent", size: 300_000_000, ...body });
+
+  it.each([
+    ["J.R.R. Tolkien", "The Lord of the Rings Trilogy [EPUB]"],
+    ["J.R.R. Tolkien", "Tolkien - Middle-earth Trilogy [EPUB]"],
+    ["J. K. Rowling", "Harry Potter Complete Collection (Books 1-7) [EPUB]"],
+    ["John Ronald Reuel Tolkien", "JRR Tolkien - Middle-earth Collection [EPUB]"],
+  ])("grabs %s's %s for the book it was picked for", async (author, title) => {
+    await insertClient();
+    const authorId = await insertAuthor(author);
+    const picked = await insertBook(authorId, "The Fellowship of the Ring", "1954-07-29");
+    await insertBook(authorId, "The Two Towers", "1954-11-11");
+    await insertBook(authorId, "The Return of the King", "1955-10-20");
+
+    const res = await send(authorId, { title, subItemId: picked });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.subItemId).toBe(picked);
+    expect(await targetsOf(res.body.id)).toEqual([]);
+    expect(res.body.note).toBeUndefined();
+    expect(addDownload).toHaveBeenCalledTimes(1);
+  });
+
+  it("still refuses one that is picked for no book at all, saying whose name it lacks", async () => {
+    await insertClient();
+    const authorId = await insertAuthor("J.R.R. Tolkien");
+    await insertBook(authorId, "The Hobbit", "1937-09-21");
+
+    const res = await send(authorId, { title: "The Lord of the Rings Trilogy [EPUB]" });
+
+    expect(res.status).toBe(400);
+    expect(res.text).toContain("It is not named for J.R.R. Tolkien");
+    expect(addDownload).not.toHaveBeenCalled();
+  });
+
+  it("queues the book the search was opened from as well when the release does not say it holds it, and says so", async () => {
+    await insertClient();
+    const { authorId, books } = await terry();
+    const goodOmens = await insertBook(authorId, "Good Omens", "1990-05-01");
+
+    const res = await send(authorId, { title: "Terry Pratchett - Discworld Complete Collection [EPUB]", subItemId: goodOmens });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.subItemId).toBeNull();
+    expect(await targetsOf(res.body.id)).toEqual(sorted([...books, goodOmens]));
+    expect(res.body.note).toContain('"Good Omens"');
+  });
+
+  it("says nothing when the release does cover the book the search was opened from", async () => {
+    await insertClient();
+    const { authorId, books } = await terry();
+
+    const res = await send(authorId, { title: COLLECTION, subItemId: books[1] });
+
+    expect(res.status).toBe(201);
+    expect(await targetsOf(res.body.id)).toEqual(sorted(books));
+    expect(res.body.note).toBeUndefined();
+  });
+});
+
+describe("a numbered range that does not say which series", () => {
+  async function twoSeries() {
+    const { authorId, books } = await terry();
+    const tiffany = [
+      await insertBook(authorId, "The Wee Free Men", "2003-05-01", { seriesName: "Tiffany Aching", seriesPosition: 1 }),
+      await insertBook(authorId, "A Hat Full of Sky", "2004-05-01", { seriesName: "Tiffany Aching", seriesPosition: 2 }),
+    ];
+    return { authorId, books, tiffany };
+  }
+  const RANGE = "Terry Pratchett - Complete Collection (Books 1-3) [EPUB]";
+
+  it("is not taken by the automatic search", async () => {
+    await insertClient();
+    const { authorId } = await twoSeries();
+    answers((query) => (isCollectionQuery(query) ? [release(RANGE)] : []));
+
+    await scheduler.searchAndGrabTargets([{ mediaItemId: authorId }]);
+
+    expect((await queueRows()).filter((r) => r.sub_item_id == null)).toHaveLength(0);
+  });
+
+  it("asks the admin once, and then queues every book the range leaves open", async () => {
+    await insertClient();
+    const { authorId, books, tiffany } = await twoSeries();
+    const body = { title: RANGE, downloadUrl: "magnet:?xt=urn:btih:abc", protocol: "torrent" };
+
+    const asked = await request(app).post(`/api/search/${authorId}/grab`).set("X-Api-Key", apiKey).send(body);
+    expect(asked.status).toBe(409);
+    expect(asked.text).toContain("does not say which series");
+    expect(addDownload).not.toHaveBeenCalled();
+
+    const told = await request(app).post(`/api/search/${authorId}/grab`).set("X-Api-Key", apiKey).send({ ...body, overrides: ["collection"] });
+    expect(told.status).toBe(201);
+    expect(await targetsOf(told.body.id)).toEqual(sorted([...books.slice(0, 3), ...tiffany]));
   });
 });

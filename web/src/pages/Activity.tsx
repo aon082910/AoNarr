@@ -180,6 +180,8 @@ export default function Activity() {
   const [importing, setImporting] = useState<string | null>(null);
   // "" follows the import strategy setting; the others are for this import alone.
   const [importMode, setImportMode] = useState("");
+  // For a queued collection of books: the picked file stands for its whole folder, and everything matched in it is imported.
+  const [importAll, setImportAll] = useState(false);
   const [previews, setPreviews] = useState<Record<string, ManualImportPreview | { error: string }>>({});
   const [previewing, setPreviewing] = useState<string | null>(null);
 
@@ -491,6 +493,7 @@ export default function Activity() {
     setCandidatesError(null);
     setOverrideQuality("");
     setImportMode("");
+    setImportAll(false);
     setPreviews({});
     if (qualities.length === 0) api.get<Quality[]>("/qualities").then(setQualities);
     api
@@ -507,7 +510,7 @@ export default function Activity() {
     if (!manualImportFor) return;
     setImporting(sourceFile);
     try {
-      await api.post(`/activity/queue/${manualImportFor.id}/manual-import`, { sourceFile, quality: overrideQuality || undefined, mode: importMode || undefined });
+      await api.post(`/activity/queue/${manualImportFor.id}/manual-import`, { sourceFile, quality: overrideQuality || undefined, mode: importMode || undefined, importAll: manualImportFor.targetKind === "book" && importAll ? true : undefined });
       setManualImportFor(null);
       load();
     } catch (e) {
@@ -1010,6 +1013,12 @@ export default function Activity() {
               </option>
             ))}
           </select>
+          {manualImportFor.targetKind === "book" && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }} title="Imports every file of the download's folder that matches a book this collection was grabbed for, instead of just the file you pick. The file you pick says the folder is the download's own.">
+              <input type="checkbox" style={{ width: "auto" }} checked={importAll} onChange={(e) => setImportAll(e.target.checked)} />
+              Import everything matched in this folder
+            </label>
+          )}
           {candidatesError && <p style={{ color: "var(--danger)" }}>{candidatesError}</p>}
           {candidates === null && !candidatesError && <p className="empty">Loading...</p>}
           {candidates !== null && candidates.length === 0 && (

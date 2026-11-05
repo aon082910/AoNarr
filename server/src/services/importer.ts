@@ -1956,8 +1956,11 @@ export async function placeFile(params: {
   /** This is another try at a download that was held for an episode's title (episodeTitleRequired): the title rule is asked
    * before the checks that read the file, as it is a database read and the checks are not (see assertEpisodeTitlesKnown). */
   titleHeld?: boolean;
+  /** The caller tells of the import itself (a collection of books sends one notification for all its books): the row and its history
+   * are written, but neither the "imported" notification nor the media-server refresh it triggers goes out for this file. */
+  quiet?: boolean;
 }): Promise<{ destPath: string; fileLabel: string }> {
-  const { itemId, episodeId, subItemId, sourceFile, quality, batchClaims, verify, releaseTitle, refuseDowngrade, dryRun, titleHeld } = params;
+  const { itemId, episodeId, subItemId, sourceFile, quality, batchClaims, verify, releaseTitle, refuseDowngrade, dryRun, titleHeld, quiet = false } = params;
 
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
@@ -2405,8 +2408,10 @@ export async function placeFile(params: {
     file: { path: destPath, size: sizeBytes, quality: quality ?? null, releaseGroup: releaseTitle ? parseReleaseTitle(releaseTitle).releaseGroup : null, sceneName: releaseTitle },
     release: { title: releaseTitle },
   };
-  if (hadFileBefore) await notifyUpgraded(item.title, fileLabel, destPath, importContext);
-  else await notifyImported(item.title, fileLabel, destPath, importContext);
+  if (!quiet) {
+    if (hadFileBefore) await notifyUpgraded(item.title, fileLabel, destPath, importContext);
+    else await notifyImported(item.title, fileLabel, destPath, importContext);
+  }
   return { destPath, fileLabel };
 }
 
@@ -3094,6 +3099,41 @@ async function notifyDiscographyImported(item: { id: number; title: string }, ta
   await notifyImported(`${item.title} - Discography: ${total} album${total === 1 ? "" : "s"}`, text, done.imported[0].destFolder, { mediaItemId: item.id });
 }
 
+/** The deepest folder that holds all of these files (the author's folder, for books filed under it in series folders). */
+function commonFolderOf(files: string[]): string {
+  const split = files.map((file) => path.dirname(path.resolve(file)).split(path.sep));
+  let common = split[0] ?? [];
+  for (const parts of split.slice(1)) {
+    let at = 0;
+    while (at < common.length && at < parts.length && common[at] === parts[at]) at++;
+    common = common.slice(0, at);
+  }
+  return common.join(path.sep) || path.sep;
+}
+
+/**
+ * The one "imported" notification of a collection of books, with its one media-server refresh (for the folder the books went
+ * to): how many of the books it was for went in and which are left, instead of one notification and one refresh per book
+ * (placeBookCollectionFiles places them quietly). Books that already had their files are not part of the count. Nothing is sent
+ * when no book went in.
+ */
+async function notifyCollectionImported(item: { id: number; title: string }, targetSubItemIds: number[], done: BookCollectionImport): Promise<void> {
+  if (done.imported.length === 0) return;
+  const had = new Set(done.alreadyHad);
+  const placed = new Set(done.imported.map((book) => book.subItemId));
+  const total = targetSubItemIds.filter((id) => !had.has(id)).length;
+  const leftIds = targetSubItemIds.filter((id) => !had.has(id) && !placed.has(id));
+  let text = `imported ${done.imported.length} of ${total} book${total === 1 ? "" : "s"}`;
+  if (leftIds.length > 0) {
+    const rows = (await db
+      .prepare(`SELECT title FROM sub_items WHERE id IN (${leftIds.map(() => "?").join(",")}) ORDER BY release_date, id`)
+      .all(...leftIds)) as { title: string }[];
+    const shown = rows.slice(0, 5).map((row) => row.title);
+    text += `, ${leftIds.length} left: ${shown.join(", ")}${rows.length > shown.length ? `, and ${rows.length - shown.length} more` : ""}`;
+  }
+  await notifyImported(`${item.title} - Collection: ${total} book${total === 1 ? "" : "s"}`, text, commonFolderOf(done.imported.map((book) => book.file)), { mediaItemId: item.id });
+}
+
 /** A disc folder of a multi-disc album ("CD1", "Disc 2"): not an album of its own. */
 const DISC_FOLDER = /^(cd|disc|disk)\s*[-_]?\s*\d+$/i;
 
@@ -3287,30 +3327,53 @@ export async function placeDiscographyFiles(params: {
 }
 
 /**
- * The folder that is the whole collection download of an author's books: the one the client reported, or, with none reported,
- * the nearest folder above the file named for the release. Null when neither can be told (the books of a folder shared with
- * other downloads cannot be told apart from theirs). (discographyRootOf's counterpart; a collection word names the folder.)
+ * The folder a client's reported path stands for as a collection download: the folder itself, or, when the client reported an
+ * archive (a collection is very often one .zip or .rar), the sibling folder named after it that the archive was unpacked into
+ * (the same place locateDownloadedFile and isWithinReportedDownload look in). Null when the path is a loose file, or the archive
+ * has not been unpacked.
+ */
+function collectionFolderOf(downloadPath: string): string | null {
+  const reported = path.resolve(downloadPath);
+  if (isDirectory(reported)) return reported;
+  if (isArchiveFile(reported)) {
+    const unpacked = path.resolve(archiveDestinationFor(reported));
+    if (isDirectory(unpacked)) return unpacked;
+  }
+  return null;
+}
+
+/**
+ * The folder that is the whole collection download of an author's books: the one the client reported (or the folder its archive
+ * was unpacked into), or, with none reported, the OUTERMOST folder above the file named like a collection (a collection's own
+ * sub-folders are often named so too: "Discworld Collection" inside "Pratchett Complete Collection"; the nearest would leave the
+ * rest of the download out of the import and out of the left-behind check). Null when neither can be told (the books of a folder
+ * shared with other downloads cannot be told apart from theirs). (discographyRootOf's counterpart; a collection word names the folder.)
  */
 function collectionRootOf(sourceFile: string, downloadPath: string | null | undefined, releaseTitle: string, category: string | null | undefined): string | null {
   const file = path.resolve(sourceFile);
   if (downloadPath) {
-    const reported = path.resolve(downloadPath);
-    if (file.startsWith(reported + path.sep) && isDirectory(reported)) return reported;
+    const folder = collectionFolderOf(downloadPath);
+    if (folder && file.startsWith(folder + path.sep)) return folder;
     return null;
   }
   const downloads = path.resolve(config.downloadsDir);
   const ancestors: string[] = [];
   for (let dir = path.dirname(file); dir !== downloads && dir.startsWith(downloads + path.sep); dir = path.dirname(dir)) ancestors.push(dir);
-  const named = ancestors.find((dir) => isCollectionTitle(path.basename(dir)));
-  if (named) return named;
-  const own = ancestors.filter((dir) => isOwnReleaseFolder(dir, { releaseTitle, category }) && !isSharedDownloadFolder(dir, releaseTitle));
+  const isOwn = (dir: string) => isOwnReleaseFolder(dir, { releaseTitle, category }) && !isSharedDownloadFolder(dir, releaseTitle);
+  const named = ancestors.filter((dir) => isCollectionTitle(path.basename(dir)));
+  // A folder named like a collection that is also a download's own wins over one that is a bucket of several ("Ebook Collection").
+  const ownNamed = named.filter(isOwn);
+  if (ownNamed.length > 0) return ownNamed[ownNamed.length - 1];
+  if (named.length > 0) return named[named.length - 1];
+  const own = ancestors.filter(isOwn);
   return own.length > 0 ? own[own.length - 1] : null;
 }
 
-/** The first ebook file under the folder a client reported for a collection (null when it reported none, or the folder has none). */
+/** The first ebook file under the folder a client reported for a collection, or the one its archive was unpacked into (null when it reported none, or the folder has none). */
 function anyBookFileIn(downloadPath: string | null | undefined, extensions: string[], releaseTitle: string): string | null {
-  if (!downloadPath || !isDirectory(downloadPath)) return null;
-  const files = withoutSamples(walk(downloadPath, extensions.filter((ext) => ext !== ".m4b"), 6), downloadPath, releaseTitle).sort();
+  const folder = downloadPath ? collectionFolderOf(downloadPath) : null;
+  if (!folder) return null;
+  const files = withoutSamples(walk(folder, extensions.filter((ext) => ext !== ".m4b"), 6), folder, releaseTitle).sort();
   return files[0] ?? null;
 }
 
@@ -3333,7 +3396,12 @@ export interface BookCollectionImport {
  * (bookCollectionImport.ts) and a book the grab was for is placed as any single book download is (placeFile: naming, root
  * folder, replaced file recycled, a worse format never put over a better one). A file that is no book of the author's, or
  * fits more than one, or is a book that was not wanted, stays in the download. Of several formats of a book the best is
- * placed. With `onlyFile` just that file is imported (a manual import of one file the admin picked).
+ * placed. With `onlyFile` just that file is imported (a manual import of one file the admin picked); with `trustFolder` the
+ * admin picked a file to say the folder is the download's own (a torrent folder is often not named like its release), and
+ * everything matched in it is imported.
+ *
+ * The books are put in quietly: the caller sends one notification (and one media-server refresh) for the collection
+ * (notifyCollectionImported), except for a single file picked by hand, which is told of as any one file is.
  */
 export async function placeBookCollectionFiles(params: {
   itemId: number;
@@ -3346,8 +3414,9 @@ export async function placeBookCollectionFiles(params: {
   /** The checks of an automatic import (a program or script in the folder); a manual import passes none. */
   verify?: DownloadContext;
   onlyFile?: string;
+  trustFolder?: boolean;
 }): Promise<BookCollectionImport> {
-  const { itemId, targetSubItemIds, releaseDir, quality, releaseTitle, category, refuseDowngrade, verify, onlyFile } = params;
+  const { itemId, targetSubItemIds, releaseDir, quality, releaseTitle, category, refuseDowngrade, verify, onlyFile, trustFolder } = params;
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
   const item = mediaItemFromRow(mediaRow);
@@ -3356,9 +3425,10 @@ export async function placeBookCollectionFiles(params: {
   // files would be filed as this one's. A torrent's folder is often not named like its release, so the admin's own choice of a
   // file in it settles that.
   const categoryFolder = category?.trim().toLowerCase().split(/[\\/]/).filter(Boolean).pop() || null;
-  const sharedByName = onlyFile
-    ? path.resolve(releaseDir) === path.resolve(config.downloadsDir) || (!!categoryFolder && path.basename(releaseDir).toLowerCase() === categoryFolder)
-    : !isOwnReleaseFolder(releaseDir, ctx);
+  const sharedByName =
+    onlyFile || trustFolder
+      ? path.resolve(releaseDir) === path.resolve(config.downloadsDir) || (!!categoryFolder && path.basename(releaseDir).toLowerCase() === categoryFolder)
+      : !isOwnReleaseFolder(releaseDir, ctx);
   if (sharedByName) {
     throw new ImportSkippedError(`"${releaseDir}" is shared with other downloads, so the books of "${releaseTitle ?? "the collection"}" cannot be told apart in it — left for a manual import`);
   }
@@ -3429,7 +3499,9 @@ export async function placeBookCollectionFiles(params: {
     // A book that was not wanted stays in the download: it may be in the library already, or deliberately not monitored.
     if (!book.target) continue;
     try {
-      const placed = await placeFile({ itemId, episodeId: null, subItemId: bookId, sourceFile: chosen.path, quality, batchClaims: claims, verify, releaseTitle, refuseDowngrade });
+      // One notification (and one media-server refresh) for the whole collection, not one per book: a 300-book collection and a
+      // webhook that does not answer would hold the import lane for hours. A single file picked by hand is told of as any file is.
+      const placed = await placeFile({ itemId, episodeId: null, subItemId: bookId, sourceFile: chosen.path, quality, batchClaims: claims, verify, releaseTitle, refuseDowngrade, quiet: !onlyFile });
       result.imported.push({ subItemId: bookId, title: book.title, file: placed.destPath });
       settledFiles.add(chosen.path);
       for (const other of others) settledFiles.add(other.path);
@@ -3443,7 +3515,11 @@ export async function placeBookCollectionFiles(params: {
     const match = matches.get(file.path);
     if (match && match.kind !== "book") result.skipped.push({ file: `${file.name}${file.ext}`, reason: match.reason });
   }
-  result.leftBehind = walked.some((file) => !settledFiles.has(file));
+  // Anything else of the download that is not a disposable leftover counts as left behind, not only the ebook files this library
+  // imports: the client is told to delete its data when nothing is left, and a .fb2/.djvu/.azw copy, or a book that exists only in a
+  // format this library does not import, is not ours to delete.
+  const settledPaths = new Set(Array.from(settledFiles, (file) => path.resolve(file)));
+  result.leftBehind = walked.some((file) => !settledFiles.has(file)) || findNonJunkFile(root, root, settledPaths) !== null;
   // The books the grab was for that no file held; a manual import of one file says nothing of the others.
   if (!onlyFile) {
     const matchedTargets = new Set(Array.from(matches.values()).flatMap((m) => (m.kind === "book" && m.target ? [m.bookId] : [])));
@@ -3475,10 +3551,11 @@ async function settleBookCollection(params: {
   queueItem: QueueItem;
   done: BookCollectionImport;
   manual: boolean;
+  /** A manual import of the one file the admin picked (not of everything matched in its folder). */
+  singleFile: boolean;
   releaseRoot: string;
-  extensions: string[];
 }): Promise<{ parked: boolean; leftFilesBehind: boolean }> {
-  const { queueItem, done, manual, releaseRoot, extensions } = params;
+  const { queueItem, done, manual, singleFile, releaseRoot } = params;
   const settled = [...done.imported.map((book) => book.subItemId), ...done.notFound, ...done.alreadyHad];
   for (const id of settled) await db.prepare("DELETE FROM queue_targets WHERE queue_id = ? AND sub_item_id = ?").run(queueItem.id, id);
   for (const id of done.notFound) await wakeLeaf("sub_items", id);
@@ -3502,8 +3579,9 @@ async function settleBookCollection(params: {
     notifyQueueChanged();
     return { parked: true, leftFilesBehind: true };
   }
-  // The last book of a manual import: the download is whole in the library, apart from whatever files it still holds.
-  const left = manual ? withoutSamples(walk(releaseRoot, extensions, 6), releaseRoot, queueItem.title).length > 0 : done.leftBehind;
+  // The last book of a manual import of one file: the download is whole in the library, apart from whatever files it still holds
+  // (any file that is not a disposable leftover: the client deletes its data when none is left). The other imports know what they left.
+  const left = singleFile ? findNonJunkFile(releaseRoot, releaseRoot) !== null : done.leftBehind;
   return { parked: false, leftFilesBehind: left };
 }
 
@@ -4072,9 +4150,10 @@ export async function placeSeasonPackFiles(params: {
  * `manualSourceFile`, when given, skips the automatic `findDownloadedFile` fuzzy match entirely and
  * uses that exact path instead — the manual-import path (Activity page) for a file the automatic
  * matcher couldn't find or picked wrong; it's the admin's own explicit choice at that point, so no
- * confidence threshold applies the way it does for the automatic match.
+ * confidence threshold applies the way it does for the automatic match. For a collection of books, `importAll` makes that pick
+ * stand for its whole folder: every book of the download that matches is imported, not just the picked file.
  */
-export async function importQueueItem(queueItemId: number, manualSourceFile?: string, overrideQuality?: string): Promise<void> {
+export async function importQueueItem(queueItemId: number, manualSourceFile?: string, overrideQuality?: string, importAll = false): Promise<void> {
   const row = (await db.prepare("SELECT * FROM queue WHERE id = ?").get(queueItemId)) as any;
   const historyFacts = row ? queueHistoryFields(queueItemFromRow(row)) : {};
   return importHistoryContext.run(historyFacts, async () => {
@@ -4083,13 +4162,13 @@ export async function importQueueItem(queueItemId: number, manualSourceFile?: st
       const client = row?.download_client_id
         ? ((await db.prepare("SELECT type FROM download_clients WHERE id = ?").get(row.download_client_id)) as { type: string } | undefined)
         : undefined;
-      return withImportStrategy(autoStrategyFor(row?.protocol, client?.type), () => importQueueItemWithStrategy(queueItemId, manualSourceFile, overrideQuality));
+      return withImportStrategy(autoStrategyFor(row?.protocol, client?.type), () => importQueueItemWithStrategy(queueItemId, manualSourceFile, overrideQuality, importAll));
     }
-    return importQueueItemWithStrategy(queueItemId, manualSourceFile, overrideQuality);
+    return importQueueItemWithStrategy(queueItemId, manualSourceFile, overrideQuality, importAll);
   });
 }
 
-async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile?: string, overrideQuality?: string): Promise<void> {
+async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile?: string, overrideQuality?: string, importAll = false): Promise<void> {
   const queueRow = await db.prepare("SELECT * FROM queue WHERE id = ?").get(queueItemId);
   if (!queueRow) throw new Error(`Queue item ${queueItemId} not found`);
   const queueItem = queueItemFromRow(queueRow);
@@ -4358,8 +4437,9 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
   } else if (collectionTargets.length > 0) {
     const releaseRoot = collectionRootOf(sourceFile, queueItem.downloadPath, queueItem.title, ctx.category);
     if (!releaseRoot) {
-      // A client that reports one file for it has downloaded an omnibus, not a collection: the release was not what it said.
-      if (!manualSourceFile && queueItem.downloadPath && fs.existsSync(queueItem.downloadPath) && !isDirectory(queueItem.downloadPath)) {
+      // A client that reports one book file for it has downloaded an omnibus, not a collection: the release was not what it said.
+      // (An archive is not that: it is unpacked into a folder, which collectionRootOf takes as the download's.)
+      if (!manualSourceFile && queueItem.downloadPath && fs.existsSync(queueItem.downloadPath) && !isDirectory(queueItem.downloadPath) && !isArchiveFile(queueItem.downloadPath)) {
         throw new ReleaseFaultError(`"${queueItem.title}" downloaded as a single file, not as a collection of books`);
       }
       throw new ImportSkippedError(`Cannot tell which folder holds the collection "${queueItem.title}" — left for a manual import`);
@@ -4373,11 +4453,21 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
       category: ctx.category,
       refuseDowngrade: automatic,
       verify,
-      // A file the admin picked stands for its own book: just that file is imported, from the folder it is in.
-      ...(manualSourceFile ? { onlyFile: sourceFile } : {}),
+      // A file the admin picked stands for its own book: just that file is imported, from the folder it is in; or, when they
+      // asked for everything in the folder, the pick only says the folder is the download's own.
+      ...(manualSourceFile ? (importAll ? { trustFolder: true } : { onlyFile: sourceFile }) : {}),
     });
     releaseDir = releaseRoot;
-    const settled = await settleBookCollection({ queueItem, done, manual: !!manualSourceFile, releaseRoot, extensions: typeConfig.extensions.filter((ext) => ext !== ".m4b") });
+    // One notification for the books that went in, whether the row is then settled, parked or refused (a single file picked by hand
+    // was told of as the one file it is).
+    const singleFile = !!manualSourceFile && !importAll;
+    let settled: Awaited<ReturnType<typeof settleBookCollection>>;
+    try {
+      settled = await settleBookCollection({ queueItem, done, manual: !!manualSourceFile, singleFile, releaseRoot });
+    } finally {
+      // Best effort: telling of the import must not hide why the row could not be settled.
+      if (!singleFile) await notifyCollectionImported(item, collectionTargets, done).catch((err) => log.warn("[importer] the collection's notification failed:", (err as Error).message));
+    }
     if (settled.parked) return;
     leftFilesBehind = settled.leftFilesBehind;
   } else if (shape === "collection" && typeConfig.multiFilePerChild && queueItem.subItemId) {
@@ -4642,7 +4732,7 @@ const RELEASE_JUNK_NAMES = new Set(["thumbs.db", ".ds_store", "desktop.ini"]);
 /** First file under `dir` that isn't a release's disposable leftover (a sample, .nfo, subtitle,
  * artwork, checksum), or null when only such leftovers remain. Anything else — another download's
  * media, an archive, a file still being written — keeps the folder. */
-function findNonJunkFile(dir: string, root: string): string | null {
+function findNonJunkFile(dir: string, root: string, except?: ReadonlySet<string>): string | null {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -4652,11 +4742,13 @@ function findNonJunkFile(dir: string, root: string): string | null {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      const nested = findNonJunkFile(full, root);
+      const nested = findNonJunkFile(full, root, except);
       if (nested) return nested;
       continue;
     }
     if (!entry.isFile()) return full;
+    // Files the caller has settled (placed, or another format of a book that was): they stay after a copy or a link import.
+    if (except?.has(path.resolve(full))) continue;
     if (RELEASE_JUNK_NAMES.has(entry.name.toLowerCase())) continue;
     if (isSamplePath(full, root)) continue;
     if (RELEASE_JUNK_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;

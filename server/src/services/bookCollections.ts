@@ -230,6 +230,10 @@ export function coverageOf(parsed: NonNullable<ParsedRelease["collection"]>, hin
   if (from !== undefined && from < 1000) {
     const placed = pool.filter((book) => bookSeriesOf(book).position != null);
     if (placed.length > 0) {
+      // "Books 1-12" with no series named, for an author whose positioned books are in several series, is every series' first twelve:
+      // the covered set (and the share it is judged by) would be books the release does not hold.
+      const seriesOfPlaced = new Set(placed.map((book) => wordsOf(bookSeriesOf(book).name ?? "", NAME_NOISE).join(" ")));
+      if (!hintMatched && seriesOfPlaced.size > 1) problem = problem ?? `It numbers the books ${from}${to !== undefined ? `-${to}` : ""}, and the range does not say which series (this author's numbered books are in ${seriesOfPlaced.size})`;
       pool = placed.filter((book) => {
         const position = bookSeriesOf(book).position!;
         return position >= from && position <= (to ?? from);

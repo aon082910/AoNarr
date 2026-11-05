@@ -521,7 +521,7 @@ activityRouter.get(
 
 /** Imports a queue item using an explicit file path the admin picked, bypassing the automatic
  * fuzzy title match entirely — the escape hatch for when it can't find or misidentifies the file
- * on its own. */
+ * on its own. For a collection of books, `importAll: true` imports everything matched in the file's folder. */
 activityRouter.post(
   "/queue/:id/manual-import",
   asyncHandler(async (req, res) => {
@@ -544,7 +544,10 @@ activityRouter.post(
       }
       return;
     }
-    await runAdminImport(queueId, () => withImportStrategy(mode, () => importQueueItem(queueId, sourceFile, overrideQuality)), true);
+    // `importAll`: for a collection of books, the file picked stands for its whole folder, and every book of it that matches is
+    // imported, not just the one file (a torrent's folder is often not named like its release, so the pick is what trusts it).
+    const importAll = req.body?.importAll === true;
+    await runAdminImport(queueId, () => withImportStrategy(mode, () => (importAll ? importQueueItem(queueId, sourceFile, overrideQuality, true) : importQueueItem(queueId, sourceFile, overrideQuality))), true);
     res.json({ ok: true });
   })
 );
