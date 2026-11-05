@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterEach, afterAll } from "vitest";
 import http from "node:http";
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 import { setupTestDb } from "./helpers/testDb.js";
+import { plantUndecryptableProxy } from "./helpers/undecryptableSetting.js";
 
 let applySocksProxySetting: (typeof import("../src/services/socksProxy.js"))["applySocksProxySetting"];
 let proxyBlockedReason: (typeof import("../src/services/socksProxy.js"))["proxyBlockedReason"];
@@ -100,9 +101,8 @@ describe("a proxy that is set but unusable fails closed (round 30d)", () => {
 
 describe("a stored proxy address that cannot be decrypted (round 30d)", () => {
   it("is told apart from no proxy at all", async () => {
-    const { loadSettingsCache, isSettingUndecryptable } = await import("../src/services/settingsStore.js");
-    await db.prepare("INSERT INTO settings (key, value) VALUES ('socks5ProxyUrl', 'enc1:AAAAAAAAAAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAAAAAAAA==:AAAA') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
-    await loadSettingsCache();
+    const { isSettingUndecryptable } = await import("../src/services/settingsStore.js");
+    await plantUndecryptableProxy(db);
 
     expect(isSettingUndecryptable("socks5ProxyUrl")).toBe(true);
     applySocksProxySetting();

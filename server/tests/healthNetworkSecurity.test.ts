@@ -3,6 +3,7 @@ import request from "supertest";
 import type { Express } from "express";
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 import { setupTestDb } from "./helpers/testDb.js";
+import { plantUndecryptableProxy } from "./helpers/undecryptableSetting.js";
 
 let app: Express;
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
@@ -10,14 +11,13 @@ let networkSecurityIssues: (typeof import("../src/services/healthReport.js"))["n
 let applySocksProxySetting: (typeof import("../src/services/socksProxy.js"))["applySocksProxySetting"];
 let verifyOutboundDispatcher: (typeof import("../src/services/socksProxy.js"))["verifyOutboundDispatcher"];
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
-let loadSettingsCache: (typeof import("../src/services/settingsStore.js"))["loadSettingsCache"];
 let originalDispatcher: unknown;
 
 beforeAll(async () => {
   ({ app, db } = await setupTestDb());
   ({ networkSecurityIssues } = await import("../src/services/healthReport.js"));
   ({ applySocksProxySetting, verifyOutboundDispatcher } = await import("../src/services/socksProxy.js"));
-  ({ setSetting, loadSettingsCache } = await import("../src/services/settingsStore.js"));
+  ({ setSetting } = await import("../src/services/settingsStore.js"));
   originalDispatcher = getGlobalDispatcher();
 });
 
@@ -39,8 +39,7 @@ describe("Health: the outbound proxy (round 30d)", () => {
   });
 
   it("reports a stored proxy address that could not be decrypted as an error, and stops once it is cleared", async () => {
-    await db.prepare("INSERT INTO settings (key, value) VALUES ('socks5ProxyUrl', 'enc1:AAAAAAAAAAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAAAAAAAA==:AAAA') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
-    await loadSettingsCache();
+    await plantUndecryptableProxy(db);
     applySocksProxySetting();
 
     const issues = await networkSecurityIssues();
