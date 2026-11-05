@@ -13,6 +13,7 @@ export const SETTING_KEY_LIST: readonly string[] = [
   "debridCleanup",
   "deletedFilePendingUnmonitor",
   "discographyGrabs",
+  "collectionGrabs",
   "redownloadFailedInteractive",
   "ntfyServerUrl",
   "ntfyTopic",

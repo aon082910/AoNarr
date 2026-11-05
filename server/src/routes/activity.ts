@@ -13,6 +13,7 @@ import { addToBlocklist } from "../services/blocklist.js";
 import { notifyQueueChanged, registerQueueStreamClient, unregisterQueueStreamClient } from "../services/realtime.js";
 import { DISCOGRAPHY_SEARCH_KEY, loadDelayProfiles, markQueueImportFailed, markQueueImportStarted, pickDelayProfile, queueClientNote, tagIdsForMediaItem } from "../services/scheduler.js";
 import { queueTargetIds } from "../services/discography.js";
+import { COLLECTION_SEARCH_KEY } from "../services/bookCollections.js";
 import { delayMinutesFor } from "../services/delayHold.js";
 import { forgetPending, loadPending, PENDING_MAX_AGE_DAYS, removePending } from "../services/pendingStore.js";
 import { parseReleaseTitle } from "../services/releaseParser.js";
@@ -71,7 +72,7 @@ activityRouter.get(
     // id breaks added_at ties (one-second resolution, so a bulk search adds many rows per second):
     // Postgres orders tied rows differently from one page request to the next.
     const rows = await db.prepare("SELECT * FROM queue ORDER BY added_at DESC, id DESC LIMIT ? OFFSET ?").all(limit, offset);
-    // The albums a queued discography is for, by queue row.
+    // The albums a queued discography (or the books a queued collection) is for, by queue row.
     const ids = rows.map((row) => Number((row as { id: number }).id));
     const albumsByQueue = new Map<number, { id: number; title: string }[]>();
     if (ids.length > 0) {
@@ -82,13 +83,16 @@ activityRouter.get(
         .all(...ids)) as { queue_id: number; id: number; title: string }[];
       for (const link of links) albumsByQueue.set(Number(link.queue_id), [...(albumsByQueue.get(Number(link.queue_id)) ?? []), { id: Number(link.id), title: link.title }]);
     }
+    // What those children are called: books for an author's collection, albums otherwise.
+    const typeById = albumsByQueue.size > 0 ? await rowsById<{ id: number; type: string }>("media_items", "id, type", "id", rows.filter((row) => albumsByQueue.has(Number((row as { id: number }).id))).map((row) => Number((row as { media_item_id: number }).media_item_id))) : new Map<number, { id: number; type: string }>();
     // clientNote: what the download client says beyond the progress (paused, waiting its turn, or a warning
     // such as a full download folder), when it says anything.
     res.json({
       items: rows.map((row) => {
         const queueId = Number((row as { id: number }).id);
         const albums = albumsByQueue.get(queueId);
-        return { ...queueItemFromRow(row), clientNote: queueClientNote(queueId), ...(albums ? { albums } : {}) };
+        const targetKind = albums && typeById.get(Number((row as { media_item_id: number }).media_item_id))?.type === "author" ? "book" : "album";
+        return { ...queueItemFromRow(row), clientNote: queueClientNote(queueId), ...(albums ? { albums, targetKind } : {}) };
       }),
       total: Number(total),
     });
@@ -382,6 +386,7 @@ activityRouter.delete(
           else if (discographyTargets.length > 0) {
             for (const id of discographyTargets) await wakeLeaf("sub_items", id);
             await wakeSeason(Number(queueRow.media_item_id), DISCOGRAPHY_SEARCH_KEY);
+            await wakeSeason(Number(queueRow.media_item_id), COLLECTION_SEARCH_KEY);
           }
           else if (queueRow.season_number != null) await wakeSeason(Number(queueRow.media_item_id), Number(queueRow.season_number));
           else await wakeLeaf("media_items", Number(queueRow.media_item_id));

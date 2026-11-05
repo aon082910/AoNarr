@@ -17,7 +17,7 @@ import { audioTagInfoFor, getAudioTagSettings, resolveCover } from "./audioRetag
 import { modeTagsOnImport, type CoverImage, type WriteAudioTagsOptions } from "./audioTagCommon.js";
 import { IMPORT_TAG_LIMITS, lockAudioFiles, runWithin } from "./audioFileLock.js";
 import { notifyQueueChanged } from "./realtime.js";
-import { isDiscographyTitle, parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
+import { isCollectionTitle, isDiscographyTitle, parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityKey, identityModeFor, releaseIdentifiesTarget, type IdentityTarget } from "./releaseIdentity.js";
 import { identityTargetFor } from "./releaseAliases.js";
 import type { ParsedRelease, SceneIndex } from "./releaseParser.js";
@@ -68,7 +68,9 @@ import { discographyAlbumsOf, queueTargetIds } from "./discography.js";
 import { matchAlbumFolders } from "./discographyMatch.js";
 import { addToBlocklist } from "./blocklist.js";
 import { wakeLeaf } from "./searchBackoff.js";
-import type { MediaType } from "../types/index.js";
+import { chooseFilePerBook, matchBookFiles, type BookFile } from "./bookCollectionImport.js";
+import { COLLECTION_ITEM_TYPES } from "./bookCollections.js";
+import type { MediaType, QueueItem } from "../types/index.js";
 
 // Shared across every "single"/"episodic" video library (Movies, TV Shows, Anime) so a just-moved
 // file can be recognized as subtitle-eligible without hardcoding a type list.
@@ -2519,6 +2521,10 @@ export async function previewQueueManualImport(queueItemId: number, sourceFile: 
       : "The albums this download holds are filed when it is imported; where they go is decided then";
     return preview;
   }
+  if (COLLECTION_ITEM_TYPES.has(item.type) && !queueItem.subItemId && !queueItem.episodeId && (await queueTargetIds(queueItem.id)).length > 0) {
+    preview.note = "The books this download holds are filed when it is imported; where they go is decided then";
+    return preview;
+  }
   if (shape === "episodic" && queueItem.seasonNumber != null && !queueItem.episodeId) {
     preview.note = "The files of the season are filed when it is imported; where they go is decided then";
     return preview;
@@ -3207,6 +3213,215 @@ export async function placeDiscographyFiles(params: {
   return result;
 }
 
+/**
+ * The folder that is the whole collection download of an author's books: the one the client reported, or, with none reported,
+ * the nearest folder above the file named for the release. Null when neither can be told (the books of a folder shared with
+ * other downloads cannot be told apart from theirs). (discographyRootOf's counterpart; a collection word names the folder.)
+ */
+function collectionRootOf(sourceFile: string, downloadPath: string | null | undefined, releaseTitle: string, category: string | null | undefined): string | null {
+  const file = path.resolve(sourceFile);
+  if (downloadPath) {
+    const reported = path.resolve(downloadPath);
+    if (file.startsWith(reported + path.sep) && isDirectory(reported)) return reported;
+    return null;
+  }
+  const downloads = path.resolve(config.downloadsDir);
+  const ancestors: string[] = [];
+  for (let dir = path.dirname(file); dir !== downloads && dir.startsWith(downloads + path.sep); dir = path.dirname(dir)) ancestors.push(dir);
+  const named = ancestors.find((dir) => isCollectionTitle(path.basename(dir)));
+  if (named) return named;
+  const own = ancestors.filter((dir) => isOwnReleaseFolder(dir, { releaseTitle, category }) && !isSharedDownloadFolder(dir, releaseTitle));
+  return own.length > 0 ? own[own.length - 1] : null;
+}
+
+export interface BookCollectionImport {
+  imported: { subItemId: number; title: string; file: string }[];
+  /** Books the grab was for that no file of the release was matched to. */
+  notFound: number[];
+  /** Books a file was found for and could not be placed, and why. */
+  failed: { subItemId: number; title: string; reason: string }[];
+  /** Books the grab was for that have their files by now, and were left as they are. */
+  alreadyHad: number[];
+  /** Files and books left unplaced, and why. */
+  skipped: { file: string; reason: string }[];
+  /** Whether a book file of the download is still where it was (a file not imported, a book not wanted). */
+  leftBehind: boolean;
+}
+
+/**
+ * Imports a downloaded collection of an author's books: each ebook file is told which book it is by its name
+ * (bookCollectionImport.ts) and a book the grab was for is placed as any single book download is (placeFile: naming, root
+ * folder, replaced file recycled, a worse format never put over a better one). A file that is no book of the author's, or
+ * fits more than one, or is a book that was not wanted, stays in the download. Of several formats of a book the best is
+ * placed. With `onlyFile` just that file is imported (a manual import of one file the admin picked).
+ */
+export async function placeBookCollectionFiles(params: {
+  itemId: number;
+  targetSubItemIds: number[];
+  releaseDir: string;
+  quality: string | null;
+  releaseTitle?: string;
+  category?: string | null;
+  refuseDowngrade?: boolean;
+  /** The checks of an automatic import (a program or script in the folder); a manual import passes none. */
+  verify?: DownloadContext;
+  onlyFile?: string;
+}): Promise<BookCollectionImport> {
+  const { itemId, targetSubItemIds, releaseDir, quality, releaseTitle, category, refuseDowngrade, verify, onlyFile } = params;
+  const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
+  if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
+  const item = mediaItemFromRow(mediaRow);
+  const ctx: DownloadContext = { releaseTitle, downloadPath: releaseDir, category };
+  // Books are taken from a folder that is this download's alone; in a folder shared with other downloads another author's
+  // files would be filed as this one's. A torrent's folder is often not named like its release, so the admin's own choice of a
+  // file in it settles that.
+  const categoryFolder = category?.trim().toLowerCase().split(/[\\/]/).filter(Boolean).pop() || null;
+  const sharedByName = onlyFile
+    ? path.resolve(releaseDir) === path.resolve(config.downloadsDir) || (!!categoryFolder && path.basename(releaseDir).toLowerCase() === categoryFolder)
+    : !isOwnReleaseFolder(releaseDir, ctx);
+  if (sharedByName) {
+    throw new ImportSkippedError(`"${releaseDir}" is shared with other downloads, so the books of "${releaseTitle ?? "the collection"}" cannot be told apart in it — left for a manual import`);
+  }
+
+  // Ebooks only: an audiobook file in an ebook collection is not a book this library files.
+  const extensions = getMediaTypeConfig(item.type).extensions.filter((ext) => ext !== ".m4b");
+  const walked = withoutSamples(walk(releaseDir, extensions, 6), releaseDir, releaseTitle);
+  const root = path.resolve(releaseDir);
+  const files: BookFile[] = walked.map((file) => {
+    let size = 0;
+    try {
+      size = fs.statSync(file).size;
+    } catch {
+      // gone while walking: it is matched on its name and fails when placed
+    }
+    return {
+      path: file,
+      name: path.basename(file, path.extname(file)),
+      ext: path.extname(file),
+      size,
+      folder: path.resolve(path.dirname(file)) === root ? null : path.basename(path.dirname(file)),
+    };
+  });
+  const bookRows = (await db.prepare("SELECT id, title, series_name, series_position, has_file FROM sub_items WHERE media_item_id = ?").all(itemId)) as {
+    id: number;
+    title: string;
+    series_name: string | null;
+    series_position: number | string | null;
+    has_file: number | boolean | null;
+  }[];
+  const hasFileNow = new Set(bookRows.filter((row) => !!Number(row.has_file)).map((row) => Number(row.id)));
+  // A book that gained its file while the collection downloaded is no longer wanted from it (unless the admin picked the file):
+  // replacing it is a decision for the admin.
+  const books = bookRows.map((row) => ({
+    id: Number(row.id),
+    title: row.title,
+    seriesName: row.series_name,
+    seriesPosition: row.series_position == null ? null : Number(row.series_position),
+    target: targetSubItemIds.includes(Number(row.id)) && (!hasFileNow.has(Number(row.id)) || !!onlyFile),
+  }));
+  const matches = matchBookFiles(files, item.title, books);
+
+  const picked = onlyFile ? files.find((file) => path.resolve(file.path) === path.resolve(onlyFile)) : undefined;
+  if (onlyFile && !picked) {
+    throw new ImportSkippedError(`"${path.basename(onlyFile)}" is not a book file this library can import from a collection`);
+  }
+  if (picked) {
+    // The admin's pick, when its name says no book: with one book left to import it can only be that one.
+    const open = targetSubItemIds.filter((id) => !hasFileNow.has(id));
+    if (matches.get(picked.path)?.kind !== "book" && open.length === 1) matches.set(picked.path, { kind: "book", bookId: open[0], target: true });
+  }
+
+  const result: BookCollectionImport = {
+    imported: [],
+    notFound: [],
+    failed: [],
+    alreadyHad: onlyFile ? [] : targetSubItemIds.filter((id) => hasFileNow.has(id)),
+    skipped: [],
+    leftBehind: false,
+  };
+  const candidates = picked ? [picked] : files;
+  const chosenPerBook = chooseFilePerBook(candidates, matches);
+  const claims = new Set<string>();
+  /** Files that are placed, or another format of a book that was: they no longer count as left in the download. */
+  const settledFiles = new Set<string>();
+  for (const [bookId, { chosen, others }] of chosenPerBook) {
+    const book = books.find((b) => b.id === bookId)!;
+    // A book that was not wanted stays in the download: it may be in the library already, or deliberately not monitored.
+    if (!book.target) continue;
+    try {
+      const placed = await placeFile({ itemId, episodeId: null, subItemId: bookId, sourceFile: chosen.path, quality, batchClaims: claims, verify, releaseTitle, refuseDowngrade });
+      result.imported.push({ subItemId: bookId, title: book.title, file: placed.destPath });
+      settledFiles.add(chosen.path);
+      for (const other of others) settledFiles.add(other.path);
+    } catch (err) {
+      const reason = (err as Error).message;
+      result.skipped.push({ file: `${chosen.name}${chosen.ext}`, reason: `"${book.title}": ${reason}` });
+      result.failed.push({ subItemId: bookId, title: book.title, reason });
+    }
+  }
+  for (const file of candidates) {
+    const match = matches.get(file.path);
+    if (match && match.kind !== "book") result.skipped.push({ file: `${file.name}${file.ext}`, reason: match.reason });
+  }
+  result.leftBehind = walked.some((file) => !settledFiles.has(file));
+  // The books the grab was for that no file held; a manual import of one file says nothing of the others.
+  if (!onlyFile) {
+    const matchedTargets = new Set(Array.from(matches.values()).flatMap((m) => (m.kind === "book" && m.target ? [m.bookId] : [])));
+    result.notFound = targetSubItemIds.filter((id) => !matchedTargets.has(id) && !hasFileNow.has(id));
+  }
+  if (result.imported.length === 0 && result.alreadyHad.length === 0) {
+    const reasons = result.skipped.map((s) => s.reason);
+    const why = reasons.length === 0 ? "none of its files is a book that was wanted" : `${reasons.slice(0, 3).join("; ")}${reasons.length > 3 ? `; and ${reasons.length - 3} more` : ""}`;
+    throw new ImportSkippedError(`No book of "${releaseTitle ?? "the collection"}" could be imported: ${why} — left for a manual import`);
+  }
+  log.info(`[importer] imported ${result.imported.length} book(s) of "${releaseTitle ?? "a collection"}" for "${item.title}"; ${result.skipped.length} file(s) skipped, ${result.notFound.length} book(s) not in it`);
+  return result;
+}
+
+/**
+ * What an import of a collection settles on its queue row. The books it imported, or that it did not hold, or that have their
+ * files by now, no longer wait on the download. The books it did not hold are searched on their own at once; the release is
+ * not blocklisted, since it filled others (and a collection that has filled books of the author is not taken again). A book
+ * whose file was found and could not be placed keeps its link: the row stays, parked, and holds the book from the searches
+ * until the admin has seen why. Throws ImportSkippedError for an automatic import with books left; returns `parked` for a
+ * manual one (which parks the row itself), and whether the download still holds files.
+ */
+async function settleBookCollection(params: {
+  queueItem: QueueItem;
+  done: BookCollectionImport;
+  manual: boolean;
+  releaseRoot: string;
+  extensions: string[];
+}): Promise<{ parked: boolean; leftFilesBehind: boolean }> {
+  const { queueItem, done, manual, releaseRoot, extensions } = params;
+  const settled = [...done.imported.map((book) => book.subItemId), ...done.notFound, ...done.alreadyHad];
+  for (const id of settled) await db.prepare("DELETE FROM queue_targets WHERE queue_id = ? AND sub_item_id = ?").run(queueItem.id, id);
+  for (const id of done.notFound) await wakeLeaf("sub_items", id);
+  if (done.notFound.length > 0) {
+    log.warn(`[importer] ${done.notFound.length} book(s) were not found in "${queueItem.title}" and are searched on their own`);
+  }
+  const waiting = await queueTargetIds(queueItem.id);
+  if (waiting.length > 0) {
+    const reason =
+      done.failed.length > 0
+        ? `Imported ${done.imported.length} book(s) of "${queueItem.title}"; ${done.failed.length} could not be placed (${done.failed.map((f) => `"${f.title}": ${f.reason}`).join("; ")}) — left for a manual import`
+        : `${waiting.length} book(s) of "${queueItem.title}" are still to be imported`;
+    if (!manual) throw new ImportSkippedError(reason);
+    // A manual import of one book is done; the row keeps the rest and is parked like any import left for the admin, so that
+    // neither a restart's resume nor the week-old failed-row clean-up takes it.
+    await db
+      .prepare(
+        `UPDATE queue SET import_started_at = NULL, import_skipped_reason = ?, import_resume_state = CASE WHEN import_resume_state = 3 THEN 0 ELSE import_resume_state END, updated_at = ${nowExpr(db)} WHERE id = ?`
+      )
+      .run(reason, queueItem.id);
+    notifyQueueChanged();
+    return { parked: true, leftFilesBehind: true };
+  }
+  // The last book of a manual import: the download is whole in the library, apart from whatever files it still holds.
+  const left = manual ? withoutSamples(walk(releaseRoot, extensions, 6), releaseRoot, queueItem.title).length > 0 : done.leftBehind;
+  return { parked: false, leftFilesBehind: left };
+}
+
 // Picard's and iTunes' multi-disc naming: an unpadded disc, a separator, the track, then a space ("2-04 Song").
 const DISC_TRACK = /^([1-9]\d?)[-.](\d{2,3})(?=\.?\s)/;
 
@@ -3815,6 +4030,12 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
     // Every album it was grabbed for has since been removed or merged away: there is nothing to file it under.
     throw new ImportSkippedError(`"${queueItem.title}" was grabbed as a discography, but none of the albums it was for is left; remove it from the queue`);
   }
+  // An author's collection is the same for books: no book of its own on the row, the books it is for in queue_targets.
+  const collectionRow = COLLECTION_ITEM_TYPES.has(item.type) && !queueItem.subItemId && !queueItem.episodeId;
+  const collectionTargets = collectionRow ? await queueTargetIds(queueItem.id) : [];
+  if (collectionTargets.length === 0 && collectionRow && queueItem.seasonNumber == null && parseReleaseTitle(queueItem.title).collection) {
+    throw new ImportSkippedError(`"${queueItem.title}" was grabbed as a collection, but none of the books it was for is left; remove it from the queue`);
+  }
 
   let episodeTarget: EpisodeTarget | undefined;
   if (shape === "episodic" && queueItem.episodeId) {
@@ -4043,6 +4264,27 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
     }
     // The last album of a manual import: the download is whole in the library, apart from whatever folders it still holds.
     if (manualSourceFile) leftFilesBehind = withoutSamples(walk(releaseRoot, getMediaTypeConfig(item.type).extensions, 6), releaseRoot, queueItem.title).length > 0;
+  } else if (collectionTargets.length > 0) {
+    const releaseRoot = collectionRootOf(sourceFile, queueItem.downloadPath, queueItem.title, ctx.category);
+    if (!releaseRoot) {
+      throw new ImportSkippedError(`Cannot tell which folder holds the collection "${queueItem.title}" — left for a manual import`);
+    }
+    const done = await placeBookCollectionFiles({
+      itemId: item.id,
+      targetSubItemIds: collectionTargets,
+      releaseDir: releaseRoot,
+      quality,
+      releaseTitle: queueItem.title,
+      category: ctx.category,
+      refuseDowngrade: automatic,
+      verify,
+      // A file the admin picked stands for its own book: just that file is imported, from the folder it is in.
+      ...(manualSourceFile ? { onlyFile: sourceFile } : {}),
+    });
+    releaseDir = releaseRoot;
+    const settled = await settleBookCollection({ queueItem, done, manual: !!manualSourceFile, releaseRoot, extensions: typeConfig.extensions.filter((ext) => ext !== ".m4b") });
+    if (settled.parked) return;
+    leftFilesBehind = settled.leftFilesBehind;
   } else if (shape === "collection" && typeConfig.multiFilePerChild && queueItem.subItemId) {
     const album = await placeAlbumFiles({
       itemId: item.id,

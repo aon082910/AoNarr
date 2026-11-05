@@ -60,6 +60,18 @@ import {
   releaseNamesArtist,
   type DiscographyAlbum,
 } from "../services/discography.js";
+import {
+  analyzeCollectionName,
+  bookNamedByRelease,
+  collectionBooksOf,
+  collectionGrabsEnabled,
+  COLLECTION_ITEM_TYPES,
+  coverageOf,
+  isWantedBook,
+  judgeCollection,
+  type CollectionBook,
+} from "../services/bookCollections.js";
+import { collectionPlanFor } from "../services/searchPlan.js";
 import { availabilityRejectionDetail } from "../services/releaseAvailability.js";
 import { freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReason, freeSpaceReserveBytes } from "../services/freeSpace.js";
 import { tagIdsOfItem } from "../services/tagScope.js";
@@ -144,6 +156,8 @@ export interface AnnotatedSearchResult extends SearchResult {
   episodesCovered: number | null;
   /** For an artist's discography: how many of the artist's albums it covers, and how many of those are missing. */
   discography: { albumsCovered: number; albumsMissing: number } | null;
+  /** For an author's collection: how many of the author's books it covers, and how many of those are missing. */
+  collection: { booksCovered: number; booksMissing: number } | null;
   /** The quality's place on the ladder in the item's profile's order, for sorting by quality (-1 when it is not on it). */
   qualityRank: number;
   /** freeleech, halfleech, doubleupload and the indexer's own tags. */
@@ -283,6 +297,8 @@ searchRouter.get(
       plan = await singlePlanFor(item);
       // An artist's discography is not found by its name alone among everything else of the artist's.
       if (item.type === "artist" && discographyGrabsEnabled()) furtherPlans.push(await discographyPlanFor(item));
+      // So is an author's collection.
+      if (COLLECTION_ITEM_TYPES.has(item.type) && collectionGrabsEnabled()) furtherPlans.push(await collectionPlanFor(item));
     }
     const query = plan.query;
 
@@ -419,10 +435,30 @@ searchRouter.get(
       const missing = covered.filter((album) => isWantedAlbum(album, (date) => isNotYetReleased(date)));
       return { covered, missing, namesArtist: releaseNamesArtist(title, item.title) };
     };
+    // An author's books, for the collections among the results: what each covers and what of that is missing.
+    const authorBooks: CollectionBook[] = COLLECTION_ITEM_TYPES.has(item.type) ? await collectionBooksOf(item.id) : [];
+    const collectionOn = collectionGrabsEnabled();
+    const collectionFacts = (title: string, parsed: ReturnType<typeof parseReleaseTitle>) => {
+      if (!COLLECTION_ITEM_TYPES.has(item.type) || !parsed.collection) return null;
+      // A book that has the word in its own title ("The Complete Stories") is that book.
+      if (bookNamedByRelease(title, authorBooks)) return null;
+      const named = analyzeCollectionName(title, item.title);
+      const { covered } = coverageOf(parsed.collection, named.hint, authorBooks);
+      const missing = covered.filter((book) => isWantedBook(book, (date) => isNotYetReleased(date)));
+      return { covered, missing, namesAuthor: named.namesAuthor };
+    };
     const nameFields = (title: string) => {
       // A discography names no single album; it fits an album search when it is the artist's and covers the album.
       const parsed = parseReleaseTitle(title);
       const facts = nameTarget && subItemId ? discographyFacts(title, parsed) : null;
+      // A collection names no single book either: it fits a book's search when it is the author's and covers the book.
+      const bookFacts = nameTarget && subItemId && !facts ? collectionFacts(title, parsed) : null;
+      if (bookFacts) {
+        const covers = bookFacts.covered.some((book) => book.id === Number(subItemId));
+        const ok = collectionOn && bookFacts.namesAuthor && covers;
+        const reason = ok ? null : !collectionOn ? "Collection grabs are turned off" : !bookFacts.namesAuthor ? "It is not named for this author" : "What it spans does not include this book";
+        return { nameOk: ok, nameReason: reason };
+      }
       if (facts) {
         const covers = facts.covered.some((album) => album.id === Number(subItemId));
         const ok = discographyOn && facts.namesArtist && covers;
@@ -543,6 +579,16 @@ searchRouter.get(
           if (!judged.ok) facts.pack = judged.reason;
         }
       }
+      // So is an author's collection (services/bookCollections.ts), the minimum of missing books aside.
+      const collectionInfo = collectionFacts(r.title, parsed);
+      if (collectionInfo) {
+        if (!collectionOn) facts.pack = "Collection grabs are turned off";
+        else if (!collectionInfo.namesAuthor) facts.name = facts.name ?? "It is not named for this author";
+        else {
+          const judged = judgeCollection(r.title, item.title, authorBooks, { minWanted: 1, isUnreleased: (date) => isNotYetReleased(date), mediaType: item.type });
+          if (!judged.ok) facts.pack = judged.reason;
+        }
+      }
       facts.identity = verdict && !verdict.ok && identityEnforced ? verdict.detail : null;
       facts.quality = tiered && allowedQualities.length > 0 && !allowedQualities.includes(parsed.quality) ? `Quality "${parsed.quality}" isn't allowed by this quality profile` : null;
       if (upgradeVerdict === "no") facts.notAnUpgrade = "It isn't an upgrade over the file already on disk";
@@ -593,6 +639,7 @@ searchRouter.get(
         episodesCovered:
           packContext && packEpisodes && parsed.isFullSeason ? episodesCoveredBy(parsed, parsed.seasonNumber ?? packContext.season, packEpisodes).length : null,
         discography: discographyInfo ? { albumsCovered: discographyInfo.covered.length, albumsMissing: discographyInfo.missing.length } : null,
+        collection: collectionInfo ? { booksCovered: collectionInfo.covered.length, booksMissing: collectionInfo.missing.length } : null,
         qualityRank: tiered ? orderedRank(parsed.quality, ranking) : -1,
         flags: indexerFlagsOf(r),
         serverRank: 0,
@@ -705,7 +752,7 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
     const parsedTitle = parseReleaseTitle(b.title ?? "");
     // A discography is for every album it covers that is missing, whichever album the search was opened from: it
     // is queued for all of them, and the importer files each album's folder under its own album.
-    let discographyTargets: number[] = [];
+    let multiTargets: number[] = [];
     if (item.type === "artist" && !b.episodeId && parsedTitle.discography) {
       // An album that already has a download on its way is covered by the release but is not downloaded again.
       const albums = await discographyAlbumsOf(item.id);
@@ -728,7 +775,33 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
           if (!mayOverride("discography") && !mayOverride("season-pack")) throw new HttpError(409, `${judged.reason}. Grab it anyway to override.`, "override");
           forced = true;
         }
-        discographyTargets = judged.wanted.map((album) => album.id);
+        multiTargets = judged.wanted.map((album) => album.id);
+      }
+    }
+    // An author's collection is the same: queued for every book it covers that is missing (those already downloading are left
+    // out), and the importer files each book's file under its own book.
+    if (COLLECTION_ITEM_TYPES.has(item.type) && !b.episodeId && parsedTitle.collection) {
+      const books = await collectionBooksOf(item.id);
+      let alreadyDownloading = 0;
+      const judgedAgainst: CollectionBook[] = [];
+      for (const book of books) {
+        const queued = await isAlreadyQueued(item.id, null, book.id);
+        if (queued) alreadyDownloading++;
+        judgedAgainst.push(queued ? { ...book, monitored: false } : book);
+      }
+      const judged = judgeCollection(String(b.title), item.title, judgedAgainst, { minWanted: 1, isUnreleased: (date) => isNotYetReleased(date), mediaType: item.type });
+      // A book with the word in its own title ("The Complete Stories") is grabbed as that book.
+      if (!(!judged.ok && judged.isBook)) {
+        if (judged.wanted.length === 0) {
+          const why = judged.ok ? "It covers no book that is missing" : judged.reason;
+          throw new HttpError(400, `${why}${alreadyDownloading > 0 ? " (the books that are missing are already downloading)" : ""}, so there is nothing to grab it for`);
+        }
+        if (!judged.ok) {
+          // The list sends the code of the rejection it shows, which for a collection is the pack one.
+          if (!mayOverride("collection") && !mayOverride("season-pack")) throw new HttpError(409, `${judged.reason}. Grab it anyway to override.`, "override");
+          forced = true;
+        }
+        multiTargets = judged.wanted.map((book) => book.id);
       }
     }
     const verdict =
@@ -771,7 +844,7 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
         `SELECT id FROM queue WHERE media_item_id = ? AND title = ? AND status IN ('queued', 'downloading', 'completed')
          AND COALESCE(episode_id, 0) = ? AND COALESCE(sub_item_id, 0) = ? LIMIT 1`
       )
-      .get(item.id, releaseTitle, Number(b.episodeId) || 0, discographyTargets.length > 0 ? 0 : Number(b.subItemId) || 0);
+      .get(item.id, releaseTitle, Number(b.episodeId) || 0, multiTargets.length > 0 ? 0 : Number(b.subItemId) || 0);
     // Not overridable by `force` (that overrides rejections): a second copy of what is already on its way helps nobody.
     if (sameRelease) {
       throw new HttpError(409, `"${releaseTitle}" is already in the queue for this item.`, "duplicate");
@@ -828,12 +901,12 @@ export async function manualGrab(mediaItemId: number | string, b: Record<string,
           client,
           item,
           b.episodeId ?? null,
-          discographyTargets.length > 0 ? null : b.subItemId ?? null,
+          multiTargets.length > 0 ? null : b.subItemId ?? null,
           { result: attempt, quality: parsedTitle.quality, identity: verdict },
           0,
           seasonNumber,
           "interactive",
-          { allowCovered: true, refuseSameRelease: true, forced, ...(discographyTargets.length > 0 ? { targetSubItemIds: discographyTargets } : {}) }
+          { allowCovered: true, refuseSameRelease: true, forced, ...(multiTargets.length > 0 ? { targetSubItemIds: multiTargets } : {}) }
         );
         break;
       } catch (err) {

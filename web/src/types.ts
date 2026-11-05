@@ -380,8 +380,9 @@ export interface QueueItem {
   mediaItemId: number;
   episodeId: number | null;
   subItemId: number | null;
-  /** The albums a queued discography is for (it has no album of its own). */
+  /** The albums a queued discography is for (it has no album of its own); the books, for an author's collection (`targetKind`). */
   albums?: { id: number; title: string }[];
+  targetKind?: "album" | "book";
   seasonNumber: number | null;
   title: string;
   status: string;
@@ -545,6 +546,8 @@ export interface SearchResult {
   episodesCovered?: number | null;
   /** For an artist's discography: how many of the artist's albums it covers, and how many of those are missing. */
   discography?: { albumsCovered: number; albumsMissing: number } | null;
+  /** For an author's collection: how many of the author's books it covers, and how many of those are missing. */
+  collection?: { booksCovered: number; booksMissing: number } | null;
   /** The quality's place on the ladder; -1 when it is not on it. */
   qualityRank?: number;
   flags?: string[];

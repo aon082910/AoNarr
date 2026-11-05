@@ -3363,6 +3363,8 @@ export default function Settings() {
                   </p>
                   {choice("scanOnAdd", "Scan the disk when a title is added", "1", [["1", "On: link files that are already there (default)"], ["0", "Off"]])}
                   {choice("discographyGrabs", "Download an artist's discography", "1", [["1", "On: when two or more albums are missing, one discography fills them (default)"], ["0", "Off: albums are searched one by one"]])}
+                  {choice("collectionGrabs", "Download an author's complete collection", "1", [["1", "On: when three or more books are missing, one collection (\"Complete Works\", \"Books 1-12\") fills them (default)"], ["0", "Off: books are searched one by one"]])}
+                  {help("A collection is taken automatically only when it names the author, holds an ebook format, and would add at least three missing books that are at least 30% of the books it covers. A collection picked by hand has no minimum. Files in it are matched to your books by name; any that do not match one book stay in the download.")}
                   {choice("removeFolderOnDelete", "Delete with files also takes the title's folder", "1", [["1", "On: artwork, NFO, subtitles and extras go to the recycle bin (default)"], ["0", "Off: only the files"]])}
                   {choice("deleteEmptyFolders", "Remove folders left empty by deleting one file", "0", [["0", "Off (default)"], ["1", "On"]])}
                   {choice("fileDate", "Date imported files by", "none", [["none", "The download time (default)"], ["localAirDate", "The air date (local time)"], ["utcAirDate", "The air date (UTC)"]])}
