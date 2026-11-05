@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import request from "supertest";
+import type { Express } from "express";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -7,11 +9,24 @@ import { chooseFilePerBook, matchBookFiles, type BookFile, type MatchableBook } 
 
 const notifyImported = vi.fn();
 const notifyManualInteractionRequired = vi.fn();
-vi.mock("../src/services/notifications.js", () => ({
-  notifyImported: (...args: unknown[]) => notifyImported(...args),
-  notifyUpgraded: vi.fn(),
-  notifyManualInteractionRequired: (...args: unknown[]) => notifyManualInteractionRequired(...args),
-  notifyRenamed: vi.fn().mockResolvedValue(undefined),
+// The real notifyImported runs (it is what asks the media server to refresh), after the call is recorded.
+vi.mock("../src/services/notifications.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/notifications.js")>();
+  return {
+    notifyImported: (...args: unknown[]) => {
+      notifyImported(...args);
+      return (actual.notifyImported as (...a: unknown[]) => Promise<void>)(...args);
+    },
+    notifyUpgraded: vi.fn(),
+    notifyManualInteractionRequired: (...args: unknown[]) => notifyManualInteractionRequired(...args),
+    notifyRenamed: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
+const refreshMediaServerLibrary = vi.fn();
+vi.mock("../src/services/mediaServer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/services/mediaServer.js")>()),
+  refreshMediaServerLibrary: (...args: unknown[]) => refreshMediaServerLibrary(...args),
 }));
 
 const unpackDownloadedArchives = vi.fn();
@@ -22,7 +37,8 @@ vi.mock("../src/services/archiveExtract.js", async (importOriginal) => ({
 
 const removeQueueItemDownload = vi.fn();
 const markDownloadImported = vi.fn();
-vi.mock("../src/services/downloadClient.js", () => ({
+vi.mock("../src/services/downloadClient.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/services/downloadClient.js")>()),
   removeQueueItemDownload: (...args: unknown[]) => removeQueueItemDownload(...args),
   markDownloadImported: (...args: unknown[]) => markDownloadImported(...args),
 }));
@@ -160,6 +176,32 @@ describe("telling the files of a collection apart", () => {
     expect(several.get("/dl/release/Mort/a.epub")).toMatchObject({ kind: "unmatched" });
   });
 
+  it("takes the folder's title only for a file whose own name says nothing: a hash, a bare number, a generic word", () => {
+    const inFolder = (name: string, ext = ".epub") => bookFile(name, ext, { path: `/dl/release/Mort/${name}${ext}`, folder: "Mort" });
+    for (const name of ["book", "Book", "content", "0a1b2c3d4e5f6a7b", "01", "12345", "Terry Pratchett", "ebook"]) {
+      const file = inFolder(name);
+      expect(matchBookFiles([file], "Terry Pratchett", PRATCHETT).get(file.path), name).toMatchObject({ kind: "book", bookId: 3 });
+    }
+  });
+
+  it("leaves a file with a clear title that no book has unmatched, even in a folder named for a book", () => {
+    // "Mort/Eric.epub": Eric is another work (the library lists Mort but not Eric); filing it as Mort would mark Mort done with a book
+    // that is not his, and the wanted book would never be searched again.
+    const eric = bookFile("Eric", ".epub", { path: "/dl/release/Mort/Eric.epub", folder: "Mort" });
+    expect(matchBookFiles([eric], "Terry Pratchett", PRATCHETT).get(eric.path)).toMatchObject({ kind: "unmatched" });
+    const dune = [mb(1, "Dune", { seriesName: "Dune", seriesPosition: 1 }), mb(2, "Dune Messiah", { seriesName: "Dune", seriesPosition: 2 })];
+    const children = bookFile("Children of Dune", ".epub", { path: "/dl/release/Dune/Children of Dune.epub", folder: "Dune" });
+    expect(matchBookFiles([children], "Frank Herbert", dune).get(children.path)).toMatchObject({ kind: "unmatched" });
+    // A study guide or a companion beside the book's own file is no better.
+    const guide = bookFile("Mort - Study Guide", ".pdf", { path: "/dl/release/Mort/Mort - Study Guide.pdf", folder: "Mort" });
+    expect(matchBookFiles([guide], "Terry Pratchett", PRATCHETT).get(guide.path)).toMatchObject({ kind: "unmatched" });
+    // The file that does carry the title is still the book, and the other is still left alone beside it.
+    const own = bookFile("Mort", ".epub", { path: "/dl/release/Mort/Mort.epub", folder: "Mort" });
+    const both = matchBookFiles([own, eric], "Terry Pratchett", PRATCHETT);
+    expect(both.get(own.path)).toMatchObject({ kind: "book", bookId: 3 });
+    expect(both.get(eric.path)).toMatchObject({ kind: "unmatched" });
+  });
+
   it("prefers the file's own name to its folder's", () => {
     const result = matchBookFiles([bookFile("Mort", ".epub", { path: "/dl/release/Discworld/Mort.epub", folder: "Discworld" })], "Terry Pratchett", PRATCHETT);
     expect(result.get("/dl/release/Discworld/Mort.epub")).toMatchObject({ kind: "book", bookId: 3 });
@@ -182,6 +224,8 @@ describe("telling the files of a collection apart", () => {
 
 // ---- The import -------------------------------------------------------------------------------------------------------------------
 
+let app: Express;
+let apiKey: string;
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
 let config: (typeof import("../src/config.js"))["config"];
@@ -193,7 +237,7 @@ let libraryDir: string;
 let rootFolder: { id: number; path: string };
 
 beforeAll(async () => {
-  ({ db } = await setupTestDb());
+  ({ db, app, apiKey } = await setupTestDb());
   ({ setSetting } = await import("../src/services/settingsStore.js"));
   ({ config } = await import("../src/config.js"));
   importer = await import("../src/services/importer.js");
@@ -207,6 +251,7 @@ beforeEach(async () => {
     await db.prepare(`DELETE FROM ${t}`).run();
   }
   notifyImported.mockReset();
+  refreshMediaServerLibrary.mockReset().mockResolvedValue(undefined);
   notifyManualInteractionRequired.mockReset().mockResolvedValue(undefined);
   unpackDownloadedArchives.mockReset().mockResolvedValue({ extracted: [], failed: [] });
   removeQueueItemDownload.mockReset().mockResolvedValue(undefined);
@@ -218,6 +263,7 @@ beforeEach(async () => {
   setSetting("removeCompletedDownloads", "0");
   setSetting("setPermissionsEnabled", "0");
   setSetting("importStrategy", "move");
+  setSetting("mediaServerRefreshOnImport", "0");
   setSetting("recycleBinEnabled", "1");
   setSetting("recycleBinDir", path.join(libraryDir, ".recycle-bin"));
   const p = path.join(libraryDir, "books");
@@ -317,7 +363,8 @@ describe("importing a collection of books", () => {
     expect(fs.existsSync(unknown)).toBe(true);
     const imported = (await db.prepare("SELECT data FROM history WHERE event_type = 'imported'").all()) as any[];
     expect(imported.map((h) => JSON.parse(h.data).subItemId).sort()).toEqual([books.colour, books.fantastic, books.mort].sort());
-    expect(notifyImported).toHaveBeenCalledTimes(3);
+    // One notification for the three books, not one each.
+    expect(notifyImported).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the download in the client when files of it are left, and lets it go when only another format of an imported book is", async () => {
@@ -458,6 +505,9 @@ describe("importing a collection of books", () => {
     expect(Number(((await db.prepare("SELECT COUNT(*) AS c FROM blocklist").get()) as any).c)).toBe(0);
     expect(fs.existsSync(path.join(downloadsDir, RELEASE, "Mort.epub"))).toBe(true);
     expect(await scheduler.isAlreadyQueued(authorId, null, books.mort)).toBe(true);
+    // What did go in is still told of, once, with what is left.
+    expect(notifyImported).toHaveBeenCalledTimes(1);
+    expect(notifyImported.mock.calls[0][1]).toBe("imported 1 of 2 books, 1 left: Mort");
   });
 
   it("does not replace a book that gained a file in a better format while the collection downloaded", async () => {
@@ -654,5 +704,247 @@ describe("importing one file of a collection by hand", () => {
     const row = await bookRow(books.mort);
     expect(row.has_file).toBe(1);
     expect(path.extname(row.file_path)).toBe(".pdf");
+  });
+});
+
+const BOOK_NAMES = ["The Colour of Magic", "The Light Fantastic", "Equal Rites", "Mort", "Sourcery"];
+
+describe("a collection delivered as one archive", () => {
+  it("imports the books from the folder the archive was unpacked into", async () => {
+    const { authorId, books } = await terry();
+    // The unpacker is mocked here; what it leaves is the sibling folder named after the archive.
+    const zip = path.join(downloadsDir, `${RELEASE}.zip`);
+    fs.writeFileSync(zip, "an archive");
+    for (const name of BOOK_NAMES) writeBook(RELEASE, `${name}.epub`);
+    const queueId = await queueCollection(authorId, Object.values(books), { downloadPath: zip });
+
+    await importer.importQueueItem(queueId);
+
+    expect(await queueRow(queueId)).toBeUndefined();
+    for (const [key, id] of Object.entries(books)) expect((await bookRow(id)).has_file, key).toBe(1);
+    expect(notifyImported).toHaveBeenCalledTimes(1);
+  });
+
+  it("still fails a collection that arrives as one book file", async () => {
+    const { authorId, books } = await terry();
+    const file = writeBook("single", "Terry Pratchett - Discworld Omnibus.epub");
+    const queueId = await queueCollection(authorId, [books.mort, books.sourcery], { downloadPath: file });
+
+    await expect(importer.importQueueItem(queueId)).rejects.toBeInstanceOf(importer.ReleaseFaultError);
+  });
+
+  it("leaves an archive that was not unpacked for a manual import, and does not fail the release", async () => {
+    const { authorId, books } = await terry();
+    const zip = path.join(downloadsDir, `${RELEASE}.zip`);
+    fs.writeFileSync(zip, "an archive");
+    const queueId = await queueCollection(authorId, [books.mort, books.sourcery], { downloadPath: zip });
+
+    const outcome = await importer.importQueueItem(queueId).then(
+      () => null,
+      (err: unknown) => err
+    );
+
+    expect(outcome).toBeTruthy();
+    expect(outcome).not.toBeInstanceOf(importer.ReleaseFaultError);
+  });
+
+  it("imports a file picked by hand under the unpacked folder", async () => {
+    const { authorId, books } = await terry();
+    const zip = path.join(downloadsDir, `${RELEASE}.zip`);
+    fs.writeFileSync(zip, "an archive");
+    const mort = writeBook(RELEASE, "Mort.epub");
+    writeBook(RELEASE, "Equal Rites.epub");
+    const queueId = await queueCollection(authorId, [books.mort, books.equal], { downloadPath: zip });
+
+    await importer.importQueueItem(queueId, mort);
+
+    expect((await bookRow(books.mort)).has_file).toBe(1);
+    expect(await targetsLeft(queueId)).toEqual([books.equal]);
+  });
+});
+
+describe("when the client reported no path", () => {
+  it("takes the outermost folder named like a collection as the download's, not the nearest", async () => {
+    const { authorId, books } = await terry();
+    // Collections name their own sub-folders so as well: the nearest would hold one book of the two, and be refused as shared.
+    writeBook(RELEASE, "Discworld Collection/Mort.epub");
+    writeBook(RELEASE, "Standalone Collection/Equal Rites.epub");
+    const queueId = await queueCollection(authorId, [books.mort, books.equal], { downloadPath: null });
+
+    await importer.importQueueItem(queueId);
+
+    expect((await bookRow(books.mort)).has_file).toBe(1);
+    expect((await bookRow(books.equal)).has_file).toBe(1);
+    expect(await queueRow(queueId)).toBeUndefined();
+  });
+});
+
+describe("what is left of the download decides whether the client may delete it", () => {
+  it("keeps the client's data while a file of a format this library does not import is still there", async () => {
+    setSetting("removeCompletedDownloads", "1");
+    const { authorId, books } = await terry();
+    writeBook(RELEASE, "Mort.epub");
+    const copy = writeBook(RELEASE, "Mort.fb2");
+    const only = writeBook(RELEASE, "Equal Rites.djvu");
+    writeBook(RELEASE, "cover.jpg");
+    const queueId = await queueCollection(authorId, [books.mort]);
+
+    await importer.importQueueItem(queueId);
+
+    expect((await bookRow(books.mort)).has_file).toBe(1);
+    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+    expect(fs.existsSync(copy)).toBe(true);
+    expect(fs.existsSync(only)).toBe(true);
+  });
+
+  it("lets it go when only disposable leftovers and other formats of the imported books are", async () => {
+    setSetting("removeCompletedDownloads", "1");
+    const { authorId, books } = await terry();
+    writeBook(RELEASE, "Mort.epub");
+    writeBook(RELEASE, "Mort.mobi");
+    writeBook(RELEASE, "cover.jpg");
+    writeBook(RELEASE, "info.nfo");
+    const queueId = await queueCollection(authorId, [books.mort]);
+
+    await importer.importQueueItem(queueId);
+
+    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(true);
+  });
+
+  it("keeps it after a manual import of the last book too, while such a file is left", async () => {
+    setSetting("removeCompletedDownloads", "1");
+    const { authorId, books } = await terry();
+    const mort = writeBook(RELEASE, "Mort.epub");
+    writeBook(RELEASE, "Mort.azw");
+    const queueId = await queueCollection(authorId, [books.mort]);
+
+    await importer.importQueueItem(queueId, mort);
+
+    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+  });
+});
+
+describe("telling of an imported collection", () => {
+  it("sends one notification and asks the media server for one refresh, whatever the number of books", async () => {
+    setSetting("mediaServerRefreshOnImport", "1");
+    const { authorId, books } = await terry();
+    for (const name of BOOK_NAMES) writeBook(RELEASE, `${name}.epub`);
+    const queueId = await queueCollection(authorId, Object.values(books));
+
+    await importer.importQueueItem(queueId);
+
+    expect(notifyImported).toHaveBeenCalledTimes(1);
+    const [title, text, folder, context] = notifyImported.mock.calls[0];
+    expect(title).toBe("Terry Pratchett - Collection: 5 books");
+    expect(text).toBe("imported 5 of 5 books");
+    expect(String(folder).startsWith(rootFolder.path)).toBe(true);
+    expect(context).toMatchObject({ mediaItemId: authorId });
+    expect(refreshMediaServerLibrary).toHaveBeenCalledTimes(1);
+    expect(refreshMediaServerLibrary.mock.calls[0][0]).toBe(folder);
+    // Every book still has its history row.
+    const imported = (await db.prepare("SELECT data FROM history WHERE event_type = 'imported'").all()) as any[];
+    expect(imported).toHaveLength(5);
+  });
+
+  it("says what is left when part of it went in", async () => {
+    const { authorId, books } = await terry();
+    writeBook(RELEASE, "Mort.epub");
+    writeBook(RELEASE, "Equal Rites.epub");
+    const queueId = await queueCollection(authorId, [books.mort, books.equal, books.sourcery, books.colour]);
+
+    await importer.importQueueItem(queueId);
+
+    expect(notifyImported).toHaveBeenCalledTimes(1);
+    expect(notifyImported.mock.calls[0][0]).toBe("Terry Pratchett - Collection: 4 books");
+    expect(notifyImported.mock.calls[0][1]).toBe("imported 2 of 4 books, 2 left: The Colour of Magic, Sourcery");
+  });
+
+  it("sends nothing when no book went in, and the import fails as it did", async () => {
+    const { authorId, books } = await terry();
+    for (const name of ["Neil Gaiman - American Gods", "Neil Gaiman - Coraline", "Neil Gaiman - Stardust"]) writeBook(RELEASE, `${name}.epub`);
+    const queueId = await queueCollection(authorId, [books.mort, books.sourcery]);
+
+    await expect(importer.importQueueItem(queueId)).rejects.toThrow(/No book of .* could be imported/);
+
+    expect(notifyImported).not.toHaveBeenCalled();
+    expect(refreshMediaServerLibrary).not.toHaveBeenCalled();
+  });
+});
+
+describe("importing everything matched in the folder of the file picked", () => {
+  // A torrent's folder is often not named like its release: the automatic import refuses it, and the pick says it is the download's.
+  const FOLDER = "pratchett-stuff";
+
+  async function folderOfBooks() {
+    const { authorId, books } = await terry();
+    const mort = writeBook(FOLDER, "Mort.epub");
+    const equal = writeBook(FOLDER, "Equal Rites.epub");
+    const sourcery = writeBook(FOLDER, "Sourcery.epub");
+    const nation = writeBook(FOLDER, "Nation.epub");
+    const queueId = await queueCollection(authorId, [books.mort, books.equal, books.sourcery, books.colour], { downloadPath: path.join(downloadsDir, FOLDER) });
+    return { authorId, books, queueId, mort, equal, sourcery, nation };
+  }
+
+  it("imports just the picked file by default, and tells of that one file as before", async () => {
+    const { books, queueId, mort, equal } = await folderOfBooks();
+    await expect(importer.importQueueItem(queueId)).rejects.toThrow(/shared with other downloads/);
+
+    await importer.importQueueItem(queueId, mort);
+
+    expect((await bookRow(books.mort)).has_file).toBe(1);
+    expect((await bookRow(books.equal)).has_file).toBe(0);
+    expect(fs.existsSync(equal)).toBe(true);
+    expect(notifyImported).toHaveBeenCalledTimes(1);
+    expect(notifyImported.mock.calls[0][0]).toBe("Terry Pratchett");
+  });
+
+  it("imports every book of the folder that matches with importAll, tells of them once, and keeps what it did not take", async () => {
+    setSetting("removeCompletedDownloads", "1");
+    const { authorId, books, queueId, mort, nation } = await folderOfBooks();
+
+    await importer.importQueueItem(queueId, mort, undefined, true);
+
+    for (const key of ["mort", "equal", "sourcery"] as const) expect((await bookRow(books[key])).has_file, key).toBe(1);
+    // The one book the folder did not hold is settled and searched on its own; the file that is wanted by nobody stays.
+    expect((await bookRow(books.colour)).has_file).toBe(0);
+    expect(await queueRow(queueId)).toBeUndefined();
+    expect(fs.existsSync(nation)).toBe(true);
+    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
+    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+    expect(notifyImported).toHaveBeenCalledTimes(1);
+    expect(notifyImported.mock.calls[0][0]).toBe("Terry Pratchett - Collection: 4 books");
+    expect(notifyImported.mock.calls[0][1]).toBe("imported 3 of 4 books, 1 left: The Colour of Magic");
+    expect(Number(((await db.prepare("SELECT COUNT(*) AS c FROM blocklist WHERE media_item_id = ?").get(authorId)) as any).c)).toBe(0);
+  });
+
+  it("is asked for by the manual import route", async () => {
+    const { books, queueId, mort } = await folderOfBooks();
+    const post = (body: Record<string, unknown>) => request(app).post(`/api/activity/queue/${queueId}/manual-import`).set("X-Api-Key", apiKey).send(body);
+
+    const one = await post({ sourceFile: mort });
+    expect(one.status, JSON.stringify(one.body)).toBe(200);
+    expect((await bookRow(books.mort)).has_file).toBe(1);
+    expect((await bookRow(books.equal)).has_file).toBe(0);
+
+    const all = await post({ sourceFile: path.join(downloadsDir, FOLDER, "Equal Rites.epub"), importAll: true });
+    expect(all.status).toBe(200);
+    expect((await bookRow(books.equal)).has_file).toBe(1);
+    expect((await bookRow(books.sourcery)).has_file).toBe(1);
+  });
+
+  it("does not trust the downloads folder itself, whatever was asked", async () => {
+    const { authorId, books } = await terry();
+    const loose = path.join(config.downloadsDir, "Mort.epub");
+    fs.writeFileSync(loose, "loose");
+    try {
+      const queueId = await queueCollection(authorId, [books.mort, books.equal], { downloadPath: config.downloadsDir });
+      await expect(importer.importQueueItem(queueId, loose, undefined, true)).rejects.toThrow(/shared with other downloads/);
+      expect((await bookRow(books.mort)).has_file).toBe(0);
+    } finally {
+      fs.rmSync(loose, { force: true });
+    }
   });
 });

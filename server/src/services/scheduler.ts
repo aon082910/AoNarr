@@ -1465,8 +1465,13 @@ export async function grab(
   seasonNumber: number | null = null,
   source: GrabSource = "auto",
   /** `allowCovered`: the admin chose this release by hand, so a queued download that already covers the
-   * target does not stop it (the other checks do). */
-  options: { allowCovered?: boolean; refuseSameRelease?: boolean; forced?: boolean; targetSubItemIds?: number[] } = {}
+   * target does not stop it (the other checks do).
+   *
+   * `minOpen`, `minShare` and `judgedCovered` (with `targetSubItemIds`): the bar an automatic discography or collection was judged
+   * by. The targets were chosen before a search and some may have got a download since; what is left once those are dropped must
+   * still reach the bar, or the release (a 40-album discography, a 300-book collection) is not sent for the one or two that remain.
+   * `judgedCovered` is how many titles the release covers: `minShare` is a share of that. */
+  options: { allowCovered?: boolean; refuseSameRelease?: boolean; forced?: boolean; targetSubItemIds?: number[]; minOpen?: number; minShare?: number; judgedCovered?: number } = {}
 ): Promise<boolean> {
   return serializeForItem(mediaItem.id, async () => {
     const { result: best, quality } = chosen;
@@ -1496,6 +1501,18 @@ export async function grab(
       if (open.length === 0) {
         log.info(`[scheduler] not grabbing "${best.title}" for "${mediaItem.title}": a queued download already covers every album it is for`);
         return false;
+      }
+      if (open.length < targetSubItemIds.length) {
+        const shortOf =
+          options.minOpen !== undefined && open.length < options.minOpen
+            ? `at least ${options.minOpen}`
+            : options.minShare && options.judgedCovered && open.length < Math.ceil(options.judgedCovered * options.minShare)
+            ? `${Math.round(options.minShare * 100)}% of the ${options.judgedCovered} it covers`
+            : null;
+        if (shortOf) {
+          log.info(`[scheduler] not grabbing "${best.title}" for "${mediaItem.title}": a queued download took ${targetSubItemIds.length - open.length} of the ${targetSubItemIds.length} it was chosen for, and the ${open.length} left are under ${shortOf}`);
+          return false;
+        }
       }
       targets = open;
     } else if (!options.allowCovered && (episodeId || subItemId || seasonNumber == null) && (await isAlreadyQueued(mediaItem.id, episodeId, subItemId))) {
@@ -1594,8 +1611,9 @@ export async function grab(
       release: { title: best.title, indexer: best.indexerName, size, quality, releaseGroup: parsedBest.releaseGroup, protocol: best.protocol },
       downloadClient: { name: client.name, type: client.type, downloadId },
     };
-    // A discography is one grab for many albums: one notification that says how many, never one per album.
-    const notifiedTitle = targets.length > 0 ? `${mediaItem.title} - Discography: ${targets.length} album${targets.length === 1 ? "" : "s"}` : mediaItem.title;
+    // A discography (or an author's collection) is one grab for many albums (books): one notification that says how many, never one per child.
+    const group = COLLECTION_ITEM_TYPES.has(mediaItem.type) ? { label: "Collection", noun: "book" } : { label: "Discography", noun: "album" };
+    const notifiedTitle = targets.length > 0 ? `${mediaItem.title} - ${group.label}: ${targets.length} ${group.noun}${targets.length === 1 ? "" : "s"}` : mediaItem.title;
     if (source === "interactive") {
       void Promise.resolve()
         .then(() => notifyGrabbed(notifiedTitle, best.title, grabContext))
@@ -2964,7 +2982,13 @@ async function searchAndGrabCollection(
       (client, chosen) => {
         const verdict = judgeCollection(chosen.result.title, item.title, books, judging);
         if (verdict.wanted.length === 0) return Promise.resolve(false);
-        return grab(client, item, null, null, chosen, 0, null, "auto", { targetSubItemIds: verdict.wanted.map((book) => book.id) });
+        // The bar it was judged by holds again once the books that got a download meanwhile are dropped (see grab).
+        return grab(client, item, null, null, chosen, 0, null, "auto", {
+          targetSubItemIds: verdict.wanted.map((book) => book.id),
+          minOpen: judging.minWanted,
+          minShare: judging.minShare,
+          judgedCovered: verdict.covered.length,
+        });
       },
       { itemId: item.id, indexers: ctx.indexers }
     );
