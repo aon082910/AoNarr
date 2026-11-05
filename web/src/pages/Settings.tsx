@@ -10,6 +10,7 @@ import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import MetadataProfilesEditor from "../components/MetadataProfilesEditor.js";
 import MetadataFilesSettings from "../components/MetadataFilesSettings.js";
 import AudioTagsEditor from "../components/AudioTagsEditor.js";
+import AutoTagRules from "../components/AutoTagRules.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useBackgroundJobs } from "../context/BackgroundJobsContext.js";
 import type {
@@ -3800,10 +3801,10 @@ export default function Settings() {
           {
             key: "tags",
             label: "Tags",
-            description: "Per-tag archival retention overrides",
+            description: "Per-tag archival retention overrides and auto tagging rules",
             badge: `${tags.length} tag${tags.length === 1 ? "" : "s"}`,
             badgeOk: tags.length > 0,
-            maxWidth: 620,
+            maxWidth: 760,
             render: () => (
               <div>
                 <p style={{ color: "var(--muted)", fontSize: "0.85rem", marginTop: 0 }}>
@@ -3821,6 +3822,8 @@ export default function Settings() {
                 </form>
                 <TagsTable tags={tags} onUpdateRetention={updateTagRetention} onRemove={removeTag} />
                 {tags.length === 0 && <p className="empty">No tags yet.</p>}
+                <h3 style={{ marginTop: 28, marginBottom: 4 }}>Auto tagging</h3>
+                <AutoTagRules tags={tags} />
               </div>
             ),
           },

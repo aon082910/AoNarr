@@ -5,6 +5,7 @@ import { fetchMovieByTmdbId } from "./metadata.js";
 import { queueScanAfterAdd } from "./scanOnAdd.js";
 import { applyRootFolderDefaults } from "./rootFolderDefaults.js";
 import { notifyAdded } from "./notifications.js";
+import { evaluateRulesForItem } from "./autoTag.js";
 
 /** How long a new movie waits for TMDB before it is added without release dates. */
 const RELEASE_LOOKUP_TIMEOUT_MS = 8000;
@@ -130,6 +131,8 @@ export async function finishWantedAdd(
     }
     // The root folder's default profile, monitor choice and tags, for what the adder left empty.
     await applyRootFolderDefaults(row.id);
+    // Auto tagging rules, after the list's and the folder's own tags are in (a tag already there is never taken over).
+    await evaluateRulesForItem(row.id);
     notifyAdded(row.title, row.type, { mediaItemId: Number(row.id) }).catch(() => undefined);
 
     // A title a list or a request adds may already be on disk. The delay lets the caller put in the episodes.

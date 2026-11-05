@@ -1034,3 +1034,32 @@ CREATE TABLE IF NOT EXISTS notification_connections (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Auto tagging (Sonarr's "Auto Tagging", services/autoTag.ts): a rule gives the titles that meet its conditions its tags.
+-- Conditions are library types, genres and import lists (JSON lists; an empty one is no condition), joined by match_mode
+-- ('any' = one condition is enough, 'all' = every condition with values must hold). remove_when_unmatched takes the tags
+-- a rule added back off a title that stops matching; a tag the admin set by hand is never removed.
+CREATE TABLE IF NOT EXISTS auto_tag_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  match_mode TEXT NOT NULL DEFAULT 'any',
+  library_types TEXT,
+  genres TEXT,
+  list_ids TEXT,
+  tag_ids TEXT NOT NULL DEFAULT '[]',
+  remove_when_unmatched INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Which rule put a tag on a title, so a rule only ever removes what it added itself. A row here exists only for a tag
+-- the rule gave the title (a tag the title already had by hand is not recorded); two rules wanting one tag both get a row.
+-- media_item_tags itself is unchanged: this is a side table, and its rows go with the title, the tag or the rule.
+CREATE TABLE IF NOT EXISTS media_item_auto_tags (
+  media_item_id INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+  tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  rule_id INTEGER NOT NULL REFERENCES auto_tag_rules(id) ON DELETE CASCADE,
+  PRIMARY KEY (media_item_id, tag_id, rule_id)
+);
+CREATE INDEX IF NOT EXISTS idx_media_item_auto_tags_rule_id ON media_item_auto_tags(rule_id);

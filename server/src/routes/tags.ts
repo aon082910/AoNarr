@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { tagFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { parseTagIds } from "../services/tagScope.js";
+import { autoTagRulesUsingTag } from "../services/autoTag.js";
 
 export const tagsRouter = Router();
 tagsRouter.use(requireAdmin);
@@ -84,6 +85,8 @@ export interface TagUsage {
   downloadClients: { id: number; name: string }[];
   importLists: { id: number; name: string }[];
   rootFolders: { id: number; name: string }[];
+  /** Auto tagging rules that give the tag. */
+  autoTagRules: { id: number; name: string }[];
   /** Items carrying the tag. Only a reason to refuse when the tag also sets a retention period. */
   items: number;
   retentionDays: number | null;
@@ -133,6 +136,7 @@ export async function tagUsage(tagId: number): Promise<TagUsage> {
     downloadClients: await rowsScopedToTag("download_clients", "tag_ids", "name", tagId),
     importLists: await rowsScopedToTag("import_lists", "tag_ids", "name", tagId),
     rootFolders: await rowsScopedToTag("root_folders", "default_tag_ids", "COALESCE(name, path)", tagId),
+    autoTagRules: await autoTagRulesUsingTag(tagId),
     items: itemCount,
     retentionDays: tag?.retention_days == null ? null : Number(tag.retention_days),
   };
@@ -158,6 +162,7 @@ tagsRouter.delete(
       if (usage.downloadClients.length > 0) reasons.push(`download client(s) ${usage.downloadClients.map((p) => `"${p.name}"`).join(", ")}`);
       if (usage.importLists.length > 0) reasons.push(`import list(s) ${usage.importLists.map((p) => `"${p.name}"`).join(", ")}`);
       if (usage.rootFolders.length > 0) reasons.push(`root folder default(s) ${usage.rootFolders.map((p) => `"${p.name}"`).join(", ")}`);
+      if (usage.autoTagRules.length > 0) reasons.push(`auto tagging rule(s) ${usage.autoTagRules.map((p) => `"${p.name}"`).join(", ")}`);
       if (usage.retentionDays != null && usage.items > 0) {
         reasons.push(
           usage.retentionDays < 0

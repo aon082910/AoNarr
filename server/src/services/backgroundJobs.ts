@@ -16,7 +16,7 @@
 
 export interface BackgroundJobProgress {
   id: string;
-  kind: "scan" | "matchProviders" | "refresh" | "organize" | "move" | "retag";
+  kind: "scan" | "matchProviders" | "refresh" | "organize" | "move" | "retag" | "autoTag";
   type: string;
   label: string;
   total: number;

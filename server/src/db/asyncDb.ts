@@ -285,6 +285,7 @@ const TABLES_WITHOUT_ID = new Set([
   "indexer_status",
   "import_list_entries",
   "download_client_status",
+  "media_item_auto_tags",
 ]);
 
 function withReturningId(sql: string): string {

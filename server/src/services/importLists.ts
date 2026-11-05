@@ -22,6 +22,7 @@ import { resolveAddMonitorMode, resolveAddQualityProfileId } from "./rootFolderD
 import { applyEpisodeMonitorMode, applySubItemMonitorMode } from "./monitorModes.js";
 import { resolveMetadataProfile } from "./metadataProfiles.js";
 import { queueSearchAfterAdd } from "./searchOnAdd.js";
+import { evaluateRulesAfterListSync } from "./autoTag.js";
 
 export interface ImportListRow {
   id: number;
@@ -1006,7 +1007,11 @@ export async function syncImportList(list: ImportListRow): Promise<{ added: numb
       );
     }
     // What the list holds now is what the next sync compares with, and what other lists' clean-ups protect.
-    if (ctx.seen.size > 0) await recordListEntries(list.id, ctx.seen);
+    if (ctx.seen.size > 0) {
+      await recordListEntries(list.id, ctx.seen);
+      // Auto tagging rules that name this list: titles it holds now (also ones that were in the library already).
+      await evaluateRulesAfterListSync(list.id, ctx.seen);
+    }
     const warning = [ctx.rootFolders.skippedSummary(), ...cleanWarnings].filter(Boolean).join("; ") || null;
     await db
       .prepare(`UPDATE import_lists SET last_synced_at = ${nowExpr(db)}, last_added_count = ?, last_error = ? WHERE id = ?`)

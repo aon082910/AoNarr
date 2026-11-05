@@ -13,6 +13,7 @@ import { fetchWatchedFiles, getMediaServerConfig } from "../services/mediaServer
 import { checkRateLimit, recordFailure, recordSuccess } from "../services/rateLimiter.js";
 import { normalizeProfileLanguage } from "../services/profileLanguage.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
+import { exportAutoTagRules, importAutoTagRules } from "../services/autoTag.js";
 
 export const settingsRouter = Router();
 settingsRouter.use(requireAdmin);
@@ -213,6 +214,8 @@ settingsRouter.get(
           .filter((name): name is string => !!name),
         indexerScoped: jsonList(p.indexer_ids).length > 0,
       })),
+      // Auto tagging rules name their tags and import lists, never ids (ids differ between installs).
+      autoTagRules: await exportAutoTagRules(),
       sizeLimitMode: getSetting("sizeLimitMode") === "perMinute" ? "perMinute" : "absolute",
       qualities,
       qualityProfiles: profiles.map((p) => ({
@@ -254,7 +257,9 @@ settingsRouter.post(
       tagsImported = 0,
       delayProfilesImported = 0,
       releaseProfilesImported = 0,
-      releaseProfilesCreated = 0;
+      releaseProfilesCreated = 0,
+      autoTagRulesImported = 0;
+    const autoTagRuleNotes: string[] = [];
 
     await db.transaction(async () => {
       // qualities.rank is UNIQUE too, not just name — a quality this instance doesn't have yet
@@ -487,6 +492,11 @@ settingsRouter.post(
         }
         releaseProfilesImported++;
       }
+
+      // Auto tagging rules, matched by name; what this install cannot resolve is skipped with a note.
+      const autoTagResult = await importAutoTagRules(Array.isArray(b.autoTagRules) ? b.autoTagRules : [], (name) => tagIdByName(name, tagIds));
+      autoTagRulesImported = autoTagResult.imported;
+      autoTagRuleNotes.push(...autoTagResult.notes);
     });
     invalidateQualityRankCache();
 
@@ -500,6 +510,8 @@ settingsRouter.post(
       delayProfilesImported,
       releaseProfilesImported,
       releaseProfilesCreated,
+      autoTagRulesImported,
+      autoTagRuleNotes,
     });
   })
 );
