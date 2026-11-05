@@ -4832,6 +4832,20 @@ export function startScheduler() {
     run: (signal) => sweepStaleImportTemps(signal),
   });
 
+  // Writing the tags of music and audiobook files (audioRetag.ts): the library pass of the "all" and "sync" modes, and what the
+  // "Retag now" button of Settings -> Media Management runs. A scheduled run does nothing while the mode is none or new.
+  registerJob({
+    key: "audioRetag",
+    name: "Retag Audio Files",
+    scheduleType: "cron",
+    defaultSchedule: "45 4 * * 0",
+    heavy: true,
+    run: async (signal, info) => {
+      const { runLibraryRetag } = await import("./audioRetag.js");
+      await runLibraryRetag(signal, { manual: info?.manual === true });
+    },
+  });
+
   registerJob({
     key: "newChildrenRefresh",
     name: "Refresh New Episodes and Releases",

@@ -174,6 +174,9 @@ beforeEach(async () => {
   setSetting("removeCompletedDownloads", "0");
   setSetting("writeNfoOnImport", "0");
   setSetting("writeAudioTagsOnImport", "0");
+  setSetting("writeAudioTagsMode", "");
+  setSetting("scrubAudioTags", "");
+  setSetting("embedAudioCover", "");
   setSetting("comicImageConvertEnabled", "0");
   setSetting("setPermissionsEnabled", "0");
   setSetting("subtitleSyncEnabled", "0");
@@ -1790,6 +1793,76 @@ describe("placeAlbumFiles", () => {
 
     expect(writeAudioTags).toHaveBeenCalledTimes(1);
     expect(writeAudioTags.mock.calls[0][1]).toMatchObject({ title: "Track One", artist: "Some Artist", album: "Some Album" });
+  });
+
+  describe("write-tags modes on import", () => {
+    async function importOneTrack(): Promise<void> {
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId } = await insertArtistAlbum(folder.id);
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 1, 'Track One')").run(albumId);
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 2, 'Track Two')").run(albumId);
+      const anchor = writeDownloadFile(path.join("Album", "01 - Track One.mp3"));
+      writeDownloadFile(path.join("Album", "02 - Track Two.mp3"));
+      await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null });
+    }
+
+    it("tags what an import places in the modes new, all and sync, and nothing in none", async () => {
+      for (const [mode, expected] of [["none", 0], ["new", 2], ["all", 2], ["sync", 2]] as const) {
+        writeAudioTags.mockClear();
+        await db.prepare("DELETE FROM tracks").run();
+        await db.prepare("DELETE FROM sub_items").run();
+        await db.prepare("DELETE FROM media_items").run();
+        await db.prepare("DELETE FROM root_folders").run();
+        setSetting("writeAudioTagsMode", mode);
+        await importOneTrack();
+        expect(writeAudioTags, mode).toHaveBeenCalledTimes(expected);
+      }
+    });
+
+    it("an explicit mode wins over the old on/off flag, which means 'new' until a mode is chosen", async () => {
+      setSetting("writeAudioTagsOnImport", "1");
+      setSetting("writeAudioTagsMode", "none");
+      await importOneTrack();
+      expect(writeAudioTags).not.toHaveBeenCalled();
+    });
+
+    it("gives the writer the track's number out of the album's total, and the scrub and cover options", async () => {
+      setSetting("writeAudioTagsMode", "new");
+      setSetting("scrubAudioTags", "1");
+      await importOneTrack();
+
+      expect(writeAudioTags).toHaveBeenCalledTimes(2);
+      expect(writeAudioTags.mock.calls[1][1]).toMatchObject({ title: "Track Two", trackNumber: 2, trackTotal: 2, albumArtist: "Some Artist" });
+      expect(writeAudioTags.mock.calls[0][2]).toMatchObject({ scrub: true });
+      expect(writeAudioTags.mock.calls[0][2].cover ?? null).toBeNull();
+    });
+
+    it("embeds the cover from the album's folder, found once for the album", async () => {
+      setSetting("writeAudioTagsMode", "new");
+      setSetting("embedAudioCover", "1");
+      const folder = await insertRootFolder("artist");
+      const { artistId, albumId } = await insertArtistAlbum(folder.id);
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 1, 'Track One')").run(albumId);
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 2, 'Track Two')").run(albumId);
+      const anchor = writeDownloadFile(path.join("Album", "01 - Track One.mp3"));
+      writeDownloadFile(path.join("Album", "02 - Track Two.mp3"));
+      fs.writeFileSync(path.join(downloadsDir, "Album", "cover.jpg"), Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(16, 1)]));
+      // The cover is in the download folder the tracks came from; the library folder has none yet.
+      const result = await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: anchor, quality: null, ownFolder: true });
+      expect(result.fileCount).toBeGreaterThan(0);
+
+      const covers = writeAudioTags.mock.calls.map((c) => c[2].cover);
+      expect(covers).toHaveLength(2);
+      expect(covers[0]).toMatchObject({ mime: "image/jpeg" });
+      expect(covers[0]).toBe(covers[1]);
+    });
+
+    it("does not fail the import when the tags cannot be written", async () => {
+      setSetting("writeAudioTagsMode", "new");
+      writeAudioTags.mockResolvedValue({ outcome: "failed", reason: "ffmpeg is not available", format: "FLAC" });
+      await expect(importOneTrack()).resolves.toBeUndefined();
+      expect(writeAudioTags).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("takes only the matched file when it sits loose in the downloads root among other downloads", async () => {

@@ -1008,6 +1008,16 @@ export default function MediaDetail() {
     }
   }
 
+  /** Rewrites the tags inside this music or audiobook title's files (a tracked job: the jobs panel shows the progress and the counts). */
+  async function retagFiles() {
+    if (!item) return;
+    try {
+      await startJob("retag", `title-${item.id}`, `Retag "${item.title}"`, `/media/${item.id}/retag`);
+    } catch (err) {
+      notify.error((err as Error).message);
+    }
+  }
+
   async function checkCorrupt() {
     if (!item) return;
     const result = await api.post<{
@@ -1717,6 +1727,14 @@ export default function MediaDetail() {
                     setShowMoveFiles(true);
                   }}
                   title="Move this title's whole folder (files, artwork, NFO, subtitles, extras) to another root folder"
+                />
+              )}
+              {(item.type === "artist" || item.type === "audiobook") && !!item.hasFile && (
+                <ToolbarButton
+                  icon={<SlidersIcon />}
+                  label="Retag Files"
+                  onClick={retagFiles}
+                  title="Rewrite the tags inside this title's audio files (MP3, FLAC, M4A/M4B, OGG, Opus) to what AoNarr has; files that are already right are not touched"
                 />
               )}
               {shape === "episodic" && (

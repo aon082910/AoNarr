@@ -120,6 +120,10 @@ const RULES: Readonly<Record<string, Rule>> = {
   uiDateFormat: { oneOf: UI_DATE_FORMATS },
   uiTimeFormat: { oneOf: UI_TIME_FORMATS },
   uiRelativeDates: { oneOf: ["1", "0"] },
+  // Writing tags into music and audiobook files (audioTagCommon.ts, audioRetag.ts).
+  writeAudioTagsMode: { oneOf: ["none", "new", "all", "sync"] },
+  scrubAudioTags: { oneOf: ["1", "0"] },
+  embedAudioCover: { oneOf: ["1", "0"] },
 };
 
 /** Why the value is not acceptable for the key, or null. */

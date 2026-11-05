@@ -9,6 +9,7 @@ import NotificationConnections, { NotificationTemplates } from "../components/No
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import MetadataProfilesEditor from "../components/MetadataProfilesEditor.js";
 import MetadataFilesSettings from "../components/MetadataFilesSettings.js";
+import AudioTagsEditor from "../components/AudioTagsEditor.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useBackgroundJobs } from "../context/BackgroundJobsContext.js";
 import type {
@@ -3176,29 +3177,9 @@ export default function Settings() {
           },
           {
             key: "writeAudioTagsOnImport",
-            label: "Write Audio Tags on Import",
-            description: "Lidarr-style retagging — writes ID3 tags into imported MP3 files",
-            render: () => (
-              <div>
-                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-                  Off by default. When on, importing a track writes artist/album/title/track
-                  number/year directly into the file's ID3v2 tags, so the file carries correct
-                  metadata even opened outside AoNarr. MP3 only — FLAC/OGG/M4A files are left
-                  untouched (each needs its own tag format, not implemented here). Files imported
-                  as hardlinks or symlinks are left untagged, since changing them would alter the
-                  download client's seeding copy.
-                </p>
-                <label htmlFor="settings-write-audio-tags-on-import-59">Write audio tags on import</label>
-                <select id="settings-write-audio-tags-on-import-59"
-                  key={settings.writeAudioTagsOnImport ?? "write-audio-tags-empty"}
-                  defaultValue={settings.writeAudioTagsOnImport ?? "0"}
-                  onChange={(e) => saveSetting("writeAudioTagsOnImport", e.target.value)}
-                >
-                  <option value="0">Disabled</option>
-                  <option value="1">Enabled</option>
-                </select>
-              </div>
-            ),
+            label: "Write Audio Tags",
+            description: "Lidarr-style retagging — writes tags into music and audiobook files (MP3, FLAC, M4A/M4B, OGG, Opus)",
+            render: () => <AudioTagsEditor settings={settings} saveSetting={saveSetting} />,
           },
           {
             key: "musicAlbumTypes",

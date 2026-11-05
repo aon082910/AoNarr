@@ -28,6 +28,9 @@ import { ALIAS_STATE_KEYS, refreshProviderAliases } from "../services/aliasBackf
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { isBackgroundJobRunning } from "../services/backgroundJobs.js";
+import { getAudioTagSettings, getLastLibraryRetag, retagTitleAfterEdit, startTitleRetag } from "../services/audioRetag.js";
+import { TAGGABLE_EXTENSIONS } from "../services/audioTagCommon.js";
+import { isJobBusy, runJobNow } from "../services/jobRegistry.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
 import { CONTENT_RATING_ORDER, isRatingBlocked } from "../services/contentRatings.js";
 import {
@@ -730,6 +733,34 @@ mediaRouter.post(
   })
 );
 
+/**
+ * Rewrites the tags inside every music and audiobook file (MP3, FLAC, M4A/M4B, OGG, Opus) to what AoNarr knows, as Lidarr's
+ * "retag" does. It runs as the "Retag Audio Files" job (the Jobs page, the progress widget), one file at a time, and never
+ * touches a read-only root folder. The result of the last run is in /retag/status.
+ */
+mediaRouter.post(
+  "/retag",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const outcome = runJobNow("audioRetag");
+    if (outcome === "already-running") {
+      res.json({ started: false, reason: "already-running" });
+      return;
+    }
+    if (outcome !== "started") throw new HttpError(503, "Jobs are stopped right now (a restore or shutdown is in progress)");
+    res.json({ started: true });
+  })
+);
+
+/** The write-tags settings in force, whether a library retag is running, and the counts of the last one (this process's). */
+mediaRouter.get(
+  "/retag/status",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    res.json({ ...getAudioTagSettings(), running: isJobBusy("audioRetag"), formats: TAGGABLE_EXTENSIONS, last: getLastLibraryRetag() });
+  })
+);
+
 /** Per-item versions of the two buttons above — scoped to just this media item's own folder/title
  * instead of the whole library, same as Radarr/Sonarr's own per-item "Search"/"Refresh" actions.
  * Awaited rather than fire-and-forget: a single item is fast enough not to risk a gateway timeout,
@@ -745,6 +776,15 @@ mediaRouter.post(
     // that skips every file had nothing in the container logs pointing at why.
     logScanResult(row.type, result);
     res.json(result);
+  })
+);
+
+/** Retags this music or audiobook title's files; a tracked background job, answers at once (see POST /retag). */
+mediaRouter.post(
+  "/:id/retag",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    res.json(await startTitleRetag(Number(req.params.id)));
   })
 );
 
@@ -1841,6 +1881,8 @@ mediaRouter.patch(
       }
       refreshNfoSidecar(row, externalIds);
     }
+    // Write-tags mode "sync": the files follow the edit.
+    if (metadataFieldsChanged) retagTitleAfterEdit(Number(req.params.id), row.type);
     res.json(moveJob ? { ...mediaItemFromRow(row), moveJob } : mediaItemFromRow(row));
   })
 );
@@ -1915,6 +1957,7 @@ mediaRouter.post(
 
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     if (row.path) refreshNfoSidecar(row, b.externalIds ?? {});
+    retagTitleAfterEdit(Number(req.params.id), row.type);
     // A rematch fixes an item matched to the wrong entry, so the title it carried until now is
     // usually another work's ("Extraction 2" for "Extraction"); as an alias it would make that
     // work's releases match this item for good. It is kept only when the admin says it was one of
@@ -2550,6 +2593,12 @@ mediaRouter.post(
   })
 );
 
+/** Write-tags mode "sync": an album or book edit is followed by a retag of its title's files. */
+async function retagParentAfterEdit(mediaItemId: string): Promise<void> {
+  const parent = (await db.prepare("SELECT type FROM media_items WHERE id = ?").get(mediaItemId)) as { type: string } | undefined;
+  if (parent) retagTitleAfterEdit(Number(mediaItemId), parent.type);
+}
+
 mediaRouter.patch(
   "/:id/subitems/:subItemId",
   requireAdmin,
@@ -2601,6 +2650,8 @@ mediaRouter.patch(
       await wakeLeaf("sub_items", Number(req.params.subItemId));
     }
     if (fileCleared) await rollUpParentMissing(req.params.id);
+    // Write-tags mode "sync": an audiobook's narrator and series are in its files' tags.
+    if (b.seriesName !== undefined || b.seriesPosition !== undefined || b.narrator !== undefined) await retagParentAfterEdit(req.params.id);
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
     if (!row) throw new HttpError(404, "Sub-item not found");
     res.json(subItemFromRow(row));
@@ -2672,6 +2723,7 @@ mediaRouter.post(
 
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "subitem_rematched", `"${b.title}"`);
+    await retagParentAfterEdit(req.params.id);
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
     res.json(subItemFromRow(row));
   })

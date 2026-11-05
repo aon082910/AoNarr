@@ -13,6 +13,8 @@ import { writeEpisodeNfoSidecar, writeNfoSidecar, writeTvShowNfoIfMissing } from
 import { nfoEnabledFor } from "./metadataFileOptions.js";
 import { writeImportedAlbumFiles, writeImportedEpisodeFiles, writeImportedMovieFiles } from "./metadataFiles.js";
 import { writeAudioTags } from "./audioTagWriter.js";
+import { audioTagInfoFor, getAudioTagSettings, resolveCover } from "./audioRetag.js";
+import { modeTagsOnImport, type CoverImage } from "./audioTagCommon.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { isDiscographyTitle, parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityKey, identityModeFor, releaseIdentifiesTarget, type IdentityTarget } from "./releaseIdentity.js";
@@ -2922,6 +2924,7 @@ export async function placeAlbumFiles(params: {
   let anchorDest: string | null = null;
   const replacedPaths: (string | null)[] = [];
   const placedPaths: string[] = [];
+  let albumCover: Promise<CoverImage | null> | undefined;
   for (const p of toPlace) {
     const { src, track, dest } = p;
     if (replaceExisting.has(destKey(dest))) await placeOverRecycledFile(src, dest, item);
@@ -2937,14 +2940,24 @@ export async function placeAlbumFiles(params: {
       await db.prepare("UPDATE tracks SET has_file = 1, file_path = ? WHERE id = ?").run(dest, track.id);
     }
 
-    if (track && getSetting("writeAudioTagsOnImport") === "1") {
-      await writeAudioTags(dest, {
-        title: track.title,
-        artist: item.title,
-        album: subRow.title,
-        trackNumber: track.track_number,
-        year: subRow.release_date ? String(subRow.release_date).slice(0, 4) : null,
-      });
+    // Lidarr's "write tags" (none, new, all, sync): every mode but none tags what an import places. A tag that cannot be
+    // written never fails the import (the writer never throws; the reason is in the log).
+    if (track) {
+      const tagSettings = getAudioTagSettings();
+      if (modeTagsOnImport(tagSettings.mode)) {
+        // One cover lookup per album, not per track.
+        // The download's own folder is looked in too (it holds the cover, the library folder does not yet); a folder shared with
+        // other downloads is not, as its cover is not necessarily this album's.
+        albumCover ??= tagSettings.embedCover
+          ? resolveCover(path.dirname(dest), subRow.poster_url ?? null, undefined, sharedSourceDir ? [] : [albumSourceDir]).catch(() => null)
+          : Promise.resolve(null);
+        const result = await writeAudioTags(
+          dest,
+          audioTagInfoFor({ item, sub: subRow, track, trackTotal: Math.max(tracks.length, ...tracks.map((t) => Number(t.track_number) || 0)) }),
+          { scrub: tagSettings.scrub, cover: await albumCover }
+        );
+        if (result?.outcome === "failed") log.warn(`[import] ${dest} was imported without its tags: ${result.reason}`);
+      }
     }
   }
 
