@@ -160,8 +160,8 @@ one book.
 - **Subtitle search + auto-download** (Bazarr-style) — OpenSubtitles-backed; once a video file is
   imported, AoNarr automatically fetches and saves a matching subtitle if a provider is
   configured.
-- **Notifications** — Discord, Slack, Telegram, Pushover, and generic webhook support for
-  grabbed/imported/failed events, configured once in Settings.
+- **Notifications** — Discord, Slack, Telegram, Pushover, webhook, ntfy, Gotify, Matrix, SMS, email, a custom
+  script and Web Push, as named connections with their own events and tags (see "Notification connections").
 - **API key authentication** — like every Starr app, the REST API (and the web UI, which is just
   a client of it) requires an API key, generated automatically on first boot.
 - **System status page** — version, library counts, active queue size, and free/total disk space
@@ -712,6 +712,29 @@ your download client finishes. Check **Missing** for what's still outstanding an
 for what's coming up; use **Manual Import** on a media item's page for anything that didn't
 auto-resolve.
 
+### Running behind a sub-path (`URL_BASE`)
+
+Set `URL_BASE` (for example `/aonarr`; `aonarr`, `/aonarr/` and `//aonarr` mean the same) to serve AoNarr under a
+path of a shared host. Segments may use letters, digits and `. _ ~ -`; any other value stops the container with a
+message. The variable is read at every start (the web bundle is built once), so changing or removing it needs
+only a restart. The reverse proxy must forward the whole path unchanged, for example
+`proxy_pass http://aonarr:9876;` with no URI part; AoNarr's nginx strips the prefix for the server.
+
+```yaml
+# docker-compose, split images: set it on both services
+aonarr-server: { environment: ["URL_BASE=/aonarr"] }
+aonarr-web:    { environment: ["URL_BASE=/aonarr"] }
+# combined image: docker run -e URL_BASE=/aonarr ...   ->   https://host:9876/aonarr/
+```
+
+Unraid: Edit the container, Add another Variable, Key `URL_BASE`, Value `/aonarr` (the templates carry it as an
+advanced field). Starr tools use `/aonarr/sonarr`, `/aonarr/radarr`, `/aonarr/lidarr` and `/aonarr/readarr` as
+their URL base. A browser that visited the root before may keep an old service worker; it is network-first, so
+pages still load. Under path-based hosting the UI keeps its API key and session token in the browser's
+`localStorage` for the whole origin, so give AoNarr its own host name or port when the other apps on that
+origin are not fully trusted. Direct access to the Node port (8989) does not serve under the prefix. On Git Bash for Windows
+pass `MSYS_NO_PATHCONV=1` before `docker run -e URL_BASE=/aonarr`.
+
 ### Other sites calling the API from a browser (CORS)
 
 The bundled web UI never needs any CORS setting — behind any reverse proxy (including one that
@@ -761,6 +784,38 @@ integrations (curl, webhooks, other *arr apps) send no `Origin` and never need i
   names a login-free visit may use (besides addresses, short and LAN names, the external URL and the CORS
   origins), which stops DNS rebinding. Health warns when a reverse proxy hides where visitors come from. A
   TRaSH quality profile now sets the profile language when it names one.
+- **Notification connections** — notifications are rows (Settings → Notifications): any number of Discord,
+  Slack, webhook, Telegram, Pushover, ntfy, Gotify, Matrix, SMS (Twilio), email, custom script and Web Push
+  connections, each with its own name, events (all 13, the bulk ones opt-in), optional tags (a tag-scoped
+  connection hears only events of titles that carry one of them) and a Test button. A webhook connection has a
+  method, headers, basic auth and a payload style: AoNarr's own or Sonarr/Radarr-shaped (`eventType` Grab,
+  Download, Rename, SeriesAdd, MovieAdded, SeriesDelete, MovieDelete, EpisodeFileDelete, MovieFileDelete, Health,
+  HealthRestored, ManualInteractionRequired, ApplicationUpdate, Test). Every event has a message template you
+  can edit. Health names the failing connection. The first start after the upgrade turns each fully set-up old
+  provider into a connection and blanks that provider's old secret settings (URLs, tokens, the SMTP password;
+  the non-secret ones stay), so rolling back to an earlier image means entering the providers again. Web Push now
+  needs a "Web push" connection (created for you when a browser had subscribed). Send to Kindle uses the first
+  Email connection. The API is `/api/notifications/connections`.
+- **Import settings** — "Analyse video files" (`enableMediaInfo`, default on) can switch off ffprobe during import
+  and scan; "Use custom import script" runs your script instead of AoNarr moving the file, with Sonarr's
+  contract (exit 0, optional `[MoveStatus]`, `[MediaFile]`, `[PreventExtraImport]` lines on stdout; the
+  environment carries `AONARR_*` and `Sonarr_*`/`Radarr_*` variables plus an allow-list of the server's own
+  (PATH, HOME, LANG, TZ, ...), never its credentials); the script is trusted admin configuration, like the
+  notification script, runs in its own process group (everything it started is killed on a timeout, so it must
+  not background work), and a `[MediaFile]` that is a symlink is refused unless the strategy is symlink. The
+  library file an upgrade replaces is set aside while the script runs and recorded in
+  `import-script-setaside.json` in the config folder; a restart in the middle puts it back (or recycles it). "Episode title required" (`never` default, `always`,
+  `bulkSeasonReleases`) holds an import until the episode has a title when the naming format uses one (an
+  episode that aired more than 48 hours ago imports anyway); a held download is retried every 10 minutes.
+- **Metadata language and display preferences** — `metadataLanguage` (Settings → Metadata Providers) asks
+  TMDB, TheTVDB and Trakt (and picks MangaDex, ScreenScraper and fanart.tv text and images) for overviews and
+  posters in that language; titles and aliases are never translated, a missing translation falls back to English,
+  and the change applies at the next Refresh. Settings → General → "Dates and times" sets the first day of the
+  week, date and time format, time zone and whether Today/Yesterday/Tomorrow are shown; the defaults reproduce
+  the old display. The interface itself is not translated.
+- **URL base** — start the container with `URL_BASE=/aonarr` to serve AoNarr at `https://host/aonarr/`
+  (the Starr mounts too: a tool's URL base becomes `/aonarr/sonarr`, and so on). It is applied at start, with
+  no rebuild; unset or `/` changes nothing. See "Running behind a sub-path" under Running on Unraid.
 - **Download clients** — clients of the same type and priority share the grabs in turn (set a lower
   priority number to prefer one). A torrent is always added started, even when the client is set to
   add torrents stopped, and a `.torrent` link is fetched by AoNarr and uploaded to qBittorrent. A
