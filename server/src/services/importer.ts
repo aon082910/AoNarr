@@ -2958,7 +2958,11 @@ export async function placeAlbumFiles(params: {
       const tagSettings = getAudioTagSettings();
       if (modeTagsOnImport(tagSettings.mode)) {
         // One cover lookup per album, not per track.
-        albumCover ??= tagSettings.embedCover ? resolveCover(path.dirname(dest), subRow.poster_url ?? null).catch(() => null) : Promise.resolve(null);
+        // The download's own folder is looked in too (it holds the cover, the library folder does not yet); a folder shared with
+        // other downloads is not, as its cover is not necessarily this album's.
+        albumCover ??= tagSettings.embedCover
+          ? resolveCover(path.dirname(dest), subRow.poster_url ?? null, undefined, sharedSourceDir ? [] : [albumSourceDir]).catch(() => null)
+          : Promise.resolve(null);
         const result = await writeAudioTags(
           dest,
           audioTagInfoFor({ item, sub: subRow, track, trackTotal: Math.max(tracks.length, ...tracks.map((t) => Number(t.track_number) || 0)) }),

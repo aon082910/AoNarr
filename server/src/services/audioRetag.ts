@@ -192,12 +192,19 @@ async function remoteCover(url: string | null | undefined, fetchImpl: typeof fet
   }
 }
 
-const DISC_FOLDER = /^(cd|disc|disk)s*[-_]?s*d+$/i;
+const DISC_FOLDER = /^(cd|disc|disk)\s*[-_]?\s*\d+$/i;
 
-/** The album's picture: one in its folder (or, for a disc folder, the album's) first, else the provider's. Null when there is none (the tags are written without). */
-export async function resolveCover(folder: string, posterUrl: string | null | undefined, fetchImpl: typeof fetch = fetch): Promise<CoverImage | null> {
-  const local = (await localCover(folder)) ?? (DISC_FOLDER.test(path.basename(folder)) ? await localCover(path.dirname(folder)) : null);
-  return local ?? (await remoteCover(posterUrl, fetchImpl));
+/**
+ * The album's picture: one in its folder (or, for a disc folder, the album's) first, then in `alsoIn` (an import passes the
+ * download folder it came from, which holds the cover the library folder does not have yet), else the provider's. Null when there
+ * is none (the tags are written without).
+ */
+export async function resolveCover(folder: string, posterUrl: string | null | undefined, fetchImpl: typeof fetch = fetch, alsoIn: string[] = []): Promise<CoverImage | null> {
+  for (const dir of [folder, ...alsoIn]) {
+    const local = (await localCover(dir)) ?? (DISC_FOLDER.test(path.basename(dir)) ? await localCover(path.dirname(dir)) : null);
+    if (local) return local;
+  }
+  return remoteCover(posterUrl, fetchImpl);
 }
 
 // ---- the report -----------------------------------------------------------------------------------------------------
@@ -476,7 +483,7 @@ export async function runLibraryRetag(signal: AbortSignal, options: RetagOptions
 
 export interface TitleRetagStart {
   started: boolean;
-  reason?: "already-running" | "no-files";
+  reason?: "already-running";
   /** How many files the retag looks at. */
   files: number;
 }
@@ -498,7 +505,7 @@ export async function startTitleRetag(itemId: number): Promise<TitleRetagStart> 
     .prepare("SELECT COUNT(*) AS c FROM tracks t JOIN sub_items s ON s.id = t.sub_item_id WHERE s.media_item_id = ? AND t.has_file = 1 AND t.file_path IS NOT NULL")
     .get(itemId)) as { c: number };
   const files = Number(counted.c);
-  if (files === 0) return { started: false, reason: "no-files", files: 0 };
+  if (files === 0) throw new HttpError(400, `"${row.title}" has no downloaded files to retag`);
   const jobId = startBackgroundJob("retag", type, `Retag "${row.title}"`, files);
   void (async () => {
     let error: string | undefined;
