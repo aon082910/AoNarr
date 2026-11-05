@@ -88,21 +88,30 @@ function seriesNameOf(book: { title: string; seriesName: string | null }): strin
   return m && m[1].trim() ? m[1].trim() : null;
 }
 
-/** The word lists that stand for a book: its title less brackets and editions, the part before a subtitle when no other book
+/** The word lists that stand for each book: its title less brackets and editions, the part before a subtitle when no other book
  * has it too, and the subtitle alone when the part before it is the book's series ("Mistborn: The Final Empire"). */
-export function bookKeys(book: MatchableBook, all: MatchableBook[]): string[][] {
-  const base = unbracketed(book.title).replace(EDITION_PHRASE, " ");
-  const keys: string[][] = [wordsOf(base)];
-  const parts = base.split(/\s*:\s*|\s+[-–—]\s+/).map((part) => part.trim()).filter(Boolean);
-  if (parts.length > 1) {
-    const main = wordsOf(parts[0]);
-    const mainOf = (other: MatchableBook) => wordsOf(unbracketed(other.title).replace(EDITION_PHRASE, " ").split(/\s*:\s*|\s+[-–—]\s+/)[0]);
-    const shared = all.some((other) => other.id !== book.id && (sameWords(mainOf(other), main) || sameWords(wordsOf(unbracketed(other.title)), main)));
-    if (main.length > 0 && !shared) keys.push(main);
-    const series = seriesNameOf(book);
-    if (parts.length === 2 && series && sameWords(main, wordsOf(series, SERIES_NOISE))) keys.push(wordsOf(parts[1]));
+export function allBookKeys(books: MatchableBook[]): Map<number, string[][]> {
+  const info = books.map((book) => {
+    const base = unbracketed(book.title).replace(EDITION_PHRASE, " ");
+    const parts = base.split(/\s*:\s*|\s+[-–—]\s+/).map((part) => part.trim()).filter(Boolean);
+    return { book, full: wordsOf(base), parts, main: parts.length > 1 ? wordsOf(parts[0]) : [] };
+  });
+  // How many books are, or begin with, each word list: a part before a subtitle that another book shares names neither.
+  const holders = new Map<string, number>();
+  for (const { full, main } of info) {
+    for (const key of new Set([full.join(" "), main.join(" ")].filter(Boolean))) holders.set(key, (holders.get(key) ?? 0) + 1);
   }
-  return keys.filter((key) => key.length > 0);
+  const keys = new Map<number, string[][]>();
+  for (const { book, full, parts, main } of info) {
+    const own: string[][] = [full];
+    if (parts.length > 1) {
+      if (main.length > 0 && holders.get(main.join(" ")) === 1) own.push(main);
+      const series = seriesNameOf(book);
+      if (parts.length === 2 && series && sameWords(main, wordsOf(series, SERIES_NOISE))) own.push(wordsOf(parts[1]));
+    }
+    keys.set(book.id, own.filter((key) => key.length > 0));
+  }
+  return keys;
 }
 
 /** Whether a segment of a file name is the author's name: spelled out, run together, last name first, initials left off, or the surname alone. */
@@ -206,8 +215,9 @@ export function matchBookFiles(files: BookFile[], author: string, books: Matchab
       .filter((words) => words.length > 0),
   };
   const byKey = new Map<string, MatchableBook[]>();
+  const keysOf = allBookKeys(books);
   for (const book of books) {
-    for (const key of bookKeys(book, books)) {
+    for (const key of keysOf.get(book.id) ?? []) {
       const k = key.join(" ");
       const list = byKey.get(k) ?? [];
       if (!list.includes(book)) list.push(book);

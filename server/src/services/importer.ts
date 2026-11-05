@@ -3234,6 +3234,13 @@ function collectionRootOf(sourceFile: string, downloadPath: string | null | unde
   return own.length > 0 ? own[own.length - 1] : null;
 }
 
+/** The first ebook file under the folder a client reported for a collection (null when it reported none, or the folder has none). */
+function anyBookFileIn(downloadPath: string | null | undefined, extensions: string[], releaseTitle: string): string | null {
+  if (!downloadPath || !isDirectory(downloadPath)) return null;
+  const files = withoutSamples(walk(downloadPath, extensions.filter((ext) => ext !== ".m4b"), 6), downloadPath, releaseTitle).sort();
+  return files[0] ?? null;
+}
+
 export interface BookCollectionImport {
   imported: { subItemId: number; title: string; file: string }[];
   /** Books the grab was for that no file of the release was matched to. */
@@ -4121,10 +4128,15 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
       shape === "collection" && !typeConfig.multiFilePerChild && queueItem.subItemId
         ? ((await db.prepare("SELECT title FROM sub_items WHERE id = ?").get(queueItem.subItemId)) as { title: string } | undefined)
         : undefined;
-    const located = locateDownloadedFile(queueItem.title, item.type, episodeTarget, queueItem.downloadPath, {
-      childTitle: childRow?.title ?? null,
-      category: ctx.category,
-    });
+    // A collection is matched file by file by the import itself, so any book file of the folder the client reported will do
+    // as its anchor: the files are named for their books, which the release's own title says nothing of.
+    const collectionAnchor = collectionTargets.length > 0 ? anyBookFileIn(queueItem.downloadPath, typeConfig.extensions, queueItem.title) : null;
+    const located = collectionAnchor
+      ? { file: collectionAnchor, reason: undefined }
+      : locateDownloadedFile(queueItem.title, item.type, episodeTarget, queueItem.downloadPath, {
+          childTitle: childRow?.title ?? null,
+          category: ctx.category,
+        });
     sourceFile = located.file;
     locateReason = located.reason;
     if (sourceFile && unpackFailures.length > 0 && !isUnpackedMediaCandidate(sourceFile, queueItem.downloadPath, queueItem.title)) sourceFile = null;
