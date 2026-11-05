@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { HttpError } from "../middleware/errorHandler.js";
-import { fetchByExternalId, fetchSeriesSeasonsFor, searchMetadata, type MetadataSearchResult } from "../services/metadata.js";
+import { fetchByExternalId, fetchSeriesEpisodesFor, fetchSeriesSeasonsFor, searchMetadata, type MetadataSearchResult } from "../services/metadata.js";
 import { SERIES_MONITOR_MODES } from "../services/monitorModes.js";
 import { queueSearchAfterAdd } from "../services/searchOnAdd.js";
 import { callNative } from "./native.js";
@@ -81,10 +81,22 @@ async function lookupResources(ctx: LibraryContext, term: string): Promise<any[]
     const local = await findExisting(ctx.app, { [byId[1].toLowerCase()]: byId[2] });
     if (local) return [await oneResource(ctx, local)];
   }
-  return Promise.all((await providerLookup(ctx.app, term)).map((result) => lookupResource(ctx, result)));
+  return Promise.all((await providerLookup(ctx.app, term)).map((result) => lookupResource(ctx, result, !!byId)));
 }
 
-async function lookupResource(ctx: LibraryContext, result: MetadataSearchResult): Promise<any> {
+/**
+ * The seasons a show has. TMDB lists them; a show known only by its TVDB id (what Jellyseerr and Overseerr look up) has none
+ * from there, and a request that is built on an empty list marks no season: the add then watches every one. So, for a lookup
+ * by id, the seasons are read off the episode list, as Sonarr lists every season of the show.
+ */
+async function seasonsOf(ids: Record<string, string>, fromEpisodes: boolean): Promise<{ seasonNumber: number }[]> {
+  const listed = await fetchSeriesSeasonsFor(ids).catch(() => []);
+  if (listed.length > 0 || !fromEpisodes) return listed;
+  const episodes = await fetchSeriesEpisodesFor(ids).catch(() => []);
+  return [...new Set(episodes.map((e) => Number(e.seasonNumber)).filter((n) => Number.isInteger(n) && n >= 0))].sort((a, b) => a - b).map((seasonNumber) => ({ seasonNumber }));
+}
+
+async function lookupResource(ctx: LibraryContext, result: MetadataSearchResult, byId = false): Promise<any> {
   const app = ctx.app;
   const ids = result.externalIds ?? {};
   const existing = await findExisting(app, ids);
@@ -127,7 +139,7 @@ async function lookupResource(ctx: LibraryContext, result: MetadataSearchResult)
       status: "announced",
     };
   }
-  const seasons = await fetchSeriesSeasonsFor(ids).catch(() => []);
+  const seasons = await seasonsOf(ids, byId);
   return {
     ...base,
     tvdbId: Number(ids.tvdb ?? 0) || 0,
@@ -232,6 +244,8 @@ async function addTitle(req: any, app: StarrApp): Promise<any> {
     seriesType: app.key === "sonarr" && typeof b.seriesType === "string" ? b.seriesType : undefined,
     minimumAvailability: app.key === "radarr" && typeof b.minimumAvailability === "string" ? b.minimumAvailability : undefined,
     monitorStrategy: app.key === "sonarr" ? monitor : undefined,
+    // Sonarr v4's "monitor new seasons" choice: Seerr sends it with every add, and it overrides the root folder's default.
+    monitorNewItems: app.key === "sonarr" && typeof b.monitorNewItems === "string" && ["all", "none", "new"].includes(b.monitorNewItems) ? b.monitorNewItems : undefined,
     tagIds: idList(b.tags),
     confirmDuplicate: true,
   });

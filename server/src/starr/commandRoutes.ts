@@ -60,21 +60,24 @@ async function ownedIds(starr: StarrApp, ids: number[]): Promise<number[]> {
 
 function actionsOf(starr: StarrApp): Record<string, Action> {
   const typeNames = starr.types;
-  const missingTargets = async (): Promise<{ mediaItemId: number; episodeId?: number; subItemId?: number }[]> => {
+  const missingTargets = async (only?: number): Promise<{ mediaItemId: number; episodeId?: number; subItemId?: number }[]> => {
     const f = typeFilter(starr);
+    // One title's parts when the command names it (Overseerr's search after an add), else the whole library's.
+    const one = only === undefined ? "" : " AND m.id = ?";
+    const oneParam = only === undefined ? [] : [only];
     if (starr.key === "radarr") {
-      const rows = (await db.prepare(`SELECT m.id FROM media_items m WHERE ${f.sql} AND m.monitored = 1 AND m.has_file = 0`).all(...f.params)) as { id: number }[];
+      const rows = (await db.prepare(`SELECT m.id FROM media_items m WHERE ${f.sql} AND m.monitored = 1 AND m.has_file = 0${one}`).all(...f.params, ...oneParam)) as { id: number }[];
       return rows.map((r) => ({ mediaItemId: Number(r.id) }));
     }
     if (starr.key === "sonarr") {
       const rows = (await db
-        .prepare(`SELECT e.id, e.media_item_id FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE ${f.sql} AND m.monitored = 1 AND e.monitored = 1 AND e.has_file = 0 AND e.air_date IS NOT NULL AND e.air_date <= ?`)
-        .all(...f.params, new Date().toISOString().slice(0, 10))) as { id: number; media_item_id: number }[];
+        .prepare(`SELECT e.id, e.media_item_id FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE ${f.sql} AND m.monitored = 1 AND e.monitored = 1 AND e.has_file = 0 AND e.air_date IS NOT NULL AND e.air_date <= ?${one}`)
+        .all(...f.params, new Date().toISOString().slice(0, 10), ...oneParam)) as { id: number; media_item_id: number }[];
       return rows.map((r) => ({ mediaItemId: Number(r.media_item_id), episodeId: Number(r.id) }));
     }
     const rows = (await db
-      .prepare(`SELECT s.id, s.media_item_id FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE ${f.sql} AND m.monitored = 1 AND s.monitored = 1 AND s.has_file = 0`)
-      .all(...f.params)) as { id: number; media_item_id: number }[];
+      .prepare(`SELECT s.id, s.media_item_id FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE ${f.sql} AND m.monitored = 1 AND s.monitored = 1 AND s.has_file = 0${one}`)
+      .all(...f.params, ...oneParam)) as { id: number; media_item_id: number }[];
     return rows.map((r) => ({ mediaItemId: Number(r.media_item_id), subItemId: Number(r.id) }));
   };
   const cutoffTargets = async () => {
@@ -85,6 +88,9 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
 
   const rssSync: Action = async (app) => void (await callNative(app, "POST", "/api/jobs/rssSync/run"));
   const downloadedScan: Action = async (app) => void (await callNative(app, "POST", "/api/jobs/queuePoll/run"));
+  // Overseerr and Jellyseerr send this before every read of the queue (their download tracker, each minute), and give up on
+  // the read when it is refused. The poll is the same one the scheduler runs; one already running answers 202 and is enough.
+  const refreshMonitoredDownloads: Action = async (app) => void (await callNative(app, "POST", "/api/jobs/queuePoll/run"));
   const refresh = (key: string, plural: string): Action => async (app, body) => {
     const ids = await ownedIds(starr, [...idList(body[key]), ...idList(body[plural])]);
     if (ids.length === 0 && (body[key] !== undefined || body[plural] !== undefined)) throw new HttpError(404, "NotFound");
@@ -97,6 +103,16 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
     if (ids.length === 0) for (const type of typeNames) await callNative(app, "POST", `/api/media/scan-import?type=${encodeURIComponent(type)}`);
     for (const id of ids) await callNative(app, "POST", `/api/media/${id}/scan-import`);
   };
+  // MissingEpisodeSearch, MissingAlbumSearch and MissingBookSearch take the title they are for (seriesId, artistId, authorId):
+  // Overseerr and Jellyseerr send it after an add, and the search must not widen to everything that is missing.
+  const missingOf = (key: string): Action => async (app, body) => {
+    let only: number | undefined;
+    if (body[key] !== undefined && body[key] !== null && body[key] !== "") {
+      [only] = await ownedIds(starr, [Number(body[key])]);
+      if (!only) throw new HttpError(404, "NotFound");
+    }
+    await searchTargets(app, await missingTargets(only));
+  };
   const searchTitles = (key: string, plural: string): Action => async (app, body) => {
     const ids = await ownedIds(starr, [...idList(body[key]), ...idList(body[plural])]);
     if (ids.length === 0) throw new HttpError(404, "NotFound");
@@ -108,6 +124,7 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
       return {
         RssSync: rssSync,
         DownloadedEpisodesScan: downloadedScan,
+        RefreshMonitoredDownloads: refreshMonitoredDownloads,
         RefreshSeries: refresh("seriesId", "seriesIds"),
         RescanSeries: rescan("seriesId", "seriesIds"),
         SeriesSearch: searchTitles("seriesId", "seriesIds"),
@@ -124,13 +141,14 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
           const rows = (await db.prepare(`SELECT e.id, e.media_item_id FROM episodes e JOIN media_items m ON m.id = e.media_item_id WHERE ${f.sql} AND e.id IN (${ids.map(() => "?").join(",")})`).all(...f.params, ...ids)) as { id: number; media_item_id: number }[];
           await searchTargets(app, rows.map((r) => ({ mediaItemId: Number(r.media_item_id), episodeId: Number(r.id) })));
         },
-        MissingEpisodeSearch: async (app) => searchTargets(app, await missingTargets()),
+        MissingEpisodeSearch: missingOf("seriesId"),
         CutoffUnmetEpisodeSearch: async (app) => searchTargets(app, await cutoffTargets()),
       };
     case "radarr":
       return {
         RssSync: rssSync,
         DownloadedMoviesScan: downloadedScan,
+        RefreshMonitoredDownloads: refreshMonitoredDownloads,
         RefreshMovie: refresh("movieId", "movieIds"),
         RescanMovie: rescan("movieId", "movieIds"),
         MoviesSearch: searchTitles("movieId", "movieIds"),
@@ -141,6 +159,7 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
       return {
         RssSync: rssSync,
         DownloadedAlbumsScan: downloadedScan,
+        RefreshMonitoredDownloads: refreshMonitoredDownloads,
         RefreshArtist: refresh("artistId", "artistIds"),
         RescanFolders: rescan("artistId", "artistIds"),
         ArtistSearch: searchTitles("artistId", "artistIds"),
@@ -151,12 +170,13 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
           const rows = (await db.prepare(`SELECT s.id, s.media_item_id FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE ${f.sql} AND s.id IN (${ids.map(() => "?").join(",")})`).all(...f.params, ...ids)) as { id: number; media_item_id: number }[];
           await searchTargets(app, rows.map((r) => ({ mediaItemId: Number(r.media_item_id), subItemId: Number(r.id) })));
         },
-        MissingAlbumSearch: async (app) => searchTargets(app, await missingTargets()),
+        MissingAlbumSearch: missingOf("artistId"),
       };
     case "readarr":
       return {
         RssSync: rssSync,
         DownloadedBooksScan: downloadedScan,
+        RefreshMonitoredDownloads: refreshMonitoredDownloads,
         RefreshAuthor: refresh("authorId", "authorIds"),
         RescanFolders: rescan("authorId", "authorIds"),
         AuthorSearch: searchTitles("authorId", "authorIds"),
@@ -167,7 +187,7 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
           const rows = (await db.prepare(`SELECT s.id, s.media_item_id FROM sub_items s JOIN media_items m ON m.id = s.media_item_id WHERE ${f.sql} AND s.id IN (${ids.map(() => "?").join(",")})`).all(...f.params, ...ids)) as { id: number; media_item_id: number }[];
           await searchTargets(app, rows.map((r) => ({ mediaItemId: Number(r.media_item_id), subItemId: Number(r.id) })));
         },
-        MissingBookSearch: async (app) => searchTargets(app, await missingTargets()),
+        MissingBookSearch: missingOf("authorId"),
       };
   }
 }
