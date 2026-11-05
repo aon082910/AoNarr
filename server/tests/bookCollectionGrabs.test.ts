@@ -273,6 +273,21 @@ describe("searching for a collection", () => {
     expect(await queueRows()).toHaveLength(0);
   });
 
+  it("refuses a release of the book that is also a bibliography or collected works, in any of the languages", () => {
+    const wanted = { title: "Mort", parentTitle: "Terry Pratchett" };
+    for (const title of [
+      "Terry Pratchett - Mort - Collected Works [EPUB]",
+      "Terry Pratchett - Mort Bibliography [EPUB]",
+      "Terry Pratchett - Mort Gesamtausgabe",
+      "Terry Pratchett - Mort Oeuvres completes",
+      "Terry Pratchett - Mort Obras completas",
+      "Terry Pratchett - Mort - Complete Collection [EPUB]",
+    ]) {
+      expect(scheduler.releaseNameVerdict(title, wanted, "author").ok, title).toBe(false);
+    }
+    expect(scheduler.releaseNameVerdict("Terry Pratchett - Mort [EPUB]", wanted, "author").ok).toBe(true);
+  });
+
   it("does not take another author's collection", async () => {
     await insertClient();
     const { authorId } = await terry();
