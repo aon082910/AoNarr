@@ -84,6 +84,9 @@ export interface TrashSyncResult {
   partiallyUnsupported: { name: string; skipped: string[] }[];
   /** Formats that could not be written at all, with the reason. */
   failed: { name: string; error: string }[];
+  /** Formats this sync skipped whose copy from an earlier sync is still stored with a pattern this server cannot compile.
+   * The copy never matches (or, when its condition is negated, always passes); it is left as it is, for the admin to fix or delete. */
+  staleStored: string[];
   error?: string;
 }
 
@@ -107,6 +110,7 @@ function saveLastResult(app: "radarr" | "sonarr", result: TrashSyncResult): void
     unsupported: result.unsupported,
     partiallyUnsupported: result.partiallyUnsupported,
     failed: result.failed,
+    staleStored: result.staleStored,
     error: result.error ?? null,
   };
   setSetting(lastResultKey(app), JSON.stringify(stored));
@@ -134,6 +138,7 @@ export function getLastTrashSyncResult(app: "radarr" | "sonarr"): StoredTrashSyn
       skipped: list(p.skipped).map(String),
     })),
     failed: list(parsed.failed).map((f) => ({ name: String(f.name ?? ""), error: String(f.error ?? "") })),
+    staleStored: list(parsed.staleStored).map(String),
     error: typeof parsed.error === "string" && parsed.error ? parsed.error : null,
   };
 }
@@ -158,7 +163,7 @@ export function syncTrashFormats(app: "radarr" | "sonarr"): Promise<TrashSyncRes
 }
 
 async function syncTrashFormatsOnce(app: "radarr" | "sonarr"): Promise<TrashSyncResult> {
-  const result: TrashSyncResult = { added: 0, updated: 0, unsupported: [], partiallyUnsupported: [], failed: [] };
+  const result: TrashSyncResult = { added: 0, updated: 0, unsupported: [], partiallyUnsupported: [], failed: [], staleStored: [] };
   try {
     return await runTrashSync(app, result);
   } catch (err) {
@@ -167,6 +172,35 @@ async function syncTrashFormatsOnce(app: "radarr" | "sonarr"): Promise<TrashSync
   } finally {
     saveLastResult(app, result);
   }
+}
+
+/** True when a stored format has a condition pattern that does not compile as the case-insensitive RegExp the scoring runs. */
+function hasUncompilablePattern(storedGroups: string): boolean {
+  let groups: unknown;
+  try {
+    groups = JSON.parse(storedGroups);
+  } catch {
+    return false; // the scoring skips a format whose conditions are not JSON; that is not this case
+  }
+  if (!Array.isArray(groups)) return false;
+  for (const group of groups) {
+    const patterns = group && typeof group === "object" ? (group as { patterns?: unknown }).patterns : undefined;
+    if (!Array.isArray(patterns)) continue;
+    for (const pattern of patterns) {
+      try {
+        new RegExp(String(pattern), "i");
+      } catch {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** A format this sync skipped leaves an earlier copy untouched; say so when that copy is one that can no longer work. */
+async function noteStaleCopy(trashId: string, result: TrashSyncResult): Promise<void> {
+  const stored = (await db.prepare("SELECT name, patterns FROM custom_formats WHERE trash_id = ?").get(trashId)) as { name: string; patterns: string } | undefined;
+  if (stored && hasUncompilablePattern(stored.patterns)) result.staleStored.push(stored.name);
 }
 
 async function runTrashSync(app: "radarr" | "sonarr", result: TrashSyncResult): Promise<TrashSyncResult> {
@@ -206,12 +240,14 @@ async function runTrashSync(app: "radarr" | "sonarr", result: TrashSyncResult): 
       const { groups, skipped } = translateTrashFormat(trash, app);
       if (groups.length === 0) {
         result.unsupported.push(trash.name);
+        await noteStaleCopy(trash.trash_id, result);
         continue;
       }
       // A format that lost a condition would score releases it was never meant to: not stored (an
-      // already synced copy is left as it is).
+      // already synced copy is left as it is, and reported when that copy can no longer work).
       if (skipped.length > 0) {
         result.partiallyUnsupported.push({ name: trash.name, skipped });
+        await noteStaleCopy(trash.trash_id, result);
         continue;
       }
 
@@ -246,7 +282,10 @@ async function runTrashSync(app: "radarr" | "sonarr", result: TrashSyncResult): 
   );
   for (const f of result.failed) log.warn(`[trashSync] failed to sync "${f.name}": ${f.error}`);
   for (const p of result.partiallyUnsupported) {
-    log.info(`[trashSync] "${p.name}" synced with unsupported condition type(s) skipped: ${p.skipped.join(", ")}`);
+    log.info(`[trashSync] "${p.name}" not synced: unsupported condition type(s) ${p.skipped.join(", ")}`);
+  }
+  for (const name of result.staleStored) {
+    log.warn(`[trashSync] the stored copy of "${name}" has a pattern that does not compile here, so it cannot match as intended; this sync skipped the format and left the copy as it is`);
   }
   return result;
 }

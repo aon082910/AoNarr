@@ -247,6 +247,7 @@ interface TrashSyncOutcome {
   unsupported: string[];
   partiallyUnsupported: { name: string; skipped: string[] }[];
   failed: { name: string; error: string }[];
+  staleStored: string[];
   error: string | null;
 }
 
@@ -303,6 +304,11 @@ function TrashSyncResultSummary({ label, result }: { label: string; result: Tras
           <li key={i}>
             {p.name}: {p.skipped.join(", ")}
           </li>
+        ))}
+      </TrashSyncNameList>
+      <TrashSyncNameList title="Stored copy cannot match (a pattern does not compile here; left as it is, edit or delete it)" count={result.staleStored.length}>
+        {result.staleStored.map((name, i) => (
+          <li key={i}>{name}</li>
         ))}
       </TrashSyncNameList>
     </div>

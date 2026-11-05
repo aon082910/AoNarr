@@ -400,3 +400,51 @@ describe("syncFromProwlarr — a later change of an indexer's categories", () =>
     expect((await indexerRowsByPattern("9302"))[0].media_types).toBe("series");
   });
 });
+
+describe("syncFromProwlarr: indexers Prowlarr pushed itself", () => {
+  const pushedRow = (id: number, extra = "") => db.prepare("INSERT INTO indexers (name, protocol, url, api_key, media_types, enabled, config) VALUES (?, 'newznab', ?, 'k', 'series', 1, ?)").run(`Pushed ${id}`, `http://prowlarr.local:9696/${id}`, `{${extra}"starrApps":["sonarr"],"prowlarrId":${id}}`);
+
+  it("logs one line per sync for all of them, not one line each", async () => {
+    const { log } = await import("../src/services/logger.js");
+    const info = vi.spyOn(log, "info");
+    try {
+      for (const id of [9501, 9502, 9503]) await pushedRow(id);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [9501, 9502, 9503].map((id) => ({ id, name: `Pushed ${id}`, protocol: "usenet", enable: true })).concat([{ id: 9504, name: "Pulled only", protocol: "usenet", enable: true }]),
+      }));
+
+      const result = await syncFromProwlarr();
+
+      expect(result).toEqual({ synced: 1 });
+      const lines = info.mock.calls.map((c) => String(c[0])).filter((line) => line.startsWith("[prowlarrSync]"));
+      expect(lines).toEqual(["[prowlarrSync] 3 indexers are managed by Prowlarr's push (Settings > Apps) and were not pulled"]);
+      // The rows themselves are untouched, as before.
+      expect((await db.prepare("SELECT name FROM indexers WHERE url = ?").get("http://prowlarr.local:9696/9501")) as any).toEqual({ name: "Pushed 9501" });
+
+      // A second sync says it again once, and a sync with nothing pushed says nothing.
+      info.mockClear();
+      await syncFromProwlarr();
+      expect(info.mock.calls.map((c) => String(c[0])).filter((line) => line.includes("managed by Prowlarr's push"))).toHaveLength(1);
+      info.mockClear();
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => [{ id: 9504, name: "Pulled only", protocol: "usenet", enable: true }] }));
+      await syncFromProwlarr();
+      expect(info.mock.calls.map((c) => String(c[0])).filter((line) => line.includes("managed by Prowlarr's push"))).toHaveLength(0);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("says 'is' and 'was' for a single one", async () => {
+    const { log } = await import("../src/services/logger.js");
+    const info = vi.spyOn(log, "info");
+    try {
+      await pushedRow(9511);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => [{ id: 9511, name: "Pushed 9511", protocol: "usenet", enable: true }] }));
+      await syncFromProwlarr();
+      expect(info.mock.calls.map((c) => String(c[0]))).toContain("[prowlarrSync] 1 indexer is managed by Prowlarr's push (Settings > Apps) and was not pulled");
+    } finally {
+      info.mockRestore();
+    }
+  });
+});
