@@ -4660,6 +4660,21 @@ export function startScheduler() {
     run: (signal) => runAllImportLists(signal),
   });
 
+  // NFO and picture files for the titles already in the library (metadataFiles.ts). Off until switched on: it writes files, and
+  // the same run is one click away from Settings, Metadata Files ("Write files now") or the Jobs page.
+  registerJob({
+    key: "writeMetadataFiles",
+    name: "Metadata Files",
+    scheduleType: "cron",
+    defaultSchedule: "10 5 * * 0",
+    heavy: true,
+    defaultOff: true,
+    run: async (signal) => {
+      const { runMetadataFilesJob } = await import("./metadataFiles.js");
+      await runMetadataFilesJob(signal);
+    },
+  });
+
   registerJob({
     key: "diskUsageSampling",
     name: "Disk Usage Sampling",

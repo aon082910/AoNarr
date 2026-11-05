@@ -93,6 +93,8 @@ export interface MetadataEpisode {
   title: string | null;
   airDate: string | null;
   overview: string | null;
+  /** The provider's still for the episode, when it lists one (TMDB, TheTVDB, TVmaze); written beside the file as "<file>-thumb.jpg". */
+  thumbUrl?: string;
 }
 
 /** Sonarr's default: Season 0 specials (featurettes, recaps, shorts) are added unmonitored, so they
@@ -150,6 +152,7 @@ export interface MetadataTrack {
 
 export const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342";
 const TMDB_BACKDROP_BASE = "https://image.tmdb.org/t/p/w1280";
+const TMDB_EPISODE_STILL_BASE = "https://image.tmdb.org/t/p/original";
 const MUSICBRAINZ_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
 const DISCOGS_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
 
@@ -666,6 +669,7 @@ async function fetchSeriesEpisodesTmdb(tmdbId: string): Promise<MetadataEpisode[
         title: ep.name || null,
         airDate: ep.air_date || null,
         overview: preferLocalized(ep.overview, localizedOverviews.get(ep.episode_number)),
+        ...(ep.still_path ? { thumbUrl: `${TMDB_EPISODE_STILL_BASE}${ep.still_path}` } : {}),
       });
     }
   }
@@ -791,6 +795,7 @@ async function fetchSeriesEpisodesTvdb(tvdbId: string): Promise<MetadataEpisode[
     title: e.name || null,
     airDate: e.aired || null,
     overview: preferLocalized(e.overview, overviews.get(`${e.seasonNumber}:${e.number}`)),
+    ...(typeof e.image === "string" && /^https:\/\//.test(e.image) ? { thumbUrl: e.image } : {}),
   }));
 }
 
@@ -821,6 +826,7 @@ async function fetchSeriesEpisodesTvmaze(tvmazeId: string): Promise<MetadataEpis
     title: e.name || null,
     airDate: e.airdate || null,
     overview: e.summary ? e.summary.replace(/<[^>]+>/g, "") : null,
+    ...(e.image?.original || e.image?.medium ? { thumbUrl: String(e.image.original || e.image.medium) } : {}),
   }));
 }
 

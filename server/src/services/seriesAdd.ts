@@ -19,10 +19,10 @@ export async function insertMissingSeriesEpisodes(mediaItemId: number | bigint, 
     for (const ep of fresh) {
       await db
         .prepare(
-          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-           VALUES (?, ?, ?, ?, ?, ?, 1)`
+          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored, thumb_url)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?)`
         )
-        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview);
+        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, ep.thumbUrl ?? null);
     }
   });
   return fresh.length;
@@ -55,8 +55,8 @@ export async function insertNewSeriesEpisodes(
       const monitored = only ? only.has(ep.seasonNumber) : isEpisodeMonitoredByDefault(ep);
       await db
         .prepare(
-          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored, absolute_episode_number)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored, absolute_episode_number, thumb_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           mediaItemId,
@@ -66,7 +66,8 @@ export async function insertNewSeriesEpisodes(
           ep.airDate,
           ep.overview,
           monitored ? 1 : 0,
-          absoluteByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`) ?? null
+          absoluteByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`) ?? null,
+          ep.thumbUrl ?? null
         );
     }
   });

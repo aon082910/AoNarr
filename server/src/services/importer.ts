@@ -10,6 +10,8 @@ import { config } from "../config.js";
 import { decryptIfSet, mediaItemFromRow, queueItemFromRow, rootFolderFromRow } from "../db/mappers.js";
 import { notifyImported, notifyManualInteractionRequired, notifyRenamed, notifyUpgraded } from "./notifications.js";
 import { writeEpisodeNfoSidecar, writeNfoSidecar, writeTvShowNfoIfMissing } from "./metadataExport.js";
+import { nfoEnabledFor } from "./metadataFileOptions.js";
+import { writeImportedAlbumFiles, writeImportedEpisodeFiles, writeImportedMovieFiles } from "./metadataFiles.js";
 import { writeAudioTags } from "./audioTagWriter.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { isDiscographyTitle, parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
@@ -38,6 +40,7 @@ import { trackedFileInside } from "./fileDeletion.js";
 import { importReserveBytes } from "./freeSpace.js";
 import { findRejectedFile, probeVerdict } from "./importChecks.js";
 import { applyFileDate } from "./fileDate.js";
+import { applyConfiguredPermissions } from "./filePermissions.js";
 import { copyReleaseExtras } from "./importExtras.js";
 import { effectiveShape, getMediaTypeConfig, isProbeableFile, type MediaShape } from "./mediaTypes.js";
 import { groupedRank, parseQualityGroups, usesQualityTiers, type QualityGroups } from "./quality.js";
@@ -940,39 +943,6 @@ export function listDownloadedFileCandidates(mediaType: MediaType): { path: stri
       }
     })
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
-}
-
-/**
- * Applies the configured chmod (and, only when running as root, chown) to a just-created file or
- * folder — Sonarr/Radarr's "File Management > Permissions" setting, which AoNarr had no equivalent
- * of: every imported file previously landed with whatever the container's default umask gave it,
- * which is wrong the moment another app (Plex, Jellyfin) reads the library under a different
- * uid/gid. Best-effort and silent on failure (e.g. a bind mount that doesn't support chmod, or a
- * non-root container missing permission to chown) — a permissions tweak failing shouldn't fail the
- * import itself.
- */
-function applyConfiguredPermissions(targetPath: string, isDirectory: boolean): void {
-  if (getSetting("setPermissionsEnabled") !== "1") return;
-  const mode = getSetting(isDirectory ? "folderChmod" : "fileChmod");
-  if (mode && /^[0-7]{3,4}$/.test(mode)) {
-    try {
-      fs.chmodSync(targetPath, parseInt(mode, 8));
-    } catch (err) {
-      log.warn(`[importer] chmod ${mode} failed for ${targetPath}:`, (err as Error).message);
-    }
-  }
-
-  if (typeof process.getuid === "function" && process.getuid() === 0) {
-    const uid = getSetting("chownUid");
-    const gid = getSetting("chownGid");
-    if (uid && gid) {
-      try {
-        fs.chownSync(targetPath, Number(uid), Number(gid));
-      } catch (err) {
-        log.warn(`[importer] chown ${uid}:${gid} failed for ${targetPath}:`, (err as Error).message);
-      }
-    }
-  }
 }
 
 /**
@@ -2346,8 +2316,9 @@ export async function placeFile(params: {
   // Manga/Online Videos/Courses) shapes, which map onto one media-item-worth of metadata per file;
   // episodic and multi-file-per-child (Music) shapes need per-episode/per-track metadata this
   // function doesn't have on hand, so they're left to the existing on-edit sidecar write in
-  // routes/media.ts instead of guessing at incomplete per-file metadata here.
-  if (getSetting("writeNfoOnImport") === "1" && (shape === "single" || shape === "collection")) {
+  // routes/media.ts instead of guessing at incomplete per-file metadata here. (Music's album.nfo and artist.nfo are written
+  // when the album is placed, see writeImportedAlbumFiles.)
+  if (nfoEnabledFor(item) && (shape === "single" || shape === "collection")) {
     let externalIds: Record<string, string> = {};
     try {
       externalIds = item.externalIds ? JSON.parse(item.externalIds) : {};
@@ -2358,7 +2329,7 @@ export async function placeFile(params: {
     writeNfoSidecar(destPath, { type: item.type, title: item.title, year: item.year, overview: item.overview, posterUrl: item.posterUrl, externalIds }, { keepRicher: true });
   }
   // The same opt-in for a show: Kodi's <episodedetails> beside the file, and the show's tvshow.nfo once.
-  if (getSetting("writeNfoOnImport") === "1" && shape === "episodic" && episodeId) {
+  if (nfoEnabledFor(item) && shape === "episodic" && episodeId) {
     const ids = (episodicRows ?? [{ id: episodeId }]).map((r) => r.id);
     const covered = (await db
       .prepare(`SELECT season_number, episode_number, title, air_date, overview FROM episodes WHERE id IN (${ids.map(() => "?").join(",")}) ORDER BY episode_number`)
@@ -2376,6 +2347,23 @@ export async function placeFile(params: {
       }
       writeTvShowNfoIfMissing(path.join(rootFolder.path, ...folderSegments), { type: item.type, title: item.title, year: item.year, overview: item.overview, posterUrl: item.posterUrl, externalIds });
     }
+  }
+  // Pictures beside the file (poster and fanart, the show's season posters, the episode's still) when switched on under
+  // Settings, Metadata Files. Best effort and bounded: a provider that stalls cannot hold the import open.
+  if (shape === "single") {
+    await withinTimeout(writeImportedMovieFiles({ itemId: item.id, destPath, rootFolderPath: rootFolder.path }), POST_IMPORT_STEP_TIMEOUT_MS, `artwork for "${item.title}"`);
+  } else if (shape === "episodic" && episodeId) {
+    await withinTimeout(
+      writeImportedEpisodeFiles({
+        itemId: item.id,
+        rootFolderPath: rootFolder.path,
+        folderSegments,
+        files: [{ dest: destPath, episodeIds: (episodicRows ?? [{ id: episodeId }]).map((r) => Number(r.id)) }],
+        nfoDone: true,
+      }),
+      POST_IMPORT_STEP_TIMEOUT_MS,
+      `artwork for "${item.title}"`
+    );
   }
 
   log.info(`[importer] imported "${fileLabel}" for "${item.title}"`);
@@ -3007,6 +2995,11 @@ export async function placeAlbumFiles(params: {
       importedHistoryData({ destFolder, fileCount: movedCount, subItemId, quality: quality ?? null })
     );
     await notifyImported(item.title, `${movedCount} file(s) into ${path.basename(destFolder)}`, destFolder, { mediaItemId: item.id });
+  }
+  if (movedCount > 0) {
+    // artist.nfo and artist.jpg go in the folder above the albums, when the naming template gives the artist one.
+    const artistFolder = parentFolderSegments.length > 0 ? path.join(rootFolder.path, ...parentFolderSegments) : null;
+    await withinTimeout(writeImportedAlbumFiles({ itemId: item.id, subItemId, albumFolder: destFolder, artistFolder }), POST_IMPORT_STEP_TIMEOUT_MS, `metadata files for "${item.title}"`);
   }
   log.info(`[importer] imported ${movedCount} file(s) into "${path.basename(destFolder)}" for "${item.title}"`);
   if (leftInPlace > 0) {
@@ -3709,6 +3702,18 @@ export async function placeSeasonPackFiles(params: {
   }
 
   await wrapUp();
+  // The NFO files (a pack never wrote any before) and the pictures beside its episodes, when switched on.
+  await withinTimeout(
+    writeImportedEpisodeFiles({
+      itemId: item.id,
+      rootFolderPath: rootFolder.path,
+      folderSegments: packRedirected ? null : packFolderSegments,
+      files: packFinishing.map((f) => ({ dest: f.dest, episodeIds: f.rowIds })),
+      nfoDone: false,
+    }),
+    POST_IMPORT_STEP_TIMEOUT_MS,
+    `metadata files for "${item.title}"`
+  );
   // Best effort, now that every row is written: a subtitle provider that stalls cannot hold the rows back.
   for (const { dest, ext, rowIds } of packFinishing) {
     try {

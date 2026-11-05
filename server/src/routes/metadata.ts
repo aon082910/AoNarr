@@ -262,8 +262,8 @@ metadataRouter.post(
           for (const ep of episodes) {
             await db
               .prepare(
-                `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored, absolute_episode_number)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+                `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored, absolute_episode_number, thumb_url)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
               )
               .run(
                 mediaItemId,
@@ -273,7 +273,8 @@ metadataRouter.post(
                 ep.airDate,
                 ep.overview,
                 isEpisodeMonitoredByDefault(ep) ? 1 : 0,
-                absoluteByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`) ?? null
+                absoluteByKey.get(`${ep.seasonNumber}:${ep.episodeNumber}`) ?? null,
+                ep.thumbUrl ?? null
               );
           }
         });

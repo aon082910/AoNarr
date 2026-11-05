@@ -72,6 +72,7 @@ import {
   type ExportableItem,
 } from "../services/metadataExport.js";
 import { corruptReason, handleCorrupt, type CorruptAction } from "../services/corruptMediaCheck.js";
+import { writeMetadataFilesForItem } from "../services/metadataFiles.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { getSetting } from "../services/settingsStore.js";
 import { ImportSkippedError, isOrganizeRunning, moveItemFolder, renameLibraryFiles, renameOneMediaItem } from "../services/importer.js";
@@ -1700,6 +1701,23 @@ function refreshNfoSidecar(row: any, externalIds: Record<string, string>): void 
   }
   writeNfoSidecar(row.path, { type: row.type, title: row.title, year: row.year, overview: row.overview, posterUrl: row.poster_url, externalIds });
 }
+
+/** Writes the NFO and picture files that are switched on under Settings, Metadata Files, for a title that already has files. */
+mediaRouter.post(
+  "/:id/write-metadata-files",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const itemId = Number(req.params.id);
+    if (!Number.isInteger(itemId) || !(await db.prepare("SELECT id FROM media_items WHERE id = ?").get(itemId))) throw new HttpError(404, "Media item not found");
+    const report = await writeMetadataFilesForItem(itemId);
+    if (report.code === "not-enabled") throw new HttpError(400, report.reason ?? "No metadata files are switched on");
+    if (report.code === "busy") throw new HttpError(409, report.reason ?? "This title is busy");
+    const actor = auditActor(req);
+    logAuditEvent(actor.userId, actor.username, "media_metadata_files", `"${report.title}": ${report.written} written, ${report.skipped} skipped, ${report.failed} failed`);
+    log.info(`[metadataFiles] "${report.title}": ${report.written} file(s) written, ${report.skipped} already there, ${report.failed} failed${report.reason ? ` (${report.reason})` : ""}`);
+    res.json(report);
+  })
+);
 
 mediaRouter.patch(
   "/:id",

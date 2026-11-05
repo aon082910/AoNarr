@@ -2495,8 +2495,8 @@ export async function mergeEpisodesIntoItem(
   const filtered = onlySeasonNumber != null ? episodes.filter((ep) => ep.seasonNumber === onlySeasonNumber) : episodes;
   if (filtered.length === 0) return 0;
   const existing = (await db
-    .prepare("SELECT id, season_number, episode_number, title, air_date FROM episodes WHERE media_item_id = ?")
-    .all(mediaItemId)) as { id: number; season_number: number; episode_number: number; title: string | null; air_date: string | null }[];
+    .prepare("SELECT id, season_number, episode_number, title, air_date, thumb_url FROM episodes WHERE media_item_id = ?")
+    .all(mediaItemId)) as { id: number; season_number: number; episode_number: number; title: string | null; air_date: string | null; thumb_url: string | null }[];
   const existingByKey = new Map(existing.map((e) => [`${e.season_number}:${e.episode_number}`, e]));
   // A second provider's own season split for a show can number the same real episodes completely
   // differently from the item's primary provider (classic-cartoon syndication reruns are the
@@ -2547,15 +2547,17 @@ export async function mergeEpisodesIntoItem(
       const epMonitored = monitorNew(ep);
       await db
         .prepare(
-          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO episodes (media_item_id, season_number, episode_number, title, air_date, overview, monitored, thumb_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, epMonitored ? 1 : 0);
+        .run(mediaItemId, ep.seasonNumber, ep.episodeNumber, ep.title, ep.airDate, ep.overview, epMonitored ? 1 : 0, ep.thumbUrl ?? null);
       added++;
       if (ep.seasonNumber !== 0) regularAdded++;
       if (epMonitored) monitoredAdded++;
       continue;
     }
+    // The provider's still for an episode that had none (an episode added before stills were kept).
+    if (ep.thumbUrl && !row.thumb_url) await db.prepare("UPDATE episodes SET thumb_url = ? WHERE id = ?").run(ep.thumbUrl, row.id);
     const storedTitle = row.title?.trim() ?? "";
     const isPlaceholderTitle = !storedTitle || PLACEHOLDER_EPISODE_TITLE.test(storedTitle);
     const airDate = fromOwnProvider ? ep.airDate ?? row.air_date : row.air_date ?? ep.airDate;

@@ -8,6 +8,7 @@ import SettingsProviderTiles, { type SettingsProviderDef } from "../components/S
 import NotificationConnections, { NotificationTemplates } from "../components/NotificationConnections.js";
 import SettingsSectionTiles from "../components/SettingsSectionTiles.js";
 import MetadataProfilesEditor from "../components/MetadataProfilesEditor.js";
+import MetadataFilesSettings from "../components/MetadataFilesSettings.js";
 import { useMediaTypes } from "../hooks/useMediaTypes.js";
 import { useBackgroundJobs } from "../context/BackgroundJobsContext.js";
 import type {
@@ -3275,32 +3276,9 @@ export default function Settings() {
           },
           {
             key: "writeNfoOnImport",
-            label: "Write NFO on Import",
-            description: "Kodi/Jellyfin/Emby-readable .nfo sidecar next to every imported file",
-            render: () => (
-              <div>
-                <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
-                  Off by default (same as Radarr/Sonarr's own "Kodi (XBMC)/Emby" metadata
-                  consumer). When on, importing a file also writes a same-named .nfo sidecar with
-                  title/year/overview/poster/unique-ids (Movies/ROMs/Adult and single-file
-                  collection types — Books, Comics, Manga, Online Videos, Courses — only; series
-                  episodes and Music tracks aren't covered), and editing or rematching an item's
-                  metadata refreshes it — but never overwrites an NFO another tool wrote (anything
-                  beyond title/year/plot/thumb/uniqueid, e.g. from Kodi or tinyMediaManager) or adds
-                  a sidecar beside one that would shadow it. While off, metadata edits and rematches
-                  leave NFOs alone.
-                </p>
-                <label htmlFor="settings-write-nfo-on-import-63">Write NFO on import</label>
-                <select id="settings-write-nfo-on-import-63"
-                  key={settings.writeNfoOnImport ?? "write-nfo-empty"}
-                  defaultValue={settings.writeNfoOnImport ?? "0"}
-                  onChange={(e) => saveSetting("writeNfoOnImport", e.target.value)}
-                >
-                  <option value="0">Disabled</option>
-                  <option value="1">Enabled</option>
-                </select>
-              </div>
-            ),
+            label: "Metadata Files (NFO and pictures)",
+            description: "Kodi/Jellyfin/Emby/Plex files beside the media: NFO files, posters, fanart, season posters, episode and album pictures",
+            render: () => <MetadataFilesSettings settings={settings} saveSetting={saveSetting} />,
           },
           {
             key: "skipFreeSpaceCheck",

@@ -24,6 +24,8 @@ export interface JobDef {
   catchUp?: boolean;
   /** The job the app cannot work without (the queue poll imports every finished download): it has no off switch. */
   essential?: boolean;
+  /** Starts switched off until the admin switches it on: a job that writes files on its own is not something an upgrade starts ("Run now" works). */
+  defaultOff?: boolean;
 }
 
 interface JobState {
@@ -67,7 +69,7 @@ export function registerJob(def: JobDef): void {
   const schedule = getSetting(settingKey(def.key)) || def.defaultSchedule;
   state.set(def.key, {
     schedule,
-    enabled: def.essential ? true : getSetting(enabledKey(def.key)) !== "0",
+    enabled: def.essential ? true : getSetting(enabledKey(def.key)) ? getSetting(enabledKey(def.key)) !== "0" : !def.defaultOff,
     task: null,
     running: false,
     queued: false,

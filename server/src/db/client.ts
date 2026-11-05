@@ -65,6 +65,7 @@ ensureColumn("subtitle_providers", "config", "config TEXT");
 ensureColumn("media_items", "media_info", "media_info TEXT");
 ensureColumn("episodes", "media_info", "media_info TEXT");
 ensureColumn("episodes", "overview", "overview TEXT");
+ensureColumn("episodes", "thumb_url", "thumb_url TEXT"); // the provider's still for the episode, written as "<file>-thumb.jpg" (services/metadataFiles.ts)
 ensureColumn("sub_items", "media_info", "media_info TEXT");
 ensureColumn("queue", "retry_count", "retry_count INTEGER NOT NULL DEFAULT 0");
 ensureColumn("indexers", "use_flaresolverr", "use_flaresolverr INTEGER NOT NULL DEFAULT 0");
