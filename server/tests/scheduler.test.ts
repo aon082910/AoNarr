@@ -105,6 +105,12 @@ vi.mock("../src/services/plexWatchlistSync.js", async (importOriginal) => ({
   runPlexWatchlistSync: (...args: unknown[]) => runPlexWatchlistSync(...args),
 }));
 
+const runMetadataFilesJob = vi.fn(async (..._args: unknown[]) => ({}));
+vi.mock("../src/services/metadataFiles.js", async (importOriginal) => ({
+  ...((await importOriginal()) as object),
+  runMetadataFilesJob: (...args: unknown[]) => runMetadataFilesJob(...args),
+}));
+
 let db: Awaited<ReturnType<typeof setupTestDb>>["db"];
 let config: (typeof import("../src/config.js"))["config"];
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
@@ -2226,6 +2232,21 @@ describe("startScheduler", () => {
     startScheduler();
     const def = (registeredJobs as unknown as Map<string, { heavy?: boolean; defaultOff?: boolean; name: string }>).get("writeMetadataFiles");
     expect(def).toMatchObject({ name: "Metadata Files", heavy: true, defaultOff: true });
+  });
+
+  it("tells the metadata files job whether the run was started by hand, so the weekly one can leave existing files alone (review Low 6)", async () => {
+    startScheduler();
+    const def = (registeredJobs as unknown as Map<string, { run: (signal: AbortSignal, info?: { manual: boolean }) => Promise<void> }>).get("writeMetadataFiles")!;
+    const signal = new AbortController().signal;
+    runMetadataFilesJob.mockClear();
+
+    await def.run(signal, { manual: false });
+    await def.run(signal, { manual: true });
+
+    expect(runMetadataFilesJob.mock.calls).toEqual([
+      [signal, { manual: false }],
+      [signal, { manual: true }],
+    ]);
   });
 });
 

@@ -114,6 +114,8 @@ const RULES: Readonly<Record<string, Rule>> = {
   imagesEpisodeThumbs: { oneOf: ["1", "0"] },
   imagesMusicCover: { oneOf: ["1", "0"] },
   overwriteMetadataFiles: { oneOf: ["1", "0"] },
+  // The weekly Metadata Files job replaces files only when this is on as well (metadataFiles.ts runMetadataFilesJob).
+  overwriteMetadataFilesInJob: { oneOf: ["1", "0"] },
   deleteEmptyFolders: { oneOf: ["1", "0"] },
   // Display preferences (displayPreferences.ts); an empty value is the browser's own way.
   uiWeekStart: { oneOf: UI_WEEK_STARTS },

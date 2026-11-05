@@ -5,7 +5,7 @@ import { mediaItemFromRow } from "../db/mappers.js";
 import { log } from "./logger.js";
 import { writeArtworkFile, type ArtworkResult, type ArtworkSource } from "./artworkFiles.js";
 import { finishBackgroundJob, incrementBackgroundJobDone, setBackgroundJobLabel, startBackgroundJob } from "./backgroundJobs.js";
-import { trackedFileInside } from "./fileDeletion.js";
+import { buildTrackedFolderIndex, trackedFileInside, type TrackedFolderIndex } from "./fileDeletion.js";
 import { folderSegmentsOf, ownFolderOf } from "./libraryFolder.js";
 import {
   buildAlbumNfo,
@@ -29,6 +29,7 @@ import { fetchSeriesEpisodesFor } from "./metadata.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
 import { namingTemplateOfType } from "./naming.js";
 import { rootFolderUnmountedReason } from "./rootFolderCheck.js";
+import { getSetting } from "./settingsStore.js";
 import { isTitleMoving } from "./titleMoveLock.js";
 
 /**
@@ -99,6 +100,8 @@ interface Ctx {
   tally: Tally;
   /** NFO files are written only where there is none (a run over existing titles), not refreshed. */
   nfoOnlyIfMissing: boolean;
+  /** The tracked file folders of a library-wide run, read once; absent for a single title, which asks the database. */
+  tracked?: TrackedFolderIndex;
 }
 
 function parseIds(raw: unknown): Record<string, string> {
@@ -175,10 +178,18 @@ function seasonPosterStem(season: number): string {
 // Movies (single-file items)
 // ---------------------------------------------------------------------------------------------------------------------
 
+/**
+ * Whether another title has a file in `folder`. A library-wide run answers from the one pass it made over the library's
+ * paths (trackedFileInside is three table scans per call); a single title asks the database.
+ */
+async function otherTitleHasFilesIn(folder: string, itemId: number, tracked: TrackedFolderIndex | undefined): Promise<boolean> {
+  return tracked ? tracked.holdsOtherTitle(folder, itemId) : (await trackedFileInside(folder, itemId)) !== null;
+}
+
 /** Whether the file's folder holds anything of another title, so that its pictures need the file's name to be told apart. */
-async function folderIsShared(dir: string, rootPath: string, itemId: number): Promise<boolean> {
+async function folderIsShared(dir: string, rootPath: string, itemId: number, tracked: TrackedFolderIndex | undefined): Promise<boolean> {
   if (path.resolve(dir) === path.resolve(rootPath)) return true;
-  return (await trackedFileInside(dir, itemId)) !== null;
+  return otherTitleHasFilesIn(dir, itemId, tracked);
 }
 
 async function writeMovieImages(ctx: Ctx, file: string, rootPath: string): Promise<void> {
@@ -187,7 +198,7 @@ async function writeMovieImages(ctx: Ctx, file: string, rootPath: string): Promi
   const dir = path.dirname(file);
   // "poster.jpg" in a folder of its own, "<name>-poster.jpg" beside the file when the folder is shared (Kodi and Plex read both).
   const base = path.basename(file, path.extname(file));
-  const shared = await folderIsShared(dir, rootPath, ctx.item.id);
+  const shared = await folderIsShared(dir, rootPath, ctx.item.id, ctx.tracked);
   const common = { overwrite: options.overwrite, signal: ctx.signal };
   tally.art(await writeArtworkFile(dir, shared ? `${base}-poster` : "poster", posterSource(row), { ...common, alsoCountsAs: shared ? [] : ["folder"] }));
   if (ctx.signal?.aborted) return;
@@ -216,7 +227,7 @@ interface EpisodeRow {
 }
 
 /** The show's folder: where its tvshow.nfo, poster and fanart go. */
-async function showFolderOf(item: MediaItem, rootPath: string, files: string[]): Promise<string | null> {
+async function showFolderOf(item: MediaItem, rootPath: string, files: string[], tracked: TrackedFolderIndex | undefined): Promise<string | null> {
   const stored = folderSegmentsOf(item.libraryFolder);
   let folder: string | null = null;
   if (stored) {
@@ -234,7 +245,7 @@ async function showFolderOf(item: MediaItem, rootPath: string, files: string[]):
     }
   }
   // A folder another title keeps files in is not this show's own: its poster would be that other show's too.
-  if (folder && (await trackedFileInside(folder, item.id)) !== null) return null;
+  if (folder && (await otherTitleHasFilesIn(folder, item.id, tracked))) return null;
   return folder;
 }
 
@@ -290,6 +301,8 @@ function groupByFile(rows: EpisodeRow[]): Map<string, EpisodeRow[]> {
 /** State shared by the titles of one library-wide run, so a provider that fails is not asked about every show. */
 interface RunState {
   providerFailures: number;
+  /** Which folders have tracked files, read once when the run starts instead of three table scans per title. */
+  tracked?: TrackedFolderIndex;
 }
 
 /**
@@ -327,7 +340,7 @@ async function writeShowFiles(ctx: Ctx, rootPath: string, state: RunState | unde
   const { options } = ctx;
   if (options.images && options.episodeThumbs && imagesApplyTo(ctx.item)) await fillEpisodeStills(ctx, present, state);
 
-  const folder = await showFolderOf(ctx.item, rootPath, [...groupByFile(present).keys()]);
+  const folder = await showFolderOf(ctx.item, rootPath, [...groupByFile(present).keys()], ctx.tracked);
   if (folder) {
     await writeShowFolderFiles(ctx, folder, [...new Set(present.map((r) => Number(r.season_number)))], options.nfo.tv);
   }
@@ -409,7 +422,7 @@ async function writeMusicFiles(ctx: Ctx, rootPath: string): Promise<string | nul
     await writeAlbumFolderFiles(ctx, album, album.file_path as string);
   }
   const artistFolder = ownFolderOf(folders[0].file_path as string, [path.resolve(rootPath)], namingTemplateOfType(ctx.item.type), !!getMediaTypeConfig(ctx.item.type).multiFilePerChild);
-  if (artistFolder && isDirectory(artistFolder) && (await trackedFileInside(artistFolder, ctx.item.id)) === null) {
+  if (artistFolder && isDirectory(artistFolder) && !(await otherTitleHasFilesIn(artistFolder, ctx.item.id, ctx.tracked))) {
     await writeArtistFolderFiles(ctx, artistFolder);
     return null;
   }
@@ -461,7 +474,7 @@ export async function writeMetadataFilesForItem(itemId: number, opts: WriteTitle
   writing.add(item.id);
   try {
     const tally = new Tally();
-    const ctx: Ctx = { row, item, options, signal: opts.signal, tally, nfoOnlyIfMissing: !options.overwrite };
+    const ctx: Ctx = { row, item, options, signal: opts.signal, tally, nfoOnlyIfMissing: !options.overwrite, tracked: opts.state?.tracked };
     const kind: MetadataKind = metadataKindOf(item);
     let note: string | null = null;
     if (kind === "movie") {
@@ -509,10 +522,18 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * Writes the enabled metadata files for every title that has files: the "Metadata Files" job. Titles go one at a time, with
  * a short pause after one that did any work, and a title that fails is counted and passed over. Stops between files when
  * cancelled. One summary line in the log.
+ *
+ * `info.manual === false` is the weekly run: with "overwrite" on it would download and replace every picture again each
+ * week, including ones the admin put there by hand, so it leaves existing files alone unless "overwriteMetadataFilesInJob"
+ * is on as well. "Write files now", the Jobs page's Run now and a direct call (no `info`) follow "overwrite" as it is.
  */
-export async function runMetadataFilesJob(signal?: AbortSignal): Promise<MetadataFilesRunSummary> {
+export async function runMetadataFilesJob(signal?: AbortSignal, info?: { manual: boolean }): Promise<MetadataFilesRunSummary> {
   const summary: MetadataFilesRunSummary = { titles: 0, written: 0, skipped: 0, failed: 0, titlesSkipped: 0, cancelled: false };
   const options = readMetadataFileOptions();
+  if (info?.manual === false && options.overwrite && getSetting("overwriteMetadataFilesInJob") !== "1") {
+    options.overwrite = false;
+    log.info('[metadataFiles] the weekly run leaves existing files alone although "Replace files" is on (switch on "also in the weekly run" to let it replace them)');
+  }
   const candidates = (await db.prepare("SELECT id, title, type, legacy_shape FROM media_items WHERE has_file = 1 ORDER BY id").all()) as {
     id: number;
     title: string;
@@ -539,6 +560,12 @@ export async function runMetadataFilesJob(signal?: AbortSignal): Promise<Metadat
   }
   const state: RunState = { providerFailures: 0 };
   try {
+    // One pass over the library's paths for the whole run: a title asks "does another title keep files in this folder" up to
+    // three times, and answering each from the tables is three scans of them.
+    state.tracked = await buildTrackedFolderIndex().catch((err) => {
+      log.warn("[metadataFiles] could not read which folders have tracked files, so each title asks the database instead:", (err as Error).message);
+      return undefined;
+    });
     for (const title of titles) {
       if (signal?.aborted) {
         summary.cancelled = true;
@@ -631,7 +658,12 @@ export async function writeImportedEpisodeFiles(args: {
       .all(...ids)) as EpisodeRow[];
     const byId = new Map(rows.map((r) => [Number(r.id), r]));
     const folder = args.folderSegments && args.folderSegments.length > 0 ? path.join(args.rootFolderPath, ...args.folderSegments) : null;
-    if (folder) await writeShowFolderFiles(ctx, folder, [...new Set(rows.map((r) => Number(r.season_number)))], withNfo);
+    // The show's own files go only into a folder that is the show's own, as the library job has it (showFolderOf): a naming
+    // template that gives two shows one folder would otherwise hang the first show's poster and tvshow.nfo on the second too.
+    // The episode files below are named after the episode file, so they are written either way.
+    if (folder && !(await otherTitleHasFilesIn(folder, ctx.item.id, undefined))) {
+      await writeShowFolderFiles(ctx, folder, [...new Set(rows.map((r) => Number(r.season_number)))], withNfo);
+    }
     await mapLimit(args.files, EPISODE_IMAGE_CONCURRENCY, async ({ dest, episodeIds }) => {
       const episodes = episodeIds.map((id) => byId.get(id)).filter((r): r is EpisodeRow => !!r);
       if (episodes.length > 0) await writeEpisodeFileFiles(ctx, dest, episodes, withNfo);

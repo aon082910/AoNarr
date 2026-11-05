@@ -6,8 +6,15 @@ import { fetchMediaServerArtwork, isMediaServerArtworkRef } from "./mediaServer.
 import { fetchScreenscraperArtwork, isScreenscraperArtworkRef } from "./metadata.js";
 import { writeFileAtomicSync } from "./atomicWrite.js";
 
+/**
+ * What XML 1.0 cannot carry at all, not even as an entity: the C0 controls except tab, line feed and carriage return, U+FFFE and
+ * U+FFFF, and a surrogate half with no partner. A provider's biography or plot with one stray \u000B in it would otherwise
+ * make the whole NFO ill-formed, and a strict reader (Jellyfin) then refuses the file.
+ */
+const XML_FORBIDDEN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
 function escapeXml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return s.replace(XML_FORBIDDEN, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 export interface ExportableItem {

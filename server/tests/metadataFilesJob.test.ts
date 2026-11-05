@@ -36,7 +36,7 @@ const jpegFor = (url: string) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0
 
 const SWITCHES = [
   "writeNfoOnImport", "nfoTvEnabled", "nfoMusicEnabled", "writeImagesOnImport",
-  "imagesPosterFanart", "imagesSeasonPosters", "imagesEpisodeThumbs", "imagesMusicCover", "overwriteMetadataFiles",
+  "imagesPosterFanart", "imagesSeasonPosters", "imagesEpisodeThumbs", "imagesMusicCover", "overwriteMetadataFiles", "overwriteMetadataFilesInJob",
 ];
 
 beforeEach(async () => {
@@ -528,6 +528,171 @@ describe("runMetadataFilesJob", () => {
 
     expect(summary.failed).toBeGreaterThanOrEqual(1);
     expect(names(good.dir)).toContain("Heat (1995).nfo");
+  });
+});
+
+describe("the weekly run and \"replace files\" (review Low 6)", () => {
+  async function movieWithFiles() {
+    const root = await rootFolder("movie");
+    const m = await movie(root);
+    setSetting("writeNfoOnImport", "1");
+    setSetting("writeImagesOnImport", "1");
+    await files.runMetadataFilesJob(); // the first pass writes everything
+    await db.prepare("UPDATE media_items SET overview = 'Changed.' WHERE id = ?").run(m.id);
+    fetched = [];
+    return m;
+  }
+  const nfoOf = (m: { dir: string }) => fs.readFileSync(path.join(m.dir, "Heat (1995).nfo"), "utf-8");
+
+  it("leaves what is there alone when it is the scheduled run, although \"replace files\" is on", async () => {
+    const m = await movieWithFiles();
+    setSetting("overwriteMetadataFiles", "1");
+
+    const summary = await files.runMetadataFilesJob(undefined, { manual: false });
+
+    expect(summary).toMatchObject({ titles: 1, written: 0, skipped: 3, failed: 0 });
+    expect(fetched).toEqual([]);
+    expect(nfoOf(m)).toContain("Robbers.");
+  });
+
+  it("replaces them in the scheduled run once the weekly-run switch is on as well", async () => {
+    const m = await movieWithFiles();
+    setSetting("overwriteMetadataFiles", "1");
+    setSetting("overwriteMetadataFilesInJob", "1");
+
+    const summary = await files.runMetadataFilesJob(undefined, { manual: false });
+
+    expect(summary).toMatchObject({ titles: 1, written: 3, failed: 0 });
+    expect(fetched).toHaveLength(2);
+    expect(nfoOf(m)).toContain("Changed.");
+  });
+
+  it("does not depend on the weekly-run switch for a run somebody started (Write files now, Run now) or for a title's own button", async () => {
+    const m = await movieWithFiles();
+    setSetting("overwriteMetadataFiles", "1");
+
+    const manual = await files.runMetadataFilesJob(undefined, { manual: true });
+    expect(manual.written).toBe(3);
+    expect(nfoOf(m)).toContain("Changed.");
+
+    await db.prepare("UPDATE media_items SET overview = 'Changed again.' WHERE id = ?").run(m.id);
+    const single = await files.writeMetadataFilesForItem(m.id);
+    expect(single.written).toBe(3);
+    expect(nfoOf(m)).toContain("Changed again.");
+
+    await db.prepare("UPDATE media_items SET overview = 'Third.' WHERE id = ?").run(m.id);
+    await files.runMetadataFilesJob(); // a direct call has no run info and counts as started by hand
+    expect(nfoOf(m)).toContain("Third.");
+  });
+
+  it("changes nothing for a scheduled run while \"replace files\" is off, whatever the weekly-run switch says", async () => {
+    const m = await movieWithFiles();
+    setSetting("overwriteMetadataFilesInJob", "1");
+
+    const summary = await files.runMetadataFilesJob(undefined, { manual: false });
+
+    expect(summary.written).toBe(0);
+    expect(nfoOf(m)).toContain("Robbers.");
+  });
+});
+
+describe("one pass over the tracked paths per run (review Low 2)", () => {
+  async function prepareStatements(work: () => Promise<void>): Promise<string[]> {
+    const instance = await (await import("../src/db/index.js")).initDb();
+    const spy = vi.spyOn(instance, "prepare");
+    try {
+      await work();
+      return spy.mock.calls.map((call) => String(call[0]));
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  async function libraryOf(count: number) {
+    const movies = await rootFolder("movie");
+    const series = await rootFolder("series");
+    for (let i = 0; i < count; i++) await movie(movies, `Movie ${i}`, 2000 + i);
+    // A show whose folder another title shares, so the run has to judge it too.
+    const s = await show(series, [null]);
+    await db
+      .prepare("INSERT INTO media_items (type, title, sort_title, root_folder_id, has_file, monitored, status, path) VALUES ('movie','Squatter','squatter',?,1,1,'downloaded',?)")
+      .run(series.id, touch(path.join(s.dir, "Squatter.mkv")));
+    return s;
+  }
+
+  async function countsFor(titles: number): Promise<{ scans: number; passes: number }> {
+    for (const table of ["episodes", "seasons", "sub_items", "media_items", "root_folders"]) await db.prepare(`DELETE FROM ${table}`).run();
+    fs.rmSync(libraryDir, { recursive: true, force: true });
+    fs.mkdirSync(libraryDir, { recursive: true });
+    await libraryOf(titles);
+    setSetting("writeImagesOnImport", "1");
+    const sql = await prepareStatements(async () => void (await files.runMetadataFilesJob()));
+    return {
+      // trackedFileInside's table scans: a substr match on a path column, three per call
+      scans: sql.filter((s) => /\bsubstr\(/i.test(s)).length,
+      // the one pass over each of the three path columns
+      passes: sql.filter((s) => /AS owner FROM (media_items|episodes|sub_items) WHERE/.test(s)).length,
+    };
+  }
+
+  it("asks the same number of questions of the tables for 2 movies as for 12, and none of them is a per-title scan", async () => {
+    const few = await countsFor(2);
+    const many = await countsFor(12);
+
+    expect(few).toEqual({ scans: 0, passes: 3 });
+    expect(many).toEqual({ scans: 0, passes: 3 });
+  });
+
+  it("still keeps a movie's pictures apart when another title is in its folder, and a show out of a folder another title uses", async () => {
+    const movies = await rootFolder("movie");
+    const series = await rootFolder("series");
+    const a = await movie(movies, "Heat", 1995);
+    const squatter = touch(path.join(a.dir, "Other.mkv"));
+    await db
+      .prepare("INSERT INTO media_items (type, title, sort_title, root_folder_id, has_file, monitored, status, path) VALUES ('movie','Other','other',?,1,1,'downloaded',?)")
+      .run(movies.id, squatter);
+    const s = await show(series, [null]);
+    await db
+      .prepare("INSERT INTO media_items (type, title, sort_title, root_folder_id, has_file, monitored, status, path) VALUES ('movie','Squatter','squatter',?,1,1,'downloaded',?)")
+      .run(series.id, touch(path.join(s.dir, "Squatter.mkv")));
+    setSetting("writeImagesOnImport", "1");
+
+    await files.runMetadataFilesJob();
+
+    expect(names(a.dir)).toContain("Heat (1995)-poster.jpg"); // the folder is shared: pictures named after the file
+    expect(names(a.dir)).not.toContain("poster.jpg");
+    expect(names(s.dir)).not.toContain("poster.jpg"); // the show's folder holds a stranger's file: only episode files were written
+    expect(names(path.join(s.dir, "Season 01"))).not.toContain("poster.jpg");
+  });
+
+  it("answers like trackedFileInside for every folder and every title it may exclude", async () => {
+    const { buildTrackedFolderIndex, trackedFileInside } = await import("../src/services/fileDeletion.js");
+    const movies = await rootFolder("movie");
+    const series = await rootFolder("series");
+    const music = await rootFolder("artist");
+    const m1 = await movie(movies, "Heat", 1995);
+    const m2 = await movie(movies, "Heat Two", 2001);
+    const s = await show(series, [null, null]);
+    const other = Number(
+      (await db.prepare("INSERT INTO media_items (type, title, sort_title, root_folder_id, has_file, monitored, status) VALUES ('series','Other','other',?,1,1,'downloaded')").run(series.id)).lastInsertRowid
+    );
+    await db
+      .prepare("INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path) VALUES (?, 1, 9, 'x', 1, 1, ?)")
+      .run(other, path.join(s.dir, "Season 01", "Other - S01E09.mkv"));
+    const a = await artist(music);
+    const folders = [
+      m1.dir, m2.dir, m1.file, movies.path, `${movies.path}${path.sep}`, path.join(movies.path, "Heat"), path.join(movies.path, "Nope"),
+      s.dir, path.join(s.dir, "Season 01"), path.join(s.dir, "Season 02"), path.join(series.path, "Sho"), series.path,
+      a.artistDir, a.albumDir, path.join(a.albumDir, "01 - One More Time.mp3"), music.path,
+    ];
+    const index = await buildTrackedFolderIndex();
+
+    for (const folder of folders) {
+      for (const exclude of [-1, m1.id, m2.id, s.id, other, a.id]) {
+        const expected = (await trackedFileInside(folder, exclude)) !== null;
+        expect(index.holdsOtherTitle(folder, exclude), `${folder} without title ${exclude}`).toBe(expected);
+      }
+    }
   });
 });
 

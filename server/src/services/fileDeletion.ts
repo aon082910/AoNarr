@@ -13,7 +13,7 @@ import { offlineStorageFor } from "./deletedFileCheck.js";
 import { resetSearchBackoff, wakeLeaf } from "./searchBackoff.js";
 import { notifyFileDeleted } from "./notifications.js";
 import { folderSegmentsOf, ownFolderOf } from "./libraryFolder.js";
-import { FS_CALL_TIMEOUT_MS, StorageTimeoutError, pathExistsAsync, readdirAsync, readdirNamesAsync } from "./fsAsync.js";
+import { FS_CALL_TIMEOUT_MS, StorageTimeoutError, createYielder, pathExistsAsync, readdirAsync, readdirNamesAsync } from "./fsAsync.js";
 
 /** How long one directory read of a delete may take before its storage is called unresponsive (a test shortens it). */
 let walkTimeoutMs = FS_CALL_TIMEOUT_MS;
@@ -50,6 +50,59 @@ export async function trackedFileInside(folder: string, excludeItemId = -1): Pro
     if (row) return row.p;
   }
   return null;
+}
+
+/**
+ * Every folder that has a tracked file at or inside it, read in one pass over the library's paths, for a run that asks
+ * the question for every title (the metadata files job). trackedFileInside is three table scans per call (a `substr`
+ * match cannot use an index), which is nothing for one delete and 15,000 scans for a library of 5,000 titles. A folder maps
+ * to who has files there: the first title seen and whether a second one was seen too, which is all "does another title
+ * keep a file here" needs. Only as current as the moment it was built, which is enough for a run that does not move files.
+ */
+export class TrackedFolderIndex {
+  private readonly folders = new Map<string, { owner: number; many: boolean }>();
+
+  /** Records that `owner` has a file at `file`: the file's own path counts, and so does every folder above it. */
+  add(file: string, owner: number): void {
+    // The prefix before each separator, deepest first: the same strings trackedFileInside matches with `folder + path.sep`.
+    for (let end = file.length; end > 0; end = file.lastIndexOf(path.sep, end - 1)) {
+      const key = end === file.length ? file : file.slice(0, end);
+      const known = this.folders.get(key);
+      if (!known) {
+        this.folders.set(key, { owner, many: false });
+      } else if (known.many || known.owner === owner) {
+        // Everything above this folder already knows this owner or knows there are several: nothing more to record.
+        return;
+      } else {
+        known.many = true;
+      }
+    }
+  }
+
+  /** Whether a title other than `excludeItemId` has a file at or inside `folder` (what trackedFileInside answers with a path). */
+  holdsOtherTitle(folder: string, excludeItemId = -1): boolean {
+    const known = this.folders.get(folder);
+    return !!known && (known.many || known.owner !== excludeItemId);
+  }
+}
+
+/** One pass over `media_items.path`, `episodes.file_path` and `sub_items.file_path`: three queries, however many titles there are. */
+export async function buildTrackedFolderIndex(): Promise<TrackedFolderIndex> {
+  const index = new TrackedFolderIndex();
+  const yieldNow = createYielder(10);
+  const tables = [
+    ["media_items", "path", "id"],
+    ["episodes", "file_path", "media_item_id"],
+    ["sub_items", "file_path", "media_item_id"],
+  ] as const;
+  for (const [table, column, ownerColumn] of tables) {
+    const rows = (await db.prepare(`SELECT ${column} AS p, ${ownerColumn} AS owner FROM ${table} WHERE ${column} IS NOT NULL`).all()) as { p: string; owner: number | string }[];
+    for (const row of rows) {
+      index.add(row.p, Number(row.owner));
+      await yieldNow();
+    }
+  }
+  return index;
 }
 
 /** Everything a library can hold as media, whatever the type: a shared folder's other content is judged by this, not by the deleted title's type alone. */

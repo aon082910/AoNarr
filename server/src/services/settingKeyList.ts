@@ -235,6 +235,7 @@ export const SETTING_KEY_LIST: readonly string[] = [
   "imagesEpisodeThumbs",
   "imagesMusicCover",
   "overwriteMetadataFiles",
+  "overwriteMetadataFilesInJob",
   "youtubeApiKey",
   "ytdlpDownloadArchiveEnabled",
   "ytdlpEmbedSubtitles",

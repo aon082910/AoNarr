@@ -60,6 +60,7 @@ beforeEach(async () => {
     imagesEpisodeThumbs: "",
     imagesMusicCover: "",
     overwriteMetadataFiles: "",
+    overwriteMetadataFilesInJob: "",
   })) {
     setSetting(key, value);
   }
@@ -284,6 +285,63 @@ describe("shows at import", () => {
     expect(fs.readdirSync(path.join(folder.path, "Show"))).toEqual(["Season 01"]);
     expect(fs.readdirSync(path.join(folder.path, "Show", "Season 01")).filter((n) => !n.endsWith(".mkv"))).toEqual([]);
     expect(fetched).toEqual([]);
+  });
+
+  describe("two shows that the naming puts in one folder (review Low 3)", () => {
+    /** Show A already has an episode in the shared "Show" folder; show B (same title, so the same folder) is about to import one. */
+    async function sharedFolder() {
+      const folder = await insertRootFolder("series");
+      const a = await insertShow(folder.id, [1]);
+      const aFile = path.join(folder.path, "Show", "Season 01", "Show - S01E01 - Episode 1.mkv");
+      fs.mkdirSync(path.dirname(aFile), { recursive: true });
+      fs.writeFileSync(aFile, "a");
+      await db.prepare("UPDATE episodes SET has_file = 1, file_path = ? WHERE id = ?").run(aFile, a.episodeIds[0]);
+      await db.prepare("UPDATE media_items SET has_file = 1 WHERE id = ?").run(a.showId);
+      const b = await insertShow(folder.id, [2]);
+      return { folder, a, b, showDir: path.join(folder.path, "Show") };
+    }
+
+    it("writes B's episode files but neither a poster, a fanart, a season poster nor a tvshow.nfo into the shared folder", async () => {
+      const { b, showDir } = await sharedFolder();
+      setSetting("nfoTvEnabled", "1");
+      setSetting("writeImagesOnImport", "1");
+
+      const placed = await placeFile({ itemId: b.showId, episodeId: b.episodeIds[0], subItemId: null, sourceFile: download("Show.S01E02.mkv"), quality: null });
+
+      expect(path.dirname(path.dirname(placed.destPath))).toBe(showDir);
+      expect(fs.readdirSync(showDir)).toEqual(["Season 01"]);
+      const base = path.basename(placed.destPath, path.extname(placed.destPath));
+      expect(fs.readdirSync(path.dirname(placed.destPath)).sort()).toEqual(
+        ["Show - S01E01 - Episode 1.mkv", path.basename(placed.destPath), `${base}.nfo`, `${base}-thumb.jpg`].sort()
+      );
+      expect(fetched).toEqual(["https://img.example.com/show-e2.jpg"]);
+    });
+
+    it("does not replace the folder's picture or tvshow.nfo with B's, even with replace files on", async () => {
+      const { b, showDir } = await sharedFolder();
+      fs.writeFileSync(path.join(showDir, "poster.jpg"), "the first show's poster");
+      fs.writeFileSync(path.join(showDir, "tvshow.nfo"), "<tvshow><title>First</title></tvshow>");
+      setSetting("nfoTvEnabled", "1");
+      setSetting("writeImagesOnImport", "1");
+      setSetting("overwriteMetadataFiles", "1");
+
+      await placeFile({ itemId: b.showId, episodeId: b.episodeIds[0], subItemId: null, sourceFile: download("Show.S01E02.mkv"), quality: null });
+
+      expect(fs.readFileSync(path.join(showDir, "poster.jpg"), "utf-8")).toBe("the first show's poster");
+      expect(fs.readFileSync(path.join(showDir, "tvshow.nfo"), "utf-8")).toBe("<tvshow><title>First</title></tvshow>");
+    });
+
+    it("refuses the same way for a season pack, which writes its episode NFOs all the same", async () => {
+      const { folder, b } = await sharedFolder();
+      setSetting("nfoTvEnabled", "1");
+      setSetting("writeImagesOnImport", "1");
+      const anchor = download(path.join("Show.S01.PACK", "Show.S01E02.mkv"));
+
+      await placeSeasonPackFiles({ itemId: b.showId, seasonNumber: 1, anchorFile: anchor, quality: null });
+
+      expect(fs.readdirSync(path.join(folder.path, "Show"))).toEqual(["Season 01"]);
+      expect(fs.readdirSync(path.join(folder.path, "Show", "Season 01")).filter((n) => n.endsWith(".nfo"))).toHaveLength(1);
+    });
   });
 });
 
