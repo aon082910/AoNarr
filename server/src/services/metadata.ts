@@ -3155,6 +3155,49 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
       };
     }
 
+    // The foreign ids of Lidarr's and Readarr's lookups (the Starr layer's /artist/lookup and /author/lookup): an artist's
+    // MusicBrainz id and an author's Open Library id.
+    case "musicbrainz": {
+      if (type !== "artist") throw new Error(`MusicBrainz id lookup isn't available for "${type}"`);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new Error(`"${id}" is not a MusicBrainz id`);
+      const res = await fetchWithTimeout(`https://musicbrainz.org/ws/2/artist/${id.toLowerCase()}?fmt=json`, { headers: { "User-Agent": MUSICBRAINZ_USER_AGENT } });
+      if (!res.ok) throw new Error(res.status === 404 ? `No MusicBrainz artist found for id "${id}"` : `MusicBrainz lookup failed: HTTP ${res.status}`);
+      const a: any = await res.json();
+      if (!a?.id || !a?.name) throw new Error(`No MusicBrainz artist found for id "${id}"`);
+      // MusicBrainz has no artist artwork of its own; Deezer's public search does, by name (as searchMetadata does for a search).
+      let posterUrl: string | null = null;
+      try {
+        posterUrl = (await searchArtistsDeezer(a.name)).find((d) => d.posterUrl && d.title.toLowerCase() === String(a.name).toLowerCase())?.posterUrl ?? null;
+      } catch {
+        // best-effort enrichment only
+      }
+      return {
+        title: a.name,
+        year: a["life-span"]?.begin ? Number(String(a["life-span"].begin).slice(0, 4)) || null : null,
+        overview: a.disambiguation || null,
+        posterUrl,
+        externalIds: { musicbrainz: a.id },
+        status: a["life-span"]?.ended ? "Ended" : "Active",
+      };
+    }
+
+    case "openlibrary": {
+      if (type !== "author") throw new Error(`Open Library id lookup isn't available for "${type}"`);
+      if (!/^OL\d+A$/i.test(id)) throw new Error(`"${id}" is not an Open Library author id`);
+      const key = id.toUpperCase();
+      const res = await fetchWithTimeout(`https://openlibrary.org/authors/${key}.json`);
+      if (!res.ok) throw new Error(res.status === 404 ? `No Open Library author found for id "${id}"` : `Open Library lookup failed: HTTP ${res.status}`);
+      const a: any = await res.json();
+      if (!a?.name) throw new Error(`No Open Library author found for id "${id}"`);
+      return {
+        title: a.name,
+        year: a.birth_date ? Number(String(a.birth_date).slice(-4)) || null : null,
+        overview: openLibraryText(a.bio),
+        posterUrl: `https://covers.openlibrary.org/a/olid/${key}-M.jpg`,
+        externalIds: { openlibrary: key },
+      };
+    }
+
     case "youtubePlaylist":
       return fetchPlaylistByIdYoutube(id);
 

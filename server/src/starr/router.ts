@@ -7,6 +7,7 @@ import { registerSystemRoutes } from "./systemRoutes.js";
 import { registerIndexerRoutes } from "./indexerRoutes.js";
 import { registerActivityRoutes } from "./activityRoutes.js";
 import { registerLibraryRoutes } from "./libraryRoutes.js";
+import { registerMusicBookRoutes } from "./musicBookRoutes.js";
 import { registerCommandRoutes } from "./commandRoutes.js";
 import { starrOpenApi } from "./openapi.js";
 import { STARR_ROUTE_DOCS, type RouteDoc } from "./routeDocs.js";
@@ -110,6 +111,8 @@ function buildApp(app: StarrApp): Router {
   registerSystemRoutes(routes);
   registerIndexerRoutes(routes);
   registerActivityRoutes(routes);
+  // Before the library routes: their `/artist/:id` would take "lookup" for an id.
+  registerMusicBookRoutes(routes);
   registerLibraryRoutes(routes);
   registerCommandRoutes(routes);
   api.get("/openapi.json", (_req, res) => {

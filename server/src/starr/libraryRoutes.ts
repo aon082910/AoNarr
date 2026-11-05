@@ -31,18 +31,18 @@ import type { StarrRoutes } from "./router.js";
 
 const pascal = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 
-async function requireTitle(app: StarrApp, id: number): Promise<any> {
+export async function requireTitle(app: StarrApp, id: number): Promise<any> {
   const row = await titleRow(app, id);
   if (!row) throw new HttpError(404, "NotFound");
   return row;
 }
 
-async function oneResource(ctx: LibraryContext, row: any): Promise<any> {
+export async function oneResource(ctx: LibraryContext, row: any): Promise<any> {
   return (await titleResources(ctx, [row]))[0];
 }
 
 /** The library item an identity names, matching on any id the two share. */
-async function findExisting(app: StarrApp, ids: Record<string, string>): Promise<any | null> {
+export async function findExisting(app: StarrApp, ids: Record<string, string>): Promise<any | null> {
   const wanted = Object.entries(ids).filter(([key, value]) => value && ["tvdb", "tmdb", "imdb", "musicbrainz", "openlibrary"].includes(key));
   if (wanted.length === 0) return null;
   const rows = await titleRows(app);
@@ -147,7 +147,7 @@ async function lookupResource(ctx: LibraryContext, result: MetadataSearchResult)
 // --- add -------------------------------------------------------------------------------------------------------------
 
 /** The root folder an add asks for by path: it has to be one of this app's. */
-async function rootFolderByPath(app: StarrApp, folderPath: unknown): Promise<{ id: number; media_type: string } | null> {
+export async function rootFolderByPath(app: StarrApp, folderPath: unknown): Promise<{ id: number; media_type: string } | null> {
   if (typeof folderPath !== "string" || !folderPath.trim()) return null;
   const f = typeFilter(app, "media_type");
   const rows = (await db.prepare(`SELECT id, path, media_type FROM root_folders WHERE ${f.sql}`).all(...f.params)) as { id: number; path: string; media_type: string }[];
@@ -269,7 +269,7 @@ async function addTitle(req: any, app: StarrApp): Promise<any> {
 // --- edit ------------------------------------------------------------------------------------------------------------
 
 /** The checks the native routes leave to a foreign key or do not make: what an add or an edit names has to exist. */
-async function checkEdits(app: StarrApp, b: any): Promise<void> {
+export async function checkEdits(app: StarrApp, b: any): Promise<void> {
   const bad = (propertyName: string, errorMessage: string) => validationFailure([{ propertyName, errorMessage }]);
   if (Number(b.qualityProfileId) > 0 && !(await db.prepare("SELECT 1 AS ok FROM quality_profiles WHERE id = ?").get(Number(b.qualityProfileId)))) {
     throw bad("QualityProfileId", `Quality profile ${b.qualityProfileId} does not exist`);
@@ -328,7 +328,7 @@ async function editTitle(req: any, app: StarrApp, id: number): Promise<any> {
  * one show) would otherwise both pass the "already added" check before either had inserted, and make two series.
  */
 let addQueue: Promise<unknown> = Promise.resolve();
-function oneAddAtATime<T>(work: () => Promise<T>): Promise<T> {
+export function oneAddAtATime<T>(work: () => Promise<T>): Promise<T> {
   const run = addQueue.then(work, work);
   addQueue = run.catch(() => undefined);
   return run;
