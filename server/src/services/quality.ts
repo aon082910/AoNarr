@@ -155,6 +155,57 @@ function withAfter(list: string[], anchor: string, names: string[]): string[] {
   return next;
 }
 
+/**
+ * One profile's allowed list and groups as the ladder extension leaves them (the step of the migration below, kept
+ * apart so a settings template made before the extension can be given the same: it would otherwise undo it).
+ * `added` names the tiers the ladder gained, or has now: a profile that allows "SD" gains the SD-class ones beside it,
+ * one that allows "DVD" gains DVD-R, a group holding SD or DVD takes the new members of that class, and SD that is in
+ * no group becomes one with the tiers split out of it. A profile that allows none of that comes back as it was.
+ */
+export function extendProfileForLadder(
+  allowed: string[],
+  groups: QualityGroups,
+  added: readonly string[]
+): { allowed: string[]; groups: QualityGroups; changed: boolean } {
+  const sdClass = SD_CLASS_QUALITIES.filter((n) => added.includes(n));
+  const dvdImage = added.includes(DVD_IMAGE_QUALITY) ? [DVD_IMAGE_QUALITY] : [];
+  let nextAllowed = allowed;
+  if (nextAllowed.includes("SD")) nextAllowed = withAfter(nextAllowed, "SD", sdClass);
+  if (nextAllowed.includes("DVD")) nextAllowed = withAfter(nextAllowed, "DVD", dvdImage);
+
+  // A group that holds SD (or DVD) takes the new members of that class, when the profile now allows them.
+  const grouped = new Set(groups.flat());
+  const nextGroups = groups.map((group) => {
+    const gained = [...(group.includes("SD") ? sdClass : []), ...(group.includes("DVD") ? dvdImage : [])].filter((n) => nextAllowed.includes(n) && !group.includes(n));
+    return gained.length > 0 ? [...group, ...gained] : group;
+  });
+  // SD that is in no group becomes one with the tiers split out of it: they were one tier, and a profile that
+  // allowed SD must not start upgrading an "SD" file to the SDTV release of the same kind.
+  if (nextAllowed.includes("SD") && !grouped.has("SD")) {
+    const split = sdClass.filter((n) => nextAllowed.includes(n) && !grouped.has(n));
+    if (split.length > 0) nextGroups.push(["SD", ...split]);
+  }
+
+  const allowedChanged = nextAllowed !== allowed;
+  const groupsChanged = nextGroups.length !== groups.length || nextGroups.some((g, i) => g.length !== groups[i].length);
+  return { allowed: nextAllowed, groups: parseQualityGroups(nextGroups), changed: allowedChanged || groupsChanged };
+}
+
+/**
+ * Whether a settings template was made before the ladder extension: none of its profiles carries a `qualityOrder` (every
+ * export since then writes one, null or a list) and none lists a tier the extension added. Such a template names "SD"
+ * for what is now several tiers, so its profiles get the extension's step (extendProfileForLadder) on import.
+ */
+export function templatePredatesLadderExtension(profiles: unknown): boolean {
+  if (!Array.isArray(profiles) || profiles.length === 0) return false;
+  return profiles.every((p) => {
+    if (!p || typeof p !== "object") return true;
+    const profile = p as { qualityOrder?: unknown; allowedQualities?: unknown };
+    if (profile.qualityOrder !== undefined) return false;
+    return !(Array.isArray(profile.allowedQualities) && profile.allowedQualities.some((n) => EXTENDED_LADDER_TIERS.includes(n as string)));
+  });
+}
+
 async function extendQualityLadder(): Promise<void> {
   const rows = (await db
     .prepare("SELECT id, name, rank, min_size_mb, max_size_mb, preferred_size_mb FROM qualities ORDER BY rank")
@@ -165,8 +216,6 @@ async function extendQualityLadder(): Promise<void> {
   if (added.length === 0) return;
 
   const byName = new Map(rows.map((r) => [r.name, r]));
-  const sdClass = SD_CLASS_QUALITIES.filter((n) => added.includes(n));
-  const dvdImage = added.includes(DVD_IMAGE_QUALITY) ? [DVD_IMAGE_QUALITY] : [];
   // The size limits an added tier starts with: its predecessor class's, so what was held to them stays held to them.
   const limitsFrom = (name: string): LadderRow | undefined =>
     (SD_CLASS_QUALITIES as readonly string[]).includes(name) ? byName.get("SD") : name === DVD_IMAGE_QUALITY ? byName.get("DVD") : undefined;
@@ -201,30 +250,11 @@ async function extendQualityLadder(): Promise<void> {
         continue;
       }
       if (!Array.isArray(allowed) || allowed.some((q) => typeof q !== "string")) continue;
-      let nextAllowed = allowed as string[];
-      if (nextAllowed.includes("SD")) nextAllowed = withAfter(nextAllowed, "SD", sdClass);
-      if (nextAllowed.includes("DVD")) nextAllowed = withAfter(nextAllowed, "DVD", dvdImage);
-
-      // A group that holds SD (or DVD) takes the new members of that class, when the profile now allows them.
-      const groups = parseQualityGroups(profile.quality_groups);
-      const grouped = new Set(groups.flat());
-      const nextGroups = groups.map((group) => {
-        const gained = [...(group.includes("SD") ? sdClass : []), ...(group.includes("DVD") ? dvdImage : [])].filter((n) => nextAllowed.includes(n) && !group.includes(n));
-        return gained.length > 0 ? [...group, ...gained] : group;
-      });
-      // SD that is in no group becomes one with the tiers split out of it: they were one tier, and a profile that
-      // allowed SD must not start upgrading an "SD" file to the SDTV release of the same kind.
-      if (nextAllowed.includes("SD") && !grouped.has("SD")) {
-        const split = sdClass.filter((n) => nextAllowed.includes(n) && !grouped.has(n));
-        if (split.length > 0) nextGroups.push(["SD", ...split]);
-      }
-
-      const allowedChanged = nextAllowed !== allowed;
-      const groupsChanged = nextGroups.length !== groups.length || nextGroups.some((g, i) => g.length !== groups[i].length);
-      if (!allowedChanged && !groupsChanged) continue;
+      const next = extendProfileForLadder(allowed as string[], parseQualityGroups(profile.quality_groups), added);
+      if (!next.changed) continue;
       await db
         .prepare("UPDATE quality_profiles SET allowed_qualities = ?, quality_groups = ? WHERE id = ?")
-        .run(JSON.stringify(nextAllowed), JSON.stringify(parseQualityGroups(nextGroups)), profile.id);
+        .run(JSON.stringify(next.allowed), JSON.stringify(next.groups), profile.id);
     }
   });
   log.info(`[quality] extended the quality ladder with ${added.join(", ")}`);
@@ -268,10 +298,7 @@ export async function repairUnrankedCutoffs(): Promise<number> {
     // "Best" as the profile ranks the ladder, so a profile that puts WEB-DL above Blu-ray is repaired to its WEB-DL.
     const order = rankingFromRow({ quality_order: row.quality_order }).order;
     const orderBase = Math.max(...ladder.values()) + 1;
-    const profileRank = (q: string): number => {
-      const at = order ? order.indexOf(q) : -1;
-      return at >= 0 ? orderBase + at : (ladder.get(q) as number);
-    };
+    const profileRank = (q: string): number => (order ? rankInOrder(q, order, orderBase, (n) => ladder.get(n) ?? -1) : (ladder.get(q) as number));
     let best: string | null = null;
     for (const q of candidates) {
       if (!ladder.has(q)) continue;
@@ -385,17 +412,38 @@ function asRanking(ranking: ProfileRanking | QualityGroups | null | undefined): 
 }
 
 /**
+ * Where a quality the order does not list ranks among the ones it does: in front of the first listed quality that is
+ * higher on the global ladder (after the last when none is), and in global order among the unlisted ones of the same
+ * place. The same place `reconcileQualityOrder` writes into an order, so a short order and a completed one rank alike.
+ * The result is a fraction strictly between two listed places, never a whole number: it cannot be taken for a global
+ * rank (see groupRankOfRank) or for the place of a listed quality.
+ */
+function unlistedRank(own: number, order: string[], base: number, rankOf: (name: string) => number): number {
+  const before = order.findIndex((n) => rankOf(n) > own);
+  const place = before < 0 ? order.length : before;
+  return base + place - 1 + (own + 1) / (base + 1);
+}
+
+/** A quality's rank in a profile's order of `base` + place, as `orderedRank` computes it, for a ladder given by `rankOf`. */
+function rankInOrder(name: string, order: string[], base: number, rankOf: (name: string) => number): number {
+  const own = rankOf(name);
+  if (own < 0) return own;
+  const at = order.indexOf(name);
+  return at >= 0 ? base + at : unlistedRank(own, order, base, rankOf);
+}
+
+/**
  * A quality's rank in a profile's order, before any grouping: its global rank for a profile with no order of its own;
- * for one with an order, the places in that order sit above every global rank, so a quality missing from the list ranks
- * below every listed one, in global order among the unlisted. -1 for a quality that is not on the ladder, whatever the
- * order says.
+ * for one with an order, the places in that order sit above every global rank, and a quality the order leaves out ranks
+ * where it belongs among the listed ones (see unlistedRank), not below all of them: a Remux-2160p file under a profile
+ * that lists only two 1080p tiers is still above the cutoff, as it is without an order. -1 for a quality that is not on
+ * the ladder, whatever the order says.
  */
 export function orderedRank(name: string | null, ranking?: ProfileRanking | null): number {
   const own = qualityRank(name);
   const order = asRanking(ranking).order;
   if (own < 0 || !order) return own;
-  const at = order.indexOf(name as string);
-  return at < 0 ? own : profileRankBase + at;
+  return rankInOrder(name as string, order, profileRankBase, qualityRank);
 }
 
 /** A quality's rank in a profile: that of the best quality in its group, else its own, in the profile's order. */
@@ -452,14 +500,16 @@ export function compareQualities(a: string | null, b: string | null, ranking?: P
 }
 
 /**
- * A profile's order after its allowed list changed without a new order: a quality now allowed that the order leaves out
- * would rank below every listed one, so each is put in front of the first listed quality that is higher on the global
- * ladder (at the end when none is). The order is otherwise as it was.
+ * A profile's order with every allowed quality in it: each one the order leaves out is put in front of the first
+ * listed quality that is higher on the global ladder (at the end when none is), which is where the ranking itself
+ * reads a quality the order leaves out (see unlistedRank). The order is otherwise as it was. Done when the allowed list
+ * changed without a new order, and when an order is saved, so a short one (an older client, a template) is whole.
+ * Taken lowest first, so the ones that land in the same place stand in global order.
  */
 export function reconcileQualityOrder(order: string[], allowed: string[]): string[] {
   const next = [...order];
-  for (const name of allowed) {
-    if (next.includes(name) || qualityRank(name) < 0) continue;
+  const missing = allowed.filter((name, i) => !next.includes(name) && qualityRank(name) >= 0 && allowed.indexOf(name) === i).sort((a, b) => qualityRank(a) - qualityRank(b));
+  for (const name of missing) {
     const before = next.findIndex((n) => qualityRank(n) > qualityRank(name));
     next.splice(before < 0 ? next.length : before, 0, name);
   }

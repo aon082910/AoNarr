@@ -45,7 +45,8 @@ function validateGroups(groups: unknown, allowedQualities: string[]): string[][]
 /**
  * The order a profile ranks the ladder in, from a request: undefined when not sent, null when it is to rank by the global
  * order (null, or an empty list), else a list of different quality names that are all on the ladder, worst to best.
- * A quality the list leaves out ranks below every listed one.
+ * A quality the list leaves out ranks where it belongs among the listed ones; the caller completes the list with the
+ * profile's allowed qualities (completeOrder) before it is stored.
  */
 async function orderInput(value: unknown): Promise<string[] | null | undefined> {
   if (value === undefined) return undefined;
@@ -61,6 +62,26 @@ async function orderInput(value: unknown): Promise<string[] | null | undefined> 
   const unknown = (value as string[]).filter((n) => !ladder.has(n));
   if (unknown.length > 0) throw new HttpError(400, `qualityOrder names ${unknown.length === 1 ? "a quality" : "qualities"} that ${unknown.length === 1 ? "is" : "are"} not on the ladder: ${unknown.join(", ")}`);
   return value as string[];
+}
+
+/** The qualities a stored allowed list names (an unreadable list names none). */
+function storedAllowed(raw: string | null | undefined): string[] {
+  try {
+    const parsed = JSON.parse(raw ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((q): q is string => typeof q === "string" && q !== "") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The order to store: the one sent, with every allowed quality it leaves out put in by its place on the ladder. The
+ * editor and older clients send only the allowed qualities, and a short order from any of them must not make a quality
+ * the order leaves out read as the worst of the profile. Nothing is removed, and an empty allowed list ("everything")
+ * adds nothing.
+ */
+function completeOrder(order: string[], allowed: string[]): string[] {
+  return reconcileQualityOrder(order, allowed);
 }
 
 /** A profile's wanted language from a request: undefined when not sent, null for any, else a known language name. */
@@ -96,7 +117,8 @@ qualityProfilesRouter.post(
     validateProfile(b.allowedQualities, b.cutoff);
     const maxSizeGb = b.maxSizeGb === undefined || b.maxSizeGb === null || b.maxSizeGb === "" ? null : Number(b.maxSizeGb);
     const language = languageInput(b.language);
-    const qualityOrder = await orderInput(b.qualityOrder);
+    const sentOrder = await orderInput(b.qualityOrder);
+    const qualityOrder = sentOrder ? completeOrder(sentOrder, b.allowedQualities) : null;
     const result = await db
       .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb, min_format_score, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups, language, quality_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(
@@ -162,8 +184,20 @@ qualityProfilesRouter.patch(
       sets.push("allowed_qualities = ?");
       values.push(JSON.stringify(b.allowedQualities));
     }
-    const qualityOrder = await orderInput(b.qualityOrder);
-    if (qualityOrder !== undefined) {
+    const sentOrder = await orderInput(b.qualityOrder);
+    if (sentOrder !== undefined) {
+      let qualityOrder = sentOrder;
+      if (sentOrder) {
+        // Completed with the allowed list as it will be after this request (the list sent, else the one stored).
+        let allowedAfter: string[];
+        if (Array.isArray(b.allowedQualities)) allowedAfter = b.allowedQualities;
+        else {
+          const stored = (await db.prepare("SELECT allowed_qualities FROM quality_profiles WHERE id = ?").get(req.params.id)) as { allowed_qualities: string } | undefined;
+          if (!stored) throw new HttpError(404, "Quality profile not found");
+          allowedAfter = storedAllowed(stored.allowed_qualities);
+        }
+        qualityOrder = completeOrder(sentOrder, allowedAfter);
+      }
       sets.push("quality_order = ?");
       values.push(qualityOrder ? JSON.stringify(qualityOrder) : null);
     } else if (Array.isArray(b.allowedQualities)) {

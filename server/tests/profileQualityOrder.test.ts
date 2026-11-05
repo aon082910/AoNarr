@@ -88,22 +88,43 @@ describe("the ranking helpers with a profile's own order", () => {
     expect(q.groupedRank("Not A Quality", GLOBAL)).toBe(-1);
   });
 
-  it("put the qualities a profile lists above every one it leaves out, in the profile's order", () => {
+  it("rank the qualities a profile lists in the profile's order, and one it leaves out where it belongs among them", () => {
     expect(q.groupedRank("WEBDL-1080p", WEB_FIRST)).toBeGreaterThan(q.groupedRank("Bluray-1080p", WEB_FIRST));
     expect(q.groupedRank("WEBDL-1080p", DISC_FIRST)).toBeLessThan(q.groupedRank("Bluray-1080p", DISC_FIRST));
-    // Unlisted qualities rank below every listed one, and among themselves as the global order has them.
-    for (const unlisted of ["SD", "HDTV-1080p", "Remux-2160p"]) {
-      expect(q.groupedRank(unlisted, WEB_FIRST), unlisted).toBeLessThan(q.groupedRank("Bluray-1080p", WEB_FIRST));
+    // A quality the order leaves out ranks where the global ladder puts it among the listed ones (the place
+    // reconcileQualityOrder gives it), not below all of them: lower ones stay below, a higher one stays above.
+    for (const lower of ["SD", "HDTV-1080p"]) {
+      expect(q.groupedRank(lower, WEB_FIRST), lower).toBeLessThan(q.groupedRank("Bluray-1080p", WEB_FIRST));
     }
-    expect(q.groupedRank("HDTV-1080p", WEB_FIRST)).toBeLessThan(q.groupedRank("Remux-2160p", WEB_FIRST));
+    expect(q.groupedRank("Remux-2160p", WEB_FIRST)).toBeGreaterThan(q.groupedRank("WEBDL-1080p", WEB_FIRST));
+    expect(q.groupedRank("Remux-2160p", WEB_FIRST)).toBeGreaterThan(q.groupedRank("Bluray-1080p", WEB_FIRST));
+    // Among themselves the unlisted ones keep the global order.
     expect(q.groupedRank("SD", WEB_FIRST)).toBeLessThan(q.groupedRank("HDTV-1080p", WEB_FIRST));
+    expect(q.groupedRank("HDTV-1080p", WEB_FIRST)).toBeLessThan(q.groupedRank("Remux-2160p", WEB_FIRST));
+    // One between two listed qualities on the ladder lands between them.
+    const ends = { groups: [], order: ["WEBDL-1080p", "Remux-1080p"] };
+    expect(q.groupedRank("WEBDL-1080p", ends)).toBeLessThan(q.groupedRank("Bluray-1080p", ends));
+    expect(q.groupedRank("Bluray-1080p", ends)).toBeLessThan(q.groupedRank("Remux-1080p", ends));
+  });
+
+  it("rank a short order exactly as the same order completed with the missing qualities does", () => {
+    const names = DEFAULT_NAMES().filter((n) => q.qualityRank(n) >= 0);
+    const everything = ladderNames();
+    const shortOrders = [["Bluray-1080p", "WEBDL-1080p"], ["WEBDL-1080p", "Bluray-1080p"], ["WEBDL-1080p", "Remux-1080p"], ["Remux-2160p", "SD"], ["HDTV-720p"], ["Ghost-1080p", "WEBDL-1080p"]];
+    for (const order of shortOrders) {
+      const completed = q.reconcileQualityOrder(order, everything);
+      const sorted = (o: string[]) => [...names].sort((a, b) => q.groupedRank(a, { groups: [], order: o }) - q.groupedRank(b, { groups: [], order: o }));
+      expect(sorted(order), order.join(",")).toEqual(sorted(completed));
+    }
   });
 
   it("never rank a quality that is not on the ladder, whatever the order lists", () => {
     const odd = { groups: [], order: ["Ghost-1080p", "WEBDL-1080p"] };
     expect(q.groupedRank("Ghost-1080p", odd)).toBe(-1);
     expect(q.groupedRank(null, odd)).toBe(-1);
-    expect(q.groupedRank("WEBDL-1080p", odd)).toBeGreaterThan(q.groupedRank("Remux-2160p", odd));
+    // (A name that is not on the ladder is never a place others are put in front of; Remux-2160p is above the one listed tier.)
+    expect(q.groupedRank("WEBDL-1080p", odd)).toBeLessThan(q.groupedRank("Remux-2160p", odd));
+    expect(q.groupedRank("SD", odd)).toBeLessThan(q.groupedRank("WEBDL-1080p", odd));
   });
 
   it("rank a group as its best member in the profile's order", () => {
@@ -121,8 +142,12 @@ describe("the ranking helpers with a profile's own order", () => {
     expect(q.isUnderCutoff("WEBDL-1080p", "Bluray-1080p", WEB_FIRST)).toBe(false);
     expect(q.isUnderCutoff("Bluray-1080p", "WEBDL-1080p", WEB_FIRST)).toBe(true);
     expect(q.isUnderCutoff("Bluray-1080p", "WEBDL-1080p", GLOBAL)).toBe(false);
-    // A file of a quality the profile leaves out is under a cutoff the profile lists.
-    expect(q.isUnderCutoff("Remux-2160p", "WEBDL-1080p", WEB_FIRST)).toBe(true);
+    // A file of a quality the profile leaves out is judged by where it belongs among the listed ones: a Remux-2160p is
+    // past a WEB-DL cutoff, as it is without an order (it used to be "under" it, which got it replaced by a worse file),
+    // and an SD file is still under it.
+    expect(q.isUnderCutoff("Remux-2160p", "WEBDL-1080p", WEB_FIRST)).toBe(false);
+    expect(q.isUnderCutoff("Remux-2160p", "WEBDL-1080p", GLOBAL)).toBe(false);
+    expect(q.isUnderCutoff("SD", "WEBDL-1080p", WEB_FIRST)).toBe(true);
     expect(q.cutoffIsRanked("WEBDL-1080p", WEB_FIRST)).toBe(true);
     expect(q.cutoffIsRanked("Ghost-1080p", WEB_FIRST)).toBe(false);
   });
@@ -134,6 +159,10 @@ describe("the ranking helpers with a profile's own order", () => {
     expect(q.groupRankOfRank(inProfile, WEB_FIRST)).toBe(inProfile);
     expect(q.groupRankOfRank(webRank, GLOBAL)).toBe(webRank);
     expect(q.groupRankOfRank(-1, WEB_FIRST)).toBe(-1);
+    // A quality the order leaves out converts too, and converting its profile rank again changes nothing.
+    const remuxRank = q.groupRankOfRank(q.qualityRank("Remux-2160p"), WEB_FIRST);
+    expect(remuxRank).toBe(q.groupedRank("Remux-2160p", WEB_FIRST));
+    expect(q.groupRankOfRank(remuxRank, WEB_FIRST)).toBe(remuxRank);
   });
 
   it("pick the best allowed quality in the profile's order", () => {
@@ -155,6 +184,11 @@ describe("the ranking helpers with a profile's own order", () => {
     expect([...names].sort((a, b) => q.compareQualities(b, a, GLOBAL))).toEqual(["Bluray-1080p", "WEBDL-1080p", "HDTV-1080p", "SD"]);
   });
 });
+
+/** Every quality on the ladder. */
+function ladderNames(): string[] {
+  return DEFAULT_NAMES().filter((n) => q.qualityRank(n) >= 0);
+}
 
 function DEFAULT_NAMES(): string[] {
   return ["SD", "SDTV", "DVD", "HDTV-720p", "WEBDL-720p", "Bluray-720p", "HDTV-1080p", "WEBRip-1080p", "WEBDL-1080p", "Bluray-1080p", "Remux-1080p", "WEBDL-2160p", "Remux-2160p", "CAM", "Raw-HD", "BR-DISK", "Not A Quality"];
@@ -271,5 +305,78 @@ describe("a profile with no order behaves as it did before profiles could have o
     const groups = [["WEBDL-1080p", "WEBRip-1080p"]];
     expect((q.groupedRank as any)("WEBRip-1080p", groups)).toBe(q.groupedRank("WEBRip-1080p", { groups, order: null }));
     expect((q.sameQualityGroup as any)("WEBRip-1080p", "WEBDL-1080p", groups)).toBe(true);
+  });
+});
+
+// Round 30f review H1: the editor and older clients save an order of only the allowed qualities. A file on disk whose
+// quality the profile does not allow (a Remux-2160p in a profile of two 1080p tiers) used to rank below every listed
+// tier, so it read as "cutoff unmet" and was replaced by a worse file.
+describe("a file whose quality the profile's order leaves out", () => {
+  const twoTiers = ["WEBDL-1080p", "Bluray-1080p"];
+
+  it("stays above the cutoff, with no upgrade verdict and no Cutoff Unmet row, as it does without an order", async () => {
+    const { findUpgradeCandidates, clearUpgradeCandidatesCache } = await import("../src/services/upgradeCandidates.js");
+    const { buildMediaQuery } = await import("../src/services/mediaQuery.js");
+    const ordered = await insertProfile({ allowed: twoTiers, cutoff: "Bluray-1080p", order: twoTiers });
+    const plain = await insertProfile({ allowed: twoTiers, cutoff: "Bluray-1080p", order: null });
+    const orderedProfile = rules.upgradeProfileOf(await mappedProfile(ordered));
+    const plainProfile = rules.upgradeProfileOf(await mappedProfile(plain));
+    const remux = { quality: "Remux-2160p", releaseTitle: null, formatScore: null };
+    const mode = rules.propersMode();
+
+    for (const profile of [orderedProfile, plainProfile]) {
+      expect(rules.qualityCutoffMet(profile, remux)).toBe(true);
+      expect(rules.cutoffNotMet(profile, remux)).toBe(false);
+      expect(rules.judgeUpgrade(profile, mode, remux, { quality: "WEBDL-1080p", title: "Movie.2020.1080p.WEB-DL.x264-GRP" })).not.toBe("yes");
+      expect(rules.judgeUpgrade(profile, mode, remux, { quality: "Bluray-1080p", title: "Movie.2020.1080p.BluRay.x264-GRP" })).not.toBe("yes");
+    }
+
+    const insertMovie = async (title: string, profileId: number, quality: string) =>
+      Number(
+        (
+          await db
+            .prepare("INSERT INTO media_items (type, title, sort_title, monitored, has_file, quality, quality_profile_id, status) VALUES ('movie', ?, ?, 1, 1, ?, ?, 'unknown')")
+            .run(title, title.toLowerCase(), quality, profileId)
+        ).lastInsertRowid
+      );
+    const remuxInOrdered = await insertMovie("Short Order Remux", ordered, "Remux-2160p");
+    const remuxInPlain = await insertMovie("No Order Remux", plain, "Remux-2160p");
+    // The lowest tier the profile does not allow is still under its cutoff, with an order or without one.
+    const sdInOrdered = await insertMovie("Short Order SD", ordered, "SD");
+    clearUpgradeCandidatesCache();
+
+    const candidates = (await findUpgradeCandidates()).map((c) => c.mediaItemId);
+    expect(candidates).not.toContain(remuxInOrdered);
+    expect(candidates).not.toContain(remuxInPlain);
+    expect(candidates).toContain(sdInOrdered);
+
+    const filter = await buildMediaQuery({ status: "cutoffUnmet", allowedTypes: null });
+    const inFilter = async (id: number) => !!(await db.prepare(`SELECT m.id FROM ${filter.fromClause} WHERE ${filter.where} AND m.id = ?`).get(...filter.params, id));
+    expect(await inFilter(remuxInOrdered)).toBe(false);
+    expect(await inFilter(remuxInPlain)).toBe(false);
+    expect(await inFilter(sdInOrdered)).toBe(true);
+  });
+
+  it("is not replaced by a worse release found by the search", async () => {
+    const ordered = await insertProfile({ allowed: twoTiers, cutoff: "Bluray-1080p", order: twoTiers });
+    const ranking = q.rankingOf(await mappedProfile(ordered));
+    // What the search and the importer ask: is the candidate better than what is on disk? A WEB-DL over a Remux-2160p is not.
+    expect(q.groupedRank("WEBDL-1080p", ranking)).toBeLessThan(q.groupedRank("Remux-2160p", ranking));
+    expect(q.groupedRank("Bluray-1080p", ranking)).toBeLessThan(q.groupedRank("Remux-2160p", ranking));
+    const web = release("Movie.2020.1080p.WEB-DL.x264-GRPA", 5);
+    // The automatic search for an upgrade of the Remux (upgradeFromRank is the global rank of what is on disk).
+    const picked = await sched.chooseBestResult([web], twoTiers, "Bluray-1080p", ordered, 0, null, new Set(), "movie", null, null, null, { upgradeFromRank: q.qualityRank("Remux-2160p") });
+    expect(picked).toBeNull();
+  });
+
+  it("does not change what a profile that ranks WEB-DL above Blu-ray decides about the qualities it lists", async () => {
+    // (The tests above, with a short order: the WEB-DL is the top of this profile, so a Blu-ray is under its cutoff.)
+    const webAbove = rules.upgradeProfileOf(await mappedProfile(await insertProfile({ allowed: twoTiers, cutoff: "WEBDL-1080p", order: ["Bluray-1080p", "WEBDL-1080p"] })));
+    const file = (quality: string) => ({ quality, releaseTitle: null, formatScore: null });
+    expect(rules.qualityCutoffMet(webAbove, file("WEBDL-1080p"))).toBe(true);
+    expect(rules.qualityCutoffMet(webAbove, file("Bluray-1080p"))).toBe(false);
+    expect(rules.qualityCutoffMet(webAbove, file("Remux-2160p"))).toBe(true);
+    expect(rules.qualityCutoffMet(webAbove, file("HDTV-1080p"))).toBe(false);
+    expect(rules.judgeUpgrade(webAbove, rules.propersMode(), file("Bluray-1080p"), { quality: "WEBDL-1080p", title: "Movie.2020.1080p.WEB-DL.x264-GRP" })).toBe("yes");
   });
 });

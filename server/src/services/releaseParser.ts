@@ -247,9 +247,11 @@ const LEADING_SITE = /^www\.[\w-]+(?:\.[a-z]{2,})+\s*[-–]?\s*/i;
 // The first quality/source/codec/pack word after the title ends it. Bare "cam" and "web" are left
 // out (they are ordinary title words: "Cam", "Charlotte's Web"); "web" counts only as part of
 // WEB-DL/WEBRip or when a codec follows it, the same way SD_SOURCE reads it. "complete" alone is a
-// title word ("Complete Unknown"); it ends a title only with a pack word.
+// title word ("Complete Unknown"); it ends a title only with a pack word. "workprint", "telecine" and
+// "screener" are words too, so one that stands right before a bracket ("The Workprint (2010)", the
+// way a library file names its title and year) is the title's.
 const TITLE_END_MARKER =
-  /\b(?:\d{3,4}[pi]|4k|uhd|bluray|blu-ray|bdrip|brrip|bdremux|remux|web-?dl|webrip|web[ ._-]+(?:[hx][ .]?26[45]|hevc|avc|xvid|divx)|hdtv|pdtv|sdtv|dvdrip|dvd[59]?|hdrip|hq-?cam|new-?cam|hd-?cam(?:rip)?|cam-?rip|telesynch?|ts-?rip|hd-?ts(?:rip)?|telecine|hd-?tc|workprint|pdvd|screener|dvd-?scr|brrip|bdmux|mbluray|uhd2?bd|fhd|[hx][ .]?26[45]|hevc|avc|av1|xvid|divx|proper|repack|complete[ ._-]+(?:series|seasons?|collection|box[ ._-]?set|pack|edition)|seasons?[ ._-]?\d{1,2}|hi10p?|10bit)\b/gi;
+  /\b(?:\d{3,4}[pi]|4k|uhd|bluray|blu-ray|bdrip|brrip|bdremux|remux|web-?dl|webrip|web[ ._-]+(?:[hx][ .]?26[45]|hevc|avc|xvid|divx)|hdtv|pdtv|sdtv|dvdrip|dvd[59]?|hdrip|hq-?cam|new-?cam|hd-?cam(?:rip)?|cam-?rip|telesynch?|ts-?rip|hd-?ts(?:rip)?|telecine(?![ ._]*[(\[])|hd-?tc|workprint(?![ ._]*[(\[])|pdvd|screener(?![ ._]*[(\[])|dvd-?scr|brrip|bdmux|mbluray|uhd2?bd|fhd|[hx][ .]?26[45]|hevc|avc|av1|xvid|divx|proper|repack|complete[ ._-]+(?:series|seasons?|collection|box[ ._-]?set|pack|edition)|seasons?[ ._-]?\d{1,2}|hi10p?|10bit)\b/gi;
 const YEAR_ALL = /\b(19|20)\d{2}\b/g;
 // Another year right after this one ("1984.2024", "Blade Runner 2049 (2017)"): this one is part of
 // the title (Radarr's `(?!...\W(19|20)\d{2})` lookahead, plus the bracketed Plex/YTS form).
@@ -418,19 +420,23 @@ const SD_SOURCE = /\b(sdtv|pdtv|tvrip|dsr|dsrip|satrip|dvb|dvbrip|bdrip|brrip)\b
 // The TV captures among them: the ladder's SDTV tier (a BDRip with no resolution, or a bare "WEB h264", stays SD).
 const SDTV_SOURCE = /\b(sdtv|pdtv|tvrip|dsr|dsrip|satrip|dvb|dvbrip)\b/i;
 // Movie-only, lowest-quality theatrical-capture sources, in Radarr's own Source vocabulary. The
-// strong spellings name a capture whatever else the title says, so they are read before any real
-// source; a bare "cam", "TS" or "TC" is also an ordinary word or tag, so those count only when no
-// real source is named, and "TS"/"TC" only as a separate token ("Movie.2024.1080p.TS.x264", never
-// the ".ts" extension or the "ts" inside a word).
+// strong spellings (HDCAM, HDTS, TELESYNC...) are no ordinary word and name a capture whatever else the
+// title says, so they are read from the whole name before any real source. The rest are also words and
+// tags ("Cam", "The TS Report", "Screener", "Telecine", "The Workprint"): they count only when no real
+// source is named, and only where a release writes its tags (see bareSourceText), never from the title or
+// an episode's title. "TS"/"TC" are a separate token ("Movie.2024.1080p.TS.x264", never the ".ts"
+// extension or the "ts" inside a word).
 const SOURCE_CAM_STRONG = /\b(?:hq-?cam|new-?cam|hd-?cam(?:rip)?|cam-?rip)\b/i;
 const SOURCE_TELESYNC_STRONG = /\b(?:telesynch?|hd-?ts(?:rip)?|ts-?rip|pdvd)\b/i;
-const SOURCE_TELECINE_STRONG = /\b(?:telecine|hd-?tc)\b/i;
+const SOURCE_TELECINE_STRONG = /\bhd-?tc\b/i;
 const SOURCE_CAM = /\bcam\b/i;
 const SOURCE_TELESYNC = /(?<=[ ._])ts(?=[ ._-])/i;
-const SOURCE_TELECINE = /(?<=[ ._])tc(?=[ ._-])/i;
+const SOURCE_TELECINE = /(?<=[ ._])tc(?=[ ._-])|\btelecine\b/i;
 const SOURCE_WORKPRINT = /\bworkprint\b/i;
-// A screener or DVD screener: a pre-release copy no profile should take as DVD or WEB-DL.
-const SOURCE_SCREENER = /\b(?:screener|(?:dvd|bd)-?scr(?:eener)?|scr)\b/i;
+// A screener or DVD screener: a pre-release copy no profile should take as DVD or WEB-DL. "DVDSCR" is no
+// ordinary word; "screener" and "scr" are.
+const SOURCE_SCREENER_STRONG = /\b(?:dvd|bd)-?scr(?:eener)?\b/i;
+const SOURCE_SCREENER = /\b(?:screener|scr)\b/i;
 
 // A disc image: the Blu-ray structure of a film or show, or a DVD image. Ported from Radarr's
 // BRDISKRegex and Sonarr's RawDiskSpecification. Words that mark an encode or a remux rule it out.
@@ -449,6 +455,7 @@ const QUALITY_MODIFIER_REGIONAL = /\b(regional|r5)\b/i;
 const QUALITY_MODIFIER_SCREENER = /\b(screener|scr|dvdscr|bdscr)\b/i;
 // Raw-HD in every spelling a release writes it ("RAW-HD", "RawHD", "Raw HD").
 const QUALITY_MODIFIER_RAWHD = /\braw[-_. ]?hd\b/i;
+const RAW_HD_MPEG2 = /\bmpeg[-_. ]?2\b/i;
 const QUALITY_MODIFIER_BRDISK = /\b(brdisk|bdmv|bd25|bd50)\b/i;
 // Subtitles burned into the picture. Radarr's HardcodedSubsRegex: any "...SUB(S)" word but the soft
 // ones (softsubs, multisubs, horriblesubs), "HC" and "SUBBED".
@@ -740,7 +747,8 @@ function detectReleaseType(isFullSeason: boolean, episodeNumbers: number[] | nul
   return null;
 }
 
-function detectSource(title: string): string | null {
+/** `tags`: the part of the name the bare capture words are read from (see bareSourceText). */
+function detectSource(title: string, tags: string): string | null {
   if (SOURCE_CAM_STRONG.test(title)) return "Cam";
   if (SOURCE_TELESYNC_STRONG.test(title)) return "Telesync";
   if (SOURCE_TELECINE_STRONG.test(title)) return "Telecine";
@@ -751,11 +759,37 @@ function detectSource(title: string): string | null {
   if (SOURCE_HDTV.test(title)) return "HDTV";
   if (SOURCE_BD_TAG.test(title)) return "Bluray";
   if (SOURCE_DVD.test(title)) return "DVD";
-  if (SOURCE_CAM.test(title)) return "Cam";
-  if (SOURCE_TELESYNC.test(title)) return "Telesync";
-  if (SOURCE_TELECINE.test(title)) return "Telecine";
-  if (SOURCE_WORKPRINT.test(title)) return "Workprint";
+  if (SOURCE_CAM.test(tags)) return "Cam";
+  if (SOURCE_TELESYNC.test(tags)) return "Telesync";
+  if (SOURCE_TELECINE.test(tags)) return "Telecine";
+  if (SOURCE_WORKPRINT.test(tags)) return "Workprint";
   return null;
+}
+
+/**
+ * The part of a film's name its bare capture words (a CAM, TS, TC, screener, workprint or R5 tag) are read from: the
+ * leading bracketed tags, what follows the title year (or the first quality word, with no year), and the word that
+ * ends the title right before an unbracketed year or a quality word ("Movie.Name.CAM.1080p"), so a capture named in
+ * that order is not graded as the WEB-DL its resolution alone would make of it. A word in the title itself
+ * ("Cam (2018)", "The Cam Show", "Telecine (2012)", "The Scr (2014)") is not read, nor one in an episode's title
+ * ("Show - S01E01 - Cam Night"): a film's tags only, an episode has no capture to name. Empty for an episode.
+ */
+function bareSourceText(title: string, start: number, cutAt: number | null, titleYearAt: number | null, qualityAt: number | null, episodic: boolean): string {
+  if (episodic) return "";
+  const leading = title.slice(0, start);
+  let after = "";
+  let last = "";
+  if (titleYearAt !== null) after = title.slice(titleYearAt + 4);
+  else if (cutAt !== null) after = title.slice(cutAt);
+  // The tag words and the last word that end the title count only where it ends at a year or a quality word, not
+  // at a bracket ("Cam (2018)"), and only when other words stand before them ("Screener.2016" is a title).
+  if (cutAt !== null && (cutAt === qualityAt || cutAt === titleYearAt)) {
+    const lead = title.slice(start, cutAt).replace(/[._]/g, " ").trimEnd();
+    const run = lead.match(TRAILING_TAG_RUN);
+    const tagRun = run && run.index !== undefined && hasTitleToken(lead, 0, run.index) ? run[0] : "";
+    last = `${tagRun} ${lead.match(/\s(\S+)$/)?.[1] ?? ""}`;
+  }
+  return ` ${leading} ${last} ${after} `;
 }
 
 /**
@@ -832,7 +866,7 @@ function standardDefinitionQuality(title: string, source: string | null, resolut
   return "SD";
 }
 
-function detectQuality(title: string, rawDisc: boolean, modifier: ParsedRelease["qualityModifier"]): QualityName | "Unknown" {
+function detectQuality(title: string, rawDisc: boolean, modifier: ParsedRelease["qualityModifier"], tags: string): QualityName | "Unknown" {
   // A disc image is no encode of any tier, whatever resolution or source it names: a DVD image is DVD-R and any
   // other (a Blu-ray structure) is BR-DISK. Neither is a tier a profile allows by default, and the raw-disc
   // rejection keeps them out unless the admin switches it off.
@@ -841,7 +875,7 @@ function detectQuality(title: string, rawDisc: boolean, modifier: ParsedRelease[
   // rip is plain "DVD"), and one whose source cannot be told as "SD".
   const resolution = detectResolution(title);
   const suffix = resolution === "2160p" || resolution === "1080p" || resolution === "720p" ? resolution : null;
-  const source = detectSource(title);
+  const source = detectSource(title, tags);
   // A theatrical capture is never a real WEB/Bluray tier, whatever resolution it claims — falling
   // through to the WEBDL default below graded "Movie.1080p.HDCAM" as WEBDL-1080p, which any
   // profile allowing that tier would happily auto-grab. Each is its own pre-release tier: a profile that
@@ -851,10 +885,13 @@ function detectQuality(title: string, rawDisc: boolean, modifier: ParsedRelease[
   if (source === "Telecine") return "TELECINE";
   if (source === "Workprint") return "WORKPRINT";
   // A screener is the same: a pre-release copy. So is a DVD of a regional (R5) release.
-  if (SOURCE_SCREENER.test(title) && (source === null || source === "DVD")) return "DVDSCR";
-  if (modifier === "regional" && (source === null || source === "DVD")) return "REGIONAL";
-  // A raw HD capture is its own tier, not the WEB-DL its resolution alone would make of it.
-  if (modifier === "rawhd") return "Raw-HD";
+  if ((SOURCE_SCREENER_STRONG.test(title) || SOURCE_SCREENER.test(tags)) && (source === null || source === "DVD")) return "DVDSCR";
+  if (QUALITY_MODIFIER_REGIONAL.test(tags) && (source === null || source === "DVD")) return "REGIONAL";
+  // A raw HD capture is its own tier, not the WEB-DL its resolution alone would make of it. It is a capture of the
+  // broadcast, not a disc or a web file: a name that also gives a source ("1080p.REMUX.RAW-HD", "RAWHD.BluRay",
+  // an episode called "Raw HD Footage" from an HDTV encode) is that source's tier. An HDTV capture of an MPEG-2
+  // transport stream is the one source it goes with (Radarr reads MPEG-2 as raw HD too).
+  if (modifier === "rawhd" && (source === null || (source === "HDTV" && RAW_HD_MPEG2.test(title)))) return "Raw-HD";
   if (!suffix) {
     if (source === "DVD") return "DVD";
     // Only a sub-HD encode is a standard-definition tier: resolution-less scene naming
@@ -1244,14 +1281,14 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
       trimArticle: packWordCut && cutAt === markerIndex,
       episodeNumberBefore: markerFromEpisode && cutAt === markerIndex,
     });
-    return { start, titleYearInfo, cutAt, isolatedTitle: cleaned.title, titleAlternates: cleaned.alternates };
+    return { start, titleYearInfo, cutAt, qualityAt, isolatedTitle: cleaned.title, titleAlternates: cleaned.alternates };
   };
   let isolation = isolate(titleStart(title));
   // A leading "(500)" or "[REC]" is the title's own first word when it reads like one.
   const episodeShaped = seasonNumber !== null || episodeNumbers !== null || isFullSeason || absoluteEpisode !== null || airDate !== null;
   const tagStart = leadingTitleTagStart(title, isolation.isolatedTitle, isolation.titleYearInfo !== null || /\b(?:19|20)\d{2}\b/.test(title), episodeShaped);
   if (tagStart !== null) isolation = isolate(tagStart);
-  const { start, titleYearInfo, cutAt, isolatedTitle, titleAlternates } = isolation;
+  const { start, titleYearInfo, cutAt, qualityAt, isolatedTitle, titleAlternates } = isolation;
   // Language, edition and quality-modifier tags are read from outside the title: "French
   // Connection" is no French release and "Final Destination" no Final edition.
   const tags = tagScanText(title, start, cutAt);
@@ -1269,6 +1306,7 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
   const episodic = seasonNumber !== null || episodeNumbers !== null || isFullSeason || seasonPart || seasonExtra || absoluteEpisode !== null || airDate !== null;
   const rawDisc = !options?.file && detectRawDisc(title, episodic);
   const qualityModifier = detectQualityModifier(tags) ?? (rawDisc && !DISC_DVD_IMAGE.test(title) ? "brdisk" : null);
+  const captureTags = bareSourceText(title, start, cutAt, titleYearInfo?.index ?? null, qualityAt, episodic);
   const discography = detectDiscography(title);
 
   return {
@@ -1279,8 +1317,8 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
     episodeNumbers,
     isFullSeason,
     year,
-    quality: detectQuality(title, rawDisc, qualityModifier),
-    source: detectSource(title),
+    quality: detectQuality(title, rawDisc, qualityModifier, captureTags),
+    source: detectSource(title, captureTags),
     resolution: detectResolution(title),
     flags: detectFlags(title),
     revision: detectRevision(title),

@@ -343,7 +343,8 @@ export const MEDIA_SORT_COLUMNS: Record<string, string> = {
   monitored: `m.monitored DESC, ${SORT_TIEBREAKER}`,
   // Joined against the admin-configurable qualities table's own rank column instead of an
   // alphabetical string sort, matching the same ranking qualityRank() uses for every actual
-  // search/grab/upgrade decision.
+  // search/grab/upgrade decision. It sorts titles of every profile together, so it is the global rank: a
+  // profile's own quality order (quality_profiles.quality_order) cannot apply across profiles.
   quality: `(SELECT q.rank FROM qualities q WHERE q.name = m.quality) ASC NULLS FIRST, ${SORT_TIEBREAKER}`,
   contentRating: `${CONTENT_RATING_SORT_EXPR} ASC, ${SORT_TIEBREAKER}`,
   // No fixed severity order to sort by (unlike content rating) — sorting the raw JSON-array text
