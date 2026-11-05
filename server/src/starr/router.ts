@@ -8,6 +8,7 @@ import { registerIndexerRoutes } from "./indexerRoutes.js";
 import { registerActivityRoutes } from "./activityRoutes.js";
 import { registerLibraryRoutes } from "./libraryRoutes.js";
 import { registerMusicBookRoutes } from "./musicBookRoutes.js";
+import { registerReleasePushRoutes } from "./releasePush.js";
 import { registerCommandRoutes } from "./commandRoutes.js";
 import { starrOpenApi } from "./openapi.js";
 import { STARR_ROUTE_DOCS, type RouteDoc } from "./routeDocs.js";
@@ -115,6 +116,7 @@ function buildApp(app: StarrApp): Router {
   registerMusicBookRoutes(routes);
   registerLibraryRoutes(routes);
   registerCommandRoutes(routes);
+  registerReleasePushRoutes(routes);
   api.get("/openapi.json", (_req, res) => {
     res.json(starrOpenApi(app));
   });

@@ -84,6 +84,18 @@ export const openApiSpec = {
     "/search/bulk": {
       post: { summary: "Search-and-grab the best release for a list of targets", responses: { "200": { description: "Results per target" } } },
     },
+    "/releases/push": {
+      post: {
+        summary:
+          "Hand over a release another program found (autobrr, a script): it is matched to what the library wants, judged like a release of a feed and grabbed when it passes. " +
+          "Same body as Starr's POST /release/push: title, downloadUrl or magnetUrl, protocol (Torrent | Usenet), publishDate, optional indexer, indexerId, size, seeders, leechers.",
+        requestBody: { content: { "application/json": { schema: { type: "object", required: ["title", "protocol", "publishDate"] } } } },
+        responses: {
+          "200": { description: "A list of one release resource: approved, rejected, temporarilyRejected, rejections[], quality, mappedSeriesId / mappedMovieId / mappedArtistId / mappedAuthorId" },
+          "400": { description: "The body is no release" },
+        },
+      },
+    },
     "/activity/queue": {
       get: { summary: "Current download queue", responses: { "200": { description: "Queue items" } } },
     },

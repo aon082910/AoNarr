@@ -76,7 +76,7 @@ interface MapCandidate {
   year: number | null;
 }
 
-const SOURCE_LABELS: Record<string, string> = { interactive: "Manual", auto: "Automatic search", rss: "RSS sync", irc: "IRC announce" };
+const SOURCE_LABELS: Record<string, string> = { interactive: "Manual", auto: "Automatic search", rss: "RSS sync", irc: "IRC announce", push: "Pushed release" };
 
 /** 5400 -> "1h 30m", 45 -> "45s"; null when the client gave no estimate. */
 function formatEta(seconds: number | null | undefined): string | null {
