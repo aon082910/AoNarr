@@ -423,6 +423,31 @@ describe("an RSS feed that lists a discography", () => {
     expect(await db.prepare("SELECT id FROM pending_releases").all()).toHaveLength(0);
   });
 
+  it("lists a held discography on the pending list, and grabs it at once from there for the albums it adds", async () => {
+    await insertClient();
+    const indexerId = await insertIndexer();
+    const { artistId, albums } = await queen();
+    await db.prepare("INSERT INTO delay_profiles (tag_id, enable_usenet, enable_torrent, usenet_delay_minutes, torrent_delay_minutes, bypass_if_highest_quality, order_index) VALUES (NULL, 1, 1, 0, 600, 0, 0)").run();
+    feed(release(DISCOGRAPHY, { indexerId, publishDate: new Date().toISOString() }));
+    await rss.runRssSync();
+
+    const list = await request(app).get("/api/activity/pending").set("X-Api-Key", apiKey);
+
+    expect(list.status).toBe(200);
+    expect(list.body.items).toHaveLength(1);
+    expect(list.body.items[0]).toMatchObject({ mediaItemId: artistId, mediaTitle: "Queen", mediaType: "artist", reason: "delay" });
+    expect(list.body.items[0].release.title).toBe(DISCOGRAPHY);
+    expect(JSON.stringify(list.body)).not.toContain("magnet:");
+
+    const grabbed = await request(app).post(`/api/activity/pending/${list.body.items[0].id}/grab`).set("X-Api-Key", apiKey);
+
+    expect(grabbed.status).toBe(201);
+    const [row] = await queueRows();
+    expect(row).toMatchObject({ media_item_id: artistId, sub_item_id: null, title: DISCOGRAPHY });
+    expect(await targetsOf(row.id)).toEqual([...albums].sort(byId));
+    expect(await db.prepare("SELECT id FROM pending_releases").all()).toHaveLength(0);
+  });
+
   it("drops a held discography whose albums were taken meanwhile, and when discography grabs are switched off", async () => {
     await insertClient();
     const indexerId = await insertIndexer();

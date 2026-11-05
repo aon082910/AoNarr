@@ -163,11 +163,11 @@ function sameArtist(tagArtist: string, libraryArtist: string): boolean {
 
 interface FolderIdentity {
   albumId: number;
-  /** The disc every sampled file is on; null when they carry none or are on several. */
+  /** The disc every file read is on; null when they carry none or are on several. */
   disc: number | null;
   /** The number of discs the tags say the release has. */
   discTotal: number | null;
-  /** The sampled files are on more than one disc: the folder holds several discs itself. */
+  /** The files read are on more than one disc: the folder holds several discs itself. */
   severalDiscs: boolean;
   /** How many tracks the files' tags say the disc has; null when they say none or disagree. */
   trackTotal: number | null;

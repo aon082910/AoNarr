@@ -2896,7 +2896,8 @@ async function searchDiscographyFirst(item: MediaItem, ctx: BulkSearchContext): 
 
 /**
  * The fallback for one missing album (Settings, off by default): the album's own search found nothing usable, so its artist's
- * discography is looked for as well, and one that covers the album is taken even though it adds just that one. Looked for once
+ * discography is looked for as well, and one that covers the album is taken even though it adds just that one (unless it covers
+ * more than FALLBACK_MAX_ALBUMS albums: the rest of a big one would be left in the download). Looked for once
  * per wait of the discography key's backoff (the one searchDiscographyFirst keeps, so an artist with several albums missing
  * that was just searched for one is not searched again), and once per artist in a cycle. Returns how the search ended, or
  * null when none was made.
