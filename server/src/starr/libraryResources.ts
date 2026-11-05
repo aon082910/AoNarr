@@ -1,6 +1,8 @@
 import path from "node:path";
 import { db } from "../db/index.js";
+import { normalizeLanguage } from "../services/mediaAnalysis.js";
 import { type StarrApp, typeFilter } from "./apps.js";
+import { LANGUAGES } from "./systemRoutes.js";
 import {
   dayOrNull,
   images,
@@ -20,6 +22,25 @@ import {
  */
 
 const ENGLISH = { id: 1, name: "English" };
+
+/**
+ * The languages of a file's audio as Starr lists them: those of the tracks AoNarr probed. Bazarr reads them to decide which
+ * subtitles a title still needs, so a Japanese film listed as English would be treated as understood without subtitles. A file
+ * not probed yet, or whose tracks carry no usable language tag, stays English as before.
+ */
+function audioLanguages(info: Record<string, unknown>): { id: number; name: string }[] {
+  const streams = Array.isArray(info.audioStreams) ? info.audioStreams : [];
+  const found = new Map<string, { id: number; name: string }>();
+  for (const stream of streams) {
+    const raw = String((stream as { language?: unknown } | null)?.language ?? "").trim().toLowerCase();
+    // "mul" and "zxx" are tags for no single language; an unrecognised code comes back as itself, uppercased.
+    if (!raw || raw === "mul" || raw === "zxx") continue;
+    const name = normalizeLanguage(raw);
+    if (name === "Unknown" || name === raw.toUpperCase()) continue;
+    found.set(name, LANGUAGES.find((l) => l.name === name) ?? { id: 0, name });
+  }
+  return found.size > 0 ? [...found.values()] : [ENGLISH];
+}
 
 export interface LibraryContext {
   app: StarrApp;
@@ -104,6 +125,7 @@ function mediaInfoOf(raw: unknown): Record<string, unknown> {
 }
 
 function fileResource(ctx: LibraryContext, base: { id: number; filePath: string; size: number | null; quality: string | null; addedAt: unknown; mediaInfo: unknown; sceneName?: string | null }) {
+  const mediaInfo = mediaInfoOf(base.mediaInfo);
   return {
     id: base.id,
     relativePath: path.basename(base.filePath),
@@ -113,8 +135,8 @@ function fileResource(ctx: LibraryContext, base: { id: number; filePath: string;
     sceneName: base.sceneName ?? "",
     releaseGroup: "",
     quality: qualityModelOf(ctx.catalog, base.quality),
-    languages: [ENGLISH],
-    mediaInfo: mediaInfoOf(base.mediaInfo),
+    languages: audioLanguages(mediaInfo),
+    mediaInfo,
     qualityCutoffNotMet: false,
     customFormats: [],
     customFormatScore: 0,

@@ -121,3 +121,58 @@ describe("Prowlarr 2.7 pushing an indexer (request bodies as captured)", () => {
     expect((await get("/sonarr/api/v3/indexer")).body.map((i: any) => i.name)).toEqual(["StubNab (Prowlarr)"]);
   });
 });
+
+describe("the languages of a file, as Bazarr reads them", () => {
+  const info = (...languages: (string | null)[]) => JSON.stringify({ videoCodec: "h264", audioCodec: "aac", audioStreams: languages.map((language) => ({ codec: "aac", language, channels: 2 })), subtitleStreams: [] });
+
+  async function movie(title: string, mediaInfo: string | null): Promise<number> {
+    return insert(
+      "INSERT INTO media_items (type, title, sort_title, year, external_ids, monitored, has_file, path, quality, media_info, size_bytes, status) VALUES ('movie', ?, ?, 2020, '{}', 1, 1, ?, 'WEBDL-1080p', ?, 123459, 'unknown')",
+      title,
+      title.toLowerCase(),
+      `/media/movies/${title}/${title}.mkv`,
+      mediaInfo
+    );
+  }
+
+  it("names the language of the audio track AoNarr probed, instead of English for every file", async () => {
+    const id = await movie("Anime Film", info("jpn"));
+    const file = (await get(`/radarr/api/v3/moviefile/${id}`)).body;
+    expect(file.languages).toEqual([{ id: 8, name: "Japanese" }]);
+    // The same list sits in the movie's embedded file.
+    expect((await get(`/radarr/api/v3/movie/${id}`)).body.movieFile.languages).toEqual([{ id: 8, name: "Japanese" }]);
+  });
+
+  it("lists every language once, reads a bibliographic code, and skips tags that name no language", async () => {
+    const id = await movie("Dubbed", info("eng", "fre", "eng", "und", "mul", null, "qqq"));
+    expect((await get(`/radarr/api/v3/moviefile/${id}`)).body.languages).toEqual([
+      { id: 1, name: "English" },
+      { id: 2, name: "French" },
+    ]);
+  });
+
+  it("keeps English for a file that is not probed yet or whose tracks carry no language", async () => {
+    const unprobed = await movie("Unprobed", null);
+    const untagged = await movie("Untagged", info(null, "und"));
+    const none = await movie("Silent", JSON.stringify({ videoCodec: "h264", audioStreams: [] }));
+    for (const id of [unprobed, untagged, none]) {
+      expect((await get(`/radarr/api/v3/moviefile/${id}`)).body.languages).toEqual([{ id: 1, name: "English" }]);
+    }
+  });
+
+  it("does the same for an episode's file, and gives a language Starr has no id for id 0", async () => {
+    const series = await insert("INSERT INTO media_items (type, title, sort_title, year, external_ids, monitored, status) VALUES ('series', 'Show', 'show', 2020, '{}', 1, 'unknown')");
+    await insert(
+      "INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality, media_info, size_bytes) VALUES (?, 1, 1, 'One', 1, 1, '/media/tv/Show/S01E01.mkv', 'WEBDL-1080p', ?, 1000)",
+      series,
+      info("spa")
+    );
+    await insert(
+      "INSERT INTO episodes (media_item_id, season_number, episode_number, title, monitored, has_file, file_path, quality, media_info, size_bytes) VALUES (?, 1, 2, 'Two', 1, 1, '/media/tv/Show/S01E02.mkv', 'WEBDL-1080p', ?, 1000)",
+      series,
+      info("swa")
+    );
+    const files = (await get(`/sonarr/api/v3/episodefile?seriesId=${series}`)).body;
+    expect(files.map((f: any) => f.languages)).toEqual([[{ id: 3, name: "Spanish" }], [{ id: 0, name: "Swahili" }]]);
+  });
+});

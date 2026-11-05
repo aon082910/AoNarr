@@ -22,7 +22,7 @@ async function spaceOf(path: string): Promise<{ freeSpace: number | null; totalS
   return { freeSpace: stat.bavail * stat.bsize, totalSpace: stat.blocks * stat.bsize };
 }
 
-const LANGUAGES = [
+export const LANGUAGES = [
   { id: -1, name: "Any" },
   { id: 0, name: "Unknown" },
   { id: 1, name: "English" },
