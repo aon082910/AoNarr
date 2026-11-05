@@ -3,7 +3,7 @@ import { clientIp, requireAdmin } from "../middleware/auth.js";
 import crypto from "node:crypto";
 import { db } from "../db/index.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { invalidateQualityRankCache, parseQualityGroups, parseQualityOrder } from "../services/quality.js";
+import { invalidateQualityRankCache, parseQualityGroups, parseQualityOrder, reconcileQualityOrder } from "../services/quality.js";
 import { buildOtpauthUrl, generateBase32Secret, verifyTotp } from "../services/totp.js";
 import { getSetting, setSetting, deleteSetting, getAllSettings } from "../services/settingsStore.js";
 import { applySocksProxySetting, verifyOutboundDispatcher } from "../services/socksProxy.js";
@@ -154,7 +154,7 @@ settingsRouter.get(
     const qualities = await db.prepare("SELECT name, rank, min_size_mb, max_size_mb, preferred_size_mb FROM qualities ORDER BY rank").all();
     const profiles = (await db
       .prepare(
-        "SELECT name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups, language FROM quality_profiles"
+        "SELECT name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups, language, quality_order FROM quality_profiles"
       )
       .all()) as any[];
     const formats = (await db.prepare("SELECT id, name, patterns, media_types FROM custom_formats").all()) as any[];
@@ -308,6 +308,18 @@ settingsRouter.post(
       }
 
       for (const p of b.qualityProfiles ?? []) {
+        // A backup from before profiles had an order leaves the profile's own order alone, with what the backup newly
+        // allows put into it (a quality the order leaves out would rank below every listed one).
+        let qualityOrder = parseQualityOrder(p.qualityOrder);
+        let qualityOrderSent = p.qualityOrder !== undefined;
+        if (!qualityOrderSent && Array.isArray(p.allowedQualities)) {
+          const own = (await db.prepare("SELECT quality_order FROM quality_profiles WHERE name = ?").get(p.name)) as { quality_order: string | null } | undefined;
+          const ownOrder = parseQualityOrder(own?.quality_order);
+          if (ownOrder) {
+            qualityOrder = reconcileQualityOrder(ownOrder, p.allowedQualities);
+            qualityOrderSent = true;
+          }
+        }
         await db
           .prepare(
             `INSERT INTO quality_profiles (name, allowed_qualities, cutoff, min_format_score, max_size_gb, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups, language, quality_order)
@@ -336,9 +348,8 @@ settingsRouter.post(
             // A backup from before profiles had a language leaves the profile's own language alone.
             language: normalizeProfileLanguage(p.language),
             languageSent: p.language === undefined ? 0 : 1,
-            // A backup from before profiles had an order leaves the profile's own order alone; null is the default order.
-            qualityOrder: parseQualityOrder(p.qualityOrder) ? JSON.stringify(parseQualityOrder(p.qualityOrder)) : null,
-            qualityOrderSent: p.qualityOrder === undefined ? 0 : 1,
+            qualityOrder: qualityOrder ? JSON.stringify(qualityOrder) : null,
+            qualityOrderSent: qualityOrderSent ? 1 : 0,
           });
         profilesImported++;
       }

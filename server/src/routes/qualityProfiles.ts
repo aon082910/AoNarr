@@ -5,7 +5,7 @@ import { qualityProfileFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { resetSearchBackoff } from "../services/searchBackoff.js";
 import { parseQualityGroups, parseQualityOrder } from "../services/qualityGroups.js";
-import { qualityRank } from "../services/quality.js";
+import { reconcileQualityOrder } from "../services/quality.js";
 import { normalizeProfileLanguage, PROFILE_LANGUAGES } from "../services/profileLanguage.js";
 
 export const qualityProfilesRouter = Router();
@@ -61,21 +61,6 @@ async function orderInput(value: unknown): Promise<string[] | null | undefined> 
   const unknown = (value as string[]).filter((n) => !ladder.has(n));
   if (unknown.length > 0) throw new HttpError(400, `qualityOrder names ${unknown.length === 1 ? "a quality" : "qualities"} that ${unknown.length === 1 ? "is" : "are"} not on the ladder: ${unknown.join(", ")}`);
   return value as string[];
-}
-
-/**
- * A profile's order after its allowed list changed without a new order: a quality now allowed that the order leaves out
- * would rank below every listed one, so it is put in front of the first listed quality that is higher on the global ladder
- * (at the end when none is). The order itself is not touched otherwise.
- */
-function orderWithAllowed(order: string[], allowed: string[]): string[] {
-  const next = [...order];
-  for (const name of allowed) {
-    if (next.includes(name) || qualityRank(name) < 0) continue;
-    const before = next.findIndex((n) => qualityRank(n) > qualityRank(name));
-    next.splice(before < 0 ? next.length : before, 0, name);
-  }
-  return next;
 }
 
 /** A profile's wanted language from a request: undefined when not sent, null for any, else a known language name. */
@@ -187,7 +172,7 @@ qualityProfilesRouter.patch(
       const order = parseQualityOrder(current?.quality_order);
       if (order) {
         sets.push("quality_order = ?");
-        values.push(JSON.stringify(orderWithAllowed(order, b.allowedQualities)));
+        values.push(JSON.stringify(reconcileQualityOrder(order, b.allowedQualities)));
       }
     }
     if (b.cutoff !== undefined) {

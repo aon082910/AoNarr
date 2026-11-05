@@ -96,9 +96,10 @@ async function addBluray720pTier(): Promise<void> {
  * new ones. The ranks are rewritten 0..n-1 in one transaction, the same way a reorder does it (rank is UNIQUE).
  *
  * Profiles keep behaving as they did: one that allows "SD" gains the SD-class tiers beside it (the releases it took
- * as SD are still taken), one that allows "DVD" gains DVD-R, and a quality group holding SD or DVD takes the new
- * members into the group. No profile gains a pre-release tier, BR-DISK or Raw-HD: those were refused or mis-graded
- * before, so the admin opts in. No cutoff is touched, and what files, history and the blocklist recorded keeps its
+ * as SD are still taken) and SD and those tiers are one quality group, so a file stored as "SD" is not replaced by an
+ * SDTV release that read as SD before (an admin who wants them told apart removes the group); one that allows "DVD"
+ * gains DVD-R; and a group already holding SD or DVD takes the new members into it. No profile gains a pre-release
+ * tier, BR-DISK or Raw-HD: those were refused or mis-graded before, so the admin opts in. No cutoff is touched, and what files, history and the blocklist recorded keeps its
  * name. The new SD-class tiers start with the size limits of "SD" (DVD-R those of "DVD"), so a 480p release is held
  * to the limits it was held to when it read "SD".
  *
@@ -206,13 +207,20 @@ async function extendQualityLadder(): Promise<void> {
 
       // A group that holds SD (or DVD) takes the new members of that class, when the profile now allows them.
       const groups = parseQualityGroups(profile.quality_groups);
+      const grouped = new Set(groups.flat());
       const nextGroups = groups.map((group) => {
         const gained = [...(group.includes("SD") ? sdClass : []), ...(group.includes("DVD") ? dvdImage : [])].filter((n) => nextAllowed.includes(n) && !group.includes(n));
         return gained.length > 0 ? [...group, ...gained] : group;
       });
+      // SD that is in no group becomes one with the tiers split out of it: they were one tier, and a profile that
+      // allowed SD must not start upgrading an "SD" file to the SDTV release of the same kind.
+      if (nextAllowed.includes("SD") && !grouped.has("SD")) {
+        const split = sdClass.filter((n) => nextAllowed.includes(n) && !grouped.has(n));
+        if (split.length > 0) nextGroups.push(["SD", ...split]);
+      }
 
       const allowedChanged = nextAllowed !== allowed;
-      const groupsChanged = nextGroups.some((g, i) => g.length !== groups[i].length);
+      const groupsChanged = nextGroups.length !== groups.length || nextGroups.some((g, i) => g.length !== groups[i].length);
       if (!allowedChanged && !groupsChanged) continue;
       await db
         .prepare("UPDATE quality_profiles SET allowed_qualities = ?, quality_groups = ? WHERE id = ?")
@@ -441,6 +449,21 @@ export function sameQualityGroup(a: string | null, b: string | null, ranking?: P
  */
 export function compareQualities(a: string | null, b: string | null, ranking?: ProfileRanking | null): number {
   return groupedRank(a, ranking) - groupedRank(b, ranking);
+}
+
+/**
+ * A profile's order after its allowed list changed without a new order: a quality now allowed that the order leaves out
+ * would rank below every listed one, so each is put in front of the first listed quality that is higher on the global
+ * ladder (at the end when none is). The order is otherwise as it was.
+ */
+export function reconcileQualityOrder(order: string[], allowed: string[]): string[] {
+  const next = [...order];
+  for (const name of allowed) {
+    if (next.includes(name) || qualityRank(name) < 0) continue;
+    const before = next.findIndex((n) => qualityRank(n) > qualityRank(name));
+    next.splice(before < 0 ? next.length : before, 0, name);
+  }
+  return next;
 }
 
 /** The ranking of the profile with this id: its groups and its order (the global ranking for no profile). */

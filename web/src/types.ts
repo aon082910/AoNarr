@@ -226,6 +226,8 @@ export interface QualityProfile {
   minUpgradeFormatScore?: number;
   /** Lists of qualities the profile treats as one tier: none is an upgrade over another, the format score decides. */
   qualityGroups?: string[][];
+  /** The order the profile ranks the ladder in, worst to best; null ranks by the Qualities list (the global order). */
+  qualityOrder?: string[] | null;
   /** The language a release must be in; null accepts every language. */
   language?: string | null;
 }

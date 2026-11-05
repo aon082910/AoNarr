@@ -31,6 +31,8 @@ import { formatDateTime, supportedTimeZones, UI_DATE_FORMATS } from "../utils/da
 import { loadDisplayPreferences } from "../context/AuthContext.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
 import { TrashIcon, FolderIcon, ArrowUpIcon, ArrowDownIcon } from "../components/ActionIcons.js";
+import QualityOrderEditor from "../components/QualityOrderEditor.js";
+import { isOffByDefault, profileLadder, qualityNote } from "../utils/qualityOrder.js";
 import { notify } from "../utils/notify.js";
 import { confirmDialog } from "../utils/confirmDialog.js";
 
@@ -1365,12 +1367,14 @@ export default function Settings() {
   /** A cutoff outside the allowed set can never be reached, leaving every item "cutoff unmet" and
    * auto-search hunting upgrades forever. Moves down to the best allowed tier below it (else the
    * lowest allowed), like the server's quality-delete route; an unknown name gets the best allowed. */
-  function cutoffWithinAllowed(allowed: string[], cutoff: string): string {
+  function cutoffWithinAllowed(allowed: string[], cutoff: string, profile?: QualityProfile): string {
     if (allowed.includes(cutoff)) return cutoff;
-    const allowedRanked = qualities.filter((q) => allowed.includes(q.name)).map((q) => q.name); // worst → best
-    const cutoffRank = qualities.findIndex((q) => q.name === cutoff);
+    // Worst → best, as the profile ranks the ladder (its own order when it has one).
+    const ladder = profile ? profileLadder(profile, qualities) : qualities.map((q) => q.name);
+    const allowedRanked = ladder.filter((name) => allowed.includes(name));
+    const cutoffRank = ladder.indexOf(cutoff);
     if (cutoffRank === -1) return allowedRanked[allowedRanked.length - 1] ?? cutoff;
-    const below = allowedRanked.filter((name) => qualities.findIndex((q) => q.name === name) < cutoffRank);
+    const below = allowedRanked.filter((name) => ladder.indexOf(name) < cutoffRank);
     return below[below.length - 1] ?? allowedRanked[0] ?? cutoff;
   }
 
@@ -1381,12 +1385,24 @@ export default function Settings() {
     if (allowedQualities.length === 0) return; // a profile must always allow at least one quality
     const patch: Partial<QualityProfile> =
       qualityName === profile.cutoff && !allowedQualities.includes(qualityName)
-        ? { allowedQualities, cutoff: cutoffWithinAllowed(allowedQualities, profile.cutoff) }
+        ? { allowedQualities, cutoff: cutoffWithinAllowed(allowedQualities, profile.cutoff, profile) }
         : { allowedQualities };
     // Local first, so a quick second checkbox click builds on this one instead of the pre-save list.
     setProfiles((prev) => prev.map((p) => (p.id === profile.id ? { ...p, ...patch } : p)));
     try {
-      await api.patch(`/quality-profiles/${profile.id}`, patch);
+      const saved = await api.patch<QualityProfile>(`/quality-profiles/${profile.id}`, patch);
+      // A profile with an order of its own puts what is newly allowed in it: the server says where.
+      if (profile.qualityOrder) setProfiles((prev) => prev.map((p) => (p.id === profile.id ? { ...p, qualityOrder: saved.qualityOrder } : p)));
+    } catch (e) {
+      notify.error((e as Error).message);
+      load();
+    }
+  }
+
+  async function saveProfileOrder(profileId: number, qualityOrder: string[] | null) {
+    setProfiles((prev) => prev.map((p) => (p.id === profileId ? { ...p, qualityOrder } : p)));
+    try {
+      await api.patch(`/quality-profiles/${profileId}`, { qualityOrder });
     } catch (e) {
       notify.error((e as Error).message);
       load();
@@ -3874,7 +3890,7 @@ export default function Settings() {
           ...qualities.map((q, idx) => ({
             key: `quality-${q.id}`,
             label: q.name,
-            description: `Rank ${idx + 1} of ${qualities.length} (worst to best)`,
+            description: `Rank ${idx + 1} of ${qualities.length} (worst to best)${isOffByDefault(q.name) ? " · off by default" : ""}`,
             maxWidth: 420,
             render: () => (
               <div className="form-panel">
@@ -3887,6 +3903,7 @@ export default function Settings() {
                   Preferred size is a soft target only, used to break ties between otherwise-equal releases at this
                   quality.
                 </p>
+                {qualityNote(q.name) && <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>{qualityNote(q.name)}</p>}
                 <label htmlFor="settings-name-88">Name</label>
                 <input id="settings-name-88" value={q.name} readOnly title="Quality names are fixed — they must match what the release parser detects" />
                 <label htmlFor="settings-min-size-mb-89">Min size ({sizeUnit})</label>
@@ -3952,15 +3969,16 @@ export default function Settings() {
                 </div>
                 <label htmlFor="settings-cutoff-stop-upgrading-at-94">Cutoff (stop upgrading at)</label>
                 <select id="settings-cutoff-stop-upgrading-at-94" value={p.cutoff} onChange={(e) => saveProfileCutoff(p.id, e.target.value)}>
-                  {qualities
-                    .filter((q) => p.allowedQualities.includes(q.name) || q.name === p.cutoff)
-                    .map((q) => (
-                      <option key={q.id} value={q.name}>
-                        {q.name}
-                        {p.allowedQualities.includes(q.name) ? "" : " (not allowed)"}
+                  {profileLadder(p, qualities)
+                    .filter((name) => p.allowedQualities.includes(name) || name === p.cutoff)
+                    .map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                        {p.allowedQualities.includes(name) ? "" : " (not allowed)"}
                       </option>
                     ))}
                 </select>
+                <QualityOrderEditor profile={p} qualities={qualities} onSave={(order) => saveProfileOrder(p.id, order)} />
                 <label htmlFor="settings-min-format-score-95">Min format score</label>
                 <input id="settings-min-format-score-95"
                   type="number"

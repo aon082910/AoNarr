@@ -182,10 +182,11 @@ describe("resolutionOfQualityName", () => {
     for (const [name, tier] of cases) expect(importer.resolutionOfQualityName(name), name).toBe(tier);
   });
 
+  // (The names with no number: the DVD tiers and SDTV are standard definition; SD, the pre-release tiers, BR-DISK and Raw-HD say no size.)
   it("agrees with the number in every default quality name", () => {
     for (const name of DEFAULT_QUALITY_ORDER) {
       const lines = /(\d+)p$/.exec(name);
-      expect(importer.resolutionOfQualityName(name), name).toBe(lines ? Number(lines[1]) : name === "DVD" ? 480 : null);
+      expect(importer.resolutionOfQualityName(name), name).toBe(lines ? (Number(lines[1]) === 576 ? 480 : Number(lines[1])) : ["DVD", "DVD-R", "SDTV"].includes(name) ? 480 : null);
     }
   });
 });

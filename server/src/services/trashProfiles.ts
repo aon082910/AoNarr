@@ -1,6 +1,7 @@
 import { db } from "../db/index.js";
 import { log } from "./logger.js";
-import { parseQualityGroups } from "./qualityGroups.js";
+import { parseQualityGroups, parseQualityOrder } from "./qualityGroups.js";
+import { reconcileQualityOrder } from "./quality.js";
 import { normalizeProfileLanguage } from "./profileLanguage.js";
 
 type TrashApp = "radarr" | "sonarr";
@@ -307,6 +308,9 @@ export async function importTrashProfile(app: TrashApp, file: string, options: {
         .run(...values, profileId);
       // A language TRaSH names replaces the profile's; "Any" and "Original" leave the admin's own choice alone.
       if (t.languageNamed) await db.prepare("UPDATE quality_profiles SET language = ? WHERE id = ?").run(t.language, profileId);
+      // The admin's own order for the profile stays, with what TRaSH newly allows put into it.
+      const ownOrder = parseQualityOrder(((await db.prepare("SELECT quality_order FROM quality_profiles WHERE id = ?").get(profileId)) as { quality_order: string | null }).quality_order);
+      if (ownOrder) await db.prepare("UPDATE quality_profiles SET quality_order = ? WHERE id = ?").run(JSON.stringify(reconcileQualityOrder(ownOrder, t.allowedQualities)), profileId);
     } else {
       created = true;
       // prefer_cutoff_quality is 0: the cutoff only stops upgrading, as in Radarr and Sonarr.

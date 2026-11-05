@@ -233,6 +233,19 @@ describe("POST /api/custom-formats/trash-profiles/import", () => {
     expect(Number(score.score)).toBe(2000);
   });
 
+  it("keeps the order the admin gave the profile on an update, with what TRaSH newly allows put into it", async () => {
+    // The profile's order lists three of the four qualities TRaSH allows; TRaSH allows Bluray-720p as well.
+    await db.prepare("UPDATE quality_profiles SET quality_order = ? WHERE name = 'HD Bluray + WEB'").run(JSON.stringify(["WEBDL-1080p", "Bluray-1080p", "WEBRip-1080p"]));
+    mockTrashRepo({ "hd-bluray-web.json": hdBlurayWeb });
+
+    await authed(request(app).post("/api/custom-formats/trash-profiles/import")).send({ app: "radarr", file: "hd-bluray-web.json" }).expect(200);
+
+    const row = (await db.prepare("SELECT quality_order FROM quality_profiles WHERE name = 'HD Bluray + WEB'").get()) as { quality_order: string };
+    // Bluray-720p ranks below the three on the ladder, so it goes in front of them; the admin's own order is otherwise as it was.
+    expect(JSON.parse(row.quality_order)).toEqual(["Bluray-720p", "WEBDL-1080p", "Bluray-1080p", "WEBRip-1080p"]);
+    await db.prepare("UPDATE quality_profiles SET quality_order = NULL WHERE name = 'HD Bluray + WEB'").run();
+  });
+
   it("leaves the scores of formats the TRaSH profile does not list alone", async () => {
     const mine = await addSyncedFormat("My Own Format", "mine", { default: 50 });
     const profileId = ((await db.prepare("SELECT id FROM quality_profiles WHERE name = 'HD Bluray + WEB'").get()) as any).id;

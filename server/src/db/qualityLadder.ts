@@ -3,10 +3,14 @@
  * installs existed. No dependencies, so db/client.ts can seed from it ahead of the rest of the app.
  *
  * The names are Radarr's and Sonarr's (Quality.cs), and the places follow Radarr's weights: the pre-release
- * copies at the very bottom, then the standard-definition tiers (SDTV, DVD, DVD-R, the 480p/576p web and disc
- * rips), then HD by resolution, BR-DISK and Raw-HD last. "SD" is AoNarr's own and stays: it is the grade of a
- * standard-definition release whose source cannot be told (a bare "480p", a BDRip with no resolution), and
- * the tier every older profile and stored file already names.
+ * copies at the very bottom, HD by resolution, BR-DISK and Raw-HD last. "SD" is AoNarr's own and stays: it is the
+ * grade of a standard-definition release whose source cannot be told (a bare "480p", a BDRip with no resolution),
+ * and the tier every older profile and stored file already names.
+ *
+ * One place differs from Radarr's weights on purpose: the SD-class tiers (SDTV and the 480p/576p web and disc rips)
+ * sit between SD and DVD, where Radarr puts DVD below its 480p web rips. Everything graded "SD" before ranked below
+ * DVD, and an upgraded install must keep deciding as it did: a profile with a DVD cutoff must not start to read a
+ * 480p WEB-DL as past it. A profile that wants Radarr's order sets its own (Settings, Quality Profiles).
  */
 export const DEFAULT_QUALITY_ORDER = [
   // Pre-release copies, which a profile has to ask for by name.
@@ -16,15 +20,15 @@ export const DEFAULT_QUALITY_ORDER = [
   "TELECINE",
   "REGIONAL",
   "DVDSCR",
-  // Standard definition.
+  // Standard definition: what "SD" used to hold, finer, and then the DVD tiers.
   "SD",
   "SDTV",
-  "DVD",
-  "DVD-R",
   "WEBRip-480p",
   "WEBDL-480p",
   "Bluray-480p",
   "Bluray-576p",
+  "DVD",
+  "DVD-R",
   // HD and UHD.
   "HDTV-720p",
   "WEBRip-720p",
