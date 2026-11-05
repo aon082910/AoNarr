@@ -47,6 +47,12 @@ export interface CoverImage {
 
 /** The reason of a skip that is the normal case of a pass over tagged files (not logged one by one). */
 export const TAGS_UP_TO_DATE = "the tags are already up to date";
+/** The reasons of the skips that keep a file from being rewritten under somebody else's feet or without room for the copy. */
+export const TAG_FILE_BUSY = "it is being replaced or tagged right now";
+export const TAG_FILE_CHANGED = "the file changed while it was being tagged";
+export const TAG_NO_SPACE = "not enough free space";
+/** The old on/off switch tags MP3 files only. */
+export const LEGACY_MP3_ONLY = "legacy setting: MP3 only";
 
 export type TagWriteOutcome = "written" | "skipped" | "failed";
 
@@ -70,6 +76,9 @@ export interface ToolRunResult {
 
 export type ToolRunner = (tool: "ffmpeg" | "ffprobe", args: string[], options: { timeoutMs: number; signal?: AbortSignal }) => Promise<ToolRunResult>;
 
+/** What the file system says about the free space of a folder (the shape of `fs.promises.statfs`). */
+export type StatfsFn = (folder: string) => Promise<{ bavail: number | bigint; bsize: number | bigint; blocks?: number | bigint }>;
+
 export interface WriteAudioTagsOptions {
   /** Remove every tag the file has before writing (the text tags; an embedded picture stays unless a new cover replaces it). */
   scrub?: boolean;
@@ -79,6 +88,15 @@ export interface WriteAudioTagsOptions {
   signal?: AbortSignal;
   /** Replaces the ffmpeg and ffprobe runs (tests). */
   runner?: ToolRunner;
+  /** Replaces the free space lookup (tests). */
+  statfs?: StatfsFn;
+  /**
+   * The old on/off switch: an MP3 gets the five fields it always got (title, artist, album, track number, year), nothing else is
+   * touched, and any other format is skipped.
+   */
+  legacy?: boolean;
+  /** How long to wait for another write of the same file (an import waits; a retag, 0, skips the file). */
+  lockWaitMs?: number;
 }
 
 export type AudioTagFormat = "mp3" | "flac" | "mp4" | "ogg" | "opus";
@@ -123,12 +141,21 @@ export type WriteTagsMode = (typeof WRITE_TAGS_MODES)[number];
 
 /**
  * Lidarr's "write tags" choice. `writeAudioTagsMode` wins when it is set; before it existed `writeAudioTagsOnImport = 1`
- * meant "tag what is imported", which is `new`, so an upgrade changes nothing.
+ * meant "tag what is imported", which is `new` for the files it always tagged (see `isLegacyTagSwitch`).
  */
 export function resolveWriteTagsMode(modeSetting: string | undefined | null, legacyOnImport: string | undefined | null): WriteTagsMode {
   const mode = (modeSetting ?? "").trim();
   if ((WRITE_TAGS_MODES as readonly string[]).includes(mode)) return mode as WriteTagsMode;
   return legacyOnImport === "1" ? "new" : "none";
+}
+
+/**
+ * True while no mode was chosen and the old on/off switch is on. That switch tagged MP3 files only, with title, artist, album,
+ * track number and year, and touched no other frame; the modes tag every format and write more fields, so an install that never
+ * chose one keeps exactly what it had.
+ */
+export function isLegacyTagSwitch(modeSetting: string | undefined | null, legacyOnImport: string | undefined | null): boolean {
+  return !(WRITE_TAGS_MODES as readonly string[]).includes((modeSetting ?? "").trim()) && legacyOnImport === "1";
 }
 
 /** New and upgraded files are tagged as they are imported. */
@@ -161,6 +188,92 @@ export async function commitTempFile(tmpPath: string, filePath: string, original
   // Not permitted when running unprivileged; the file then keeps this process's own owner.
   await fsp.chown(tmpPath, original.uid, original.gid).catch(() => {});
   await fsp.rename(tmpPath, filePath);
+}
+
+/** The file at a path is not the one a tag write started from. */
+export class FileChangedError extends Error {
+  constructor() {
+    super(TAG_FILE_CHANGED);
+  }
+}
+
+/**
+ * Another program (the download client, a media manager, an import, the user) may have changed or replaced the file while the
+ * tagged copy was being made from the bytes read earlier. Renaming that copy over the new file would put the old audio back.
+ */
+export async function assertFileUnchanged(filePath: string, original: fs.Stats): Promise<void> {
+  const now = await fsp.stat(filePath).catch(() => null);
+  if (!now || now.size !== original.size || now.mtimeMs !== original.mtimeMs || now.ino !== original.ino) throw new FileChangedError();
+}
+
+/** A tagged copy is as big as the file; this much stays free beside it, so a full disk is not filled to the brim while it is written. */
+export const FREE_SPACE_RESERVE_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Why the folder cannot take a copy of a `fileSize` bytes file, or null. A file system that does not say how much it has free
+ * (no answer, or no blocks at all) is taken to have room.
+ */
+export async function freeSpaceProblem(folder: string, fileSize: number, statfs: StatfsFn = fsp.statfs as unknown as StatfsFn): Promise<{ free: number; needed: number } | null> {
+  try {
+    const info = await statfs(folder);
+    if (info.blocks !== undefined && Number(info.blocks) === 0) return null;
+    const free = Number(info.bavail) * Number(info.bsize);
+    const needed = fileSize + FREE_SPACE_RESERVE_BYTES;
+    return Number.isFinite(free) && free < needed ? { free, needed } : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---- how many files are written at once --------------------------------------------------------------------------------
+
+/** At most this many tag writes (ffprobe, ffmpeg and an MP3 rewrite together) run at once in the whole process. */
+export const TAG_WRITE_CONCURRENCY = 2;
+
+interface SlotWaiter {
+  resolve: () => void;
+}
+
+let slotsInUse = 0;
+const slotWaiters: SlotWaiter[] = [];
+
+function aborted(): DOMException {
+  return new DOMException("aborted", "AbortError");
+}
+
+/**
+ * Runs one file's tag write when one of the slots is free: an import and a library retag share them, so neither can pile up
+ * ffprobe runs or whole-file reads (an audiobook MP3 is read into memory) beyond the cap. The slot goes to the oldest waiter
+ * the moment it is given back. A cancelled caller leaves the queue at once.
+ */
+export async function withTagSlot<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
+  if (signal?.aborted) throw aborted();
+  if (slotsInUse >= TAG_WRITE_CONCURRENCY) {
+    await new Promise<void>((resolve, reject) => {
+      const waiter: SlotWaiter = {
+        resolve: () => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        },
+      };
+      const onAbort = () => {
+        const at = slotWaiters.indexOf(waiter);
+        if (at >= 0) slotWaiters.splice(at, 1);
+        reject(aborted());
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      slotWaiters.push(waiter);
+    });
+  } else {
+    slotsInUse++;
+  }
+  try {
+    return await work();
+  } finally {
+    const next = slotWaiters.shift();
+    if (next) next.resolve();
+    else slotsInUse--;
+  }
 }
 
 /** Flushes a file's data to disk before it is renamed into place: a power loss after the rename must not leave an empty file. */

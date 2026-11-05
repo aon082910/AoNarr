@@ -4,6 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { setupTestDb } from "./helpers/testDb.js";
+import { IMPORT_TAG_LIMITS, isAudioFileLocked, resetAudioFileLocksForTests, tryLockAudioFile, unlockAudioFile } from "../src/services/audioFileLock.js";
 
 const notifyImported = vi.fn();
 const notifyUpgraded = vi.fn();
@@ -1862,6 +1863,126 @@ describe("placeAlbumFiles", () => {
       writeAudioTags.mockResolvedValue({ outcome: "failed", reason: "ffmpeg is not available", format: "FLAC" });
       await expect(importOneTrack()).resolves.toBeUndefined();
       expect(writeAudioTags).toHaveBeenCalledTimes(2);
+    });
+
+    describe("the old on/off switch", () => {
+      it("with no mode chosen tags with the old reach: five fields of an MP3, no cover, no scrubbing", async () => {
+        setSetting("writeAudioTagsOnImport", "1");
+        setSetting("scrubAudioTags", "1");
+        setSetting("embedAudioCover", "1");
+        await importOneTrack();
+
+        expect(writeAudioTags).toHaveBeenCalledTimes(2);
+        for (const call of writeAudioTags.mock.calls) {
+          expect(call[2]).toMatchObject({ legacy: true });
+          expect(call[2].scrub).toBeUndefined();
+          expect(call[2].cover).toBeUndefined();
+        }
+      });
+
+      it("a chosen mode, even 'new', gives the full behavior", async () => {
+        setSetting("writeAudioTagsOnImport", "1");
+        setSetting("writeAudioTagsMode", "new");
+        await importOneTrack();
+
+        expect(writeAudioTags).toHaveBeenCalledTimes(2);
+        for (const call of writeAudioTags.mock.calls) {
+          expect(call[2].legacy).toBeUndefined();
+          expect(call[2]).toMatchObject({ scrub: false });
+        }
+      });
+    });
+
+    describe("a tag write of a file the album replaces, and a hung one", () => {
+      afterEach(() => {
+        IMPORT_TAG_LIMITS.lockWaitMs = 60_000;
+        IMPORT_TAG_LIMITS.fileTimeoutMs = 120_000;
+        resetAudioFileLocksForTests();
+      });
+
+      /** An album with one track imported once; the next import of it is an upgrade that replaces the file. */
+      async function importedOnce(): Promise<{ artistId: number; albumId: number; dest: string; next: string }> {
+        const folder = await insertRootFolder("artist");
+        const { artistId, albumId } = await insertArtistAlbum(folder.id);
+        await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, 1, 'Track One')").run(albumId);
+        const first = writeDownloadFile(path.join("First.Album", "01 - Track One.mp3"), "the first copy");
+        await placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: first, quality: null });
+        const dest = path.join(folder.path, "Some Artist", "Some Album", "01 - Track One.mp3");
+        expect(fs.readFileSync(dest, "utf-8")).toBe("the first copy");
+        const next = writeDownloadFile(path.join("Better.Album", "01 - Track One.mp3"), "the better copy");
+        return { artistId, albumId, dest, next };
+      }
+
+      it("waits for a tag write of the file it replaces, then places the better file", async () => {
+        setSetting("writeAudioTagsMode", "");
+        const { artistId, albumId, dest, next } = await importedOnce();
+        // A retag has the old file open: it read it, and will rename its tagged copy over the path when it is done.
+        expect(tryLockAudioFile(dest)).toBe(true);
+
+        const upgrade = placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: next, quality: null });
+        await new Promise((r) => setTimeout(r, 120));
+        // Nothing has moved while the retag holds the file.
+        expect(fs.existsSync(next)).toBe(true);
+        expect(fs.readFileSync(dest, "utf-8")).toBe("the first copy");
+
+        unlockAudioFile(dest);
+        await upgrade;
+
+        expect(fs.readFileSync(dest, "utf-8")).toBe("the better copy");
+        expect(fs.existsSync(next)).toBe(false);
+        expect(isAudioFileLocked(dest)).toBe(false);
+      });
+
+      it("refuses the upgrade, leaving the download where it is, when the tag write outlasts the wait", async () => {
+        IMPORT_TAG_LIMITS.lockWaitMs = 60;
+        const { artistId, albumId, dest, next } = await importedOnce();
+        expect(tryLockAudioFile(dest)).toBe(true);
+
+        await expect(placeAlbumFiles({ itemId: artistId, subItemId: albumId, anchorFile: next, quality: null })).rejects.toThrow(/tag write of "Some Album" is still running/);
+
+        expect(fs.existsSync(next)).toBe(true);
+        expect(fs.readFileSync(dest, "utf-8")).toBe("the first copy");
+        // The lock is still the tag write's own.
+        expect(isAudioFileLocked(dest)).toBe(true);
+        const track = (await db.prepare("SELECT * FROM tracks WHERE sub_item_id = ?").get(albumId)) as any;
+        expect(track).toMatchObject({ has_file: 1, file_path: dest });
+      });
+
+      it("hands the file to its tag write once it is in place, and the tag write takes the lock itself, waiting for it", async () => {
+        setSetting("writeAudioTagsMode", "new");
+        const seen: { file: string; lockedByImport: boolean; options: any }[] = [];
+        writeAudioTags.mockImplementation(async (file: string, _info: unknown, options: any) => {
+          // The import let go of its own hold before calling: the writer is the one to take it (and it waits up to a minute).
+          seen.push({ file, lockedByImport: isAudioFileLocked(file), options });
+          return { outcome: "written", format: "MP3" };
+        });
+        await importOneTrack();
+
+        expect(seen).toHaveLength(2);
+        expect(seen.every((s) => !s.lockedByImport)).toBe(true);
+        expect(seen.every((s) => s.options.lockWaitMs === 60_000)).toBe(true);
+        expect(seen.every((s) => s.options.signal instanceof AbortSignal)).toBe(true);
+      });
+
+      it("never waits more than the limit for one file's tags: the import goes on and the write is told to stop", async () => {
+        setSetting("writeAudioTagsMode", "new");
+        IMPORT_TAG_LIMITS.fileTimeoutMs = 80;
+        const signals: AbortSignal[] = [];
+        writeAudioTags.mockImplementation((_file: string, _info: unknown, options: { signal: AbortSignal }) => {
+          signals.push(options.signal);
+          return new Promise(() => {});
+        });
+        const started = Date.now();
+
+        await importOneTrack();
+
+        // Two files, each held up 80 ms and no longer; both tracks are imported.
+        expect(Date.now() - started).toBeLessThan(10_000);
+        expect(signals).toHaveLength(2);
+        expect(signals.every((s) => s.aborted)).toBe(true);
+        const tracks = (await db.prepare("SELECT has_file FROM tracks ORDER BY track_number").all()) as any[];
+        expect(tracks.map((t) => Number(t.has_file))).toEqual([1, 1]);
+      });
     });
   });
 

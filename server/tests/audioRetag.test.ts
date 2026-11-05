@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from "vitest";
@@ -7,6 +8,7 @@ import type { Express } from "express";
 import NodeID3 from "node-id3";
 import { setupTestDb } from "./helpers/testDb.js";
 import {
+  isLegacyTagSwitch,
   modeFollowsEdits,
   modeRetagsLibrary,
   modeTagsOnImport,
@@ -45,6 +47,8 @@ beforeEach(async () => {
   for (const key of ["writeAudioTagsMode", "writeAudioTagsOnImport", "scrubAudioTags", "embedAudioCover"]) setSetting(key, "");
   titleMoveLock.resetTitleMoveLocksForTests();
   audioRetag.resetRetagStateForTests();
+  // The edit worker waits 5 s after an edit; the tests do not.
+  audioRetag.configureEditRetagForTests({ debounceMs: 20, options: { throttleMs: 0 } });
 });
 
 afterEach(() => {
@@ -138,7 +142,7 @@ describe("the write-tags mode", () => {
   });
 
   it("reads the mode, scrub and cover settings", () => {
-    expect(audioRetag.getAudioTagSettings()).toEqual({ mode: "none", scrub: false, embedCover: false });
+    expect(audioRetag.getAudioTagSettings()).toEqual({ mode: "none", scrub: false, embedCover: false, legacy: false });
     setSetting("writeAudioTagsOnImport", "1");
     expect(audioRetag.getAudioTagSettings().mode).toBe("new");
     expect(audioRetag.writeTagsOnImportEnabled()).toBe(true);
@@ -148,7 +152,22 @@ describe("the write-tags mode", () => {
     setSetting("writeAudioTagsMode", "sync");
     setSetting("scrubAudioTags", "1");
     setSetting("embedAudioCover", "1");
-    expect(audioRetag.getAudioTagSettings()).toEqual({ mode: "sync", scrub: true, embedCover: true });
+    expect(audioRetag.getAudioTagSettings()).toEqual({ mode: "sync", scrub: true, embedCover: true, legacy: false });
+  });
+
+  it("the old on/off switch stays the old, MP3-only switch until a mode is chosen", () => {
+    // Nothing chosen and the switch on: legacy. Any explicit mode (even "new") ends it, and the switch off is not legacy.
+    expect(isLegacyTagSwitch(undefined, "1")).toBe(true);
+    expect(isLegacyTagSwitch("", "1")).toBe(true);
+    expect(isLegacyTagSwitch("bogus", "1")).toBe(true);
+    expect(isLegacyTagSwitch("", "0")).toBe(false);
+    expect(isLegacyTagSwitch(undefined, undefined)).toBe(false);
+    for (const mode of ["none", "new", "all", "sync"]) expect(isLegacyTagSwitch(mode, "1")).toBe(false);
+
+    setSetting("writeAudioTagsOnImport", "1");
+    expect(audioRetag.getAudioTagSettings()).toMatchObject({ mode: "new", legacy: true });
+    setSetting("writeAudioTagsMode", "new");
+    expect(audioRetag.getAudioTagSettings()).toMatchObject({ mode: "new", legacy: false });
   });
 
   it("refuses a mode the registry does not know, over the settings API", async () => {
@@ -420,7 +439,7 @@ describe("the cover", () => {
   it("falls back to the provider's picture, but never to an address on the local network or a page that is not a picture", async () => {
     const folder = path.join(tmp, "cover-remote");
     fs.mkdirSync(folder, { recursive: true });
-    const ok = vi.fn().mockResolvedValue(new Response(png, { status: 200 }));
+    const ok = vi.fn().mockResolvedValue(new Response(png, { status: 200, headers: { "content-type": "image/png" } }));
     expect((await audioRetag.resolveCover(folder, "https://cdn.example.com/a.png", ok as never))?.mime).toBe("image/png");
     expect(ok).toHaveBeenCalledTimes(1);
 
@@ -431,10 +450,69 @@ describe("the cover", () => {
     expect(await audioRetag.resolveCover(folder, "/api/media/local-artwork/abc", local as never)).toBeNull();
     expect(local).not.toHaveBeenCalled();
 
-    const html = vi.fn().mockResolvedValue(new Response("<html></html>", { status: 200 }));
+    const html = vi.fn().mockResolvedValue(new Response("<html></html>", { status: 200, headers: { "content-type": "image/png" } }));
     expect(await audioRetag.resolveCover(folder, "https://cdn.example.com/a.png", html as never)).toBeNull();
     const down = vi.fn().mockRejectedValue(new Error("offline"));
     expect(await audioRetag.resolveCover(folder, "https://cdn.example.com/a.png", down as never)).toBeNull();
+  });
+
+  describe("the provider's picture is fetched like the artwork files are", () => {
+    const folder = () => {
+      const dir = fs.mkdtempSync(path.join(tmp, "cover-fetch-"));
+      return dir;
+    };
+    const image = (body: BodyInit, type = "image/png") => new Response(body, { status: 200, headers: { "content-type": type } });
+
+    it("refuses a redirect to an address on the local network, and never asks it", async () => {
+      const hops = vi.fn().mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "http://192.168.1.1/admin/reboot" } })).mockResolvedValue(image(png));
+
+      expect(await audioRetag.resolveCover(folder(), "https://cdn.example.com/a.png", hops as never)).toBeNull();
+
+      expect(hops).toHaveBeenCalledTimes(1);
+      // Redirects are followed by hand, each hop checked: the fetch itself is told not to follow them.
+      expect(hops.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
+      // Neither a redirect to a host name that has no dots, nor one to a loopback address, is followed.
+      for (const location of ["http://nas/art.png", "http://127.0.0.1:8080/art.png", "http://[::1]/art.png"]) {
+        const hop = vi.fn().mockResolvedValueOnce(new Response(null, { status: 301, headers: { location } })).mockResolvedValue(image(png));
+        expect(await audioRetag.resolveCover(folder(), "https://cdn.example.com/a.png", hop as never), location).toBeNull();
+        expect(hop, location).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it("follows a redirect to another public address", async () => {
+      const hops = vi.fn().mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://img.example.net/full/a.png" } })).mockResolvedValue(image(png));
+
+      const cover = await audioRetag.resolveCover(folder(), "https://cdn.example.com/a.png", hops as never);
+
+      expect(cover?.mime).toBe("image/png");
+      expect(hops).toHaveBeenCalledTimes(2);
+      expect(hops.mock.calls[1][0]).toBe("https://img.example.net/full/a.png");
+    });
+
+    it("stops reading a body without a content-length once it is past the cap", async () => {
+      let pulled = 0;
+      const chunk = new Uint8Array(1024 * 1024).fill(0xff);
+      const endless = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulled++;
+          controller.enqueue(chunk);
+          if (pulled >= 200) controller.close();
+        },
+      });
+      const fetchEndless = vi.fn().mockResolvedValue(image(endless, "image/jpeg"));
+
+      expect(await audioRetag.resolveCover(folder(), "https://cdn.example.com/huge.jpg", fetchEndless as never)).toBeNull();
+
+      // 15 MB is the cap: a few chunks past it were read, not the 200 MB the server offered.
+      expect(pulled).toBeLessThan(40);
+    });
+
+    it("uses a good picture, and not a JPEG-less or PNG-less one such as a GIF or WebP", async () => {
+      const jpegCover = await audioRetag.resolveCover(folder(), "https://cdn.example.com/a.jpg", vi.fn().mockResolvedValue(image(jpeg, "image/jpeg")) as never);
+      expect(jpegCover?.mime).toBe("image/jpeg");
+      const gif = Buffer.concat([Buffer.from("GIF89a"), Buffer.alloc(32, 1)]);
+      expect(await audioRetag.resolveCover(folder(), "https://cdn.example.com/a.gif", vi.fn().mockResolvedValue(image(gif, "image/gif")) as never)).toBeNull();
+    });
   });
 });
 
@@ -537,14 +615,219 @@ describe("a single title's retag job", () => {
     setSetting("writeAudioTagsMode", "all");
     audioRetag.retagTitleAfterEdit(itemId, "artist");
     await new Promise((r) => setTimeout(r, 150));
-    expect(backgroundJobs.listBackgroundJobs().some((j) => j.id === `retag:title-${itemId}`)).toBe(false);
+    expect(audioRetag.pendingEditRetags()).toEqual({ queued: 0, active: false });
+    expect(backgroundJobs.listBackgroundJobs().some((j) => j.id === "retag:edits")).toBe(false);
     expect(NodeID3.read(files[0]).title).toBeUndefined();
 
     setSetting("writeAudioTagsMode", "sync");
     audioRetag.retagTitleAfterEdit(itemId, "movie");
+    expect(audioRetag.pendingEditRetags().queued).toBe(0);
     audioRetag.retagTitleAfterEdit(itemId, "artist");
-    await waitFor(() => backgroundJobs.listBackgroundJobs().some((j) => j.id === `retag:title-${itemId}` && !j.running), "the retag after the edit");
+    await waitFor(() => backgroundJobs.listBackgroundJobs().some((j) => j.id === "retag:edits" && !j.running), "the retag after the edit");
     expect(NodeID3.read(files[0]).title).toBe("One");
+    expect(backgroundJobs.listBackgroundJobs().find((j) => j.id === "retag:edits")).toMatchObject({ total: 1, done: 1, error: null, summary: "1 of 1 file(s) written (MP3 1)" });
+  });
+});
+
+describe("following edits (sync mode)", () => {
+  const quiet = () => new Promise((r) => setTimeout(r, 200));
+  const idle = (what: string) => waitFor(() => !audioRetag.pendingEditRetags().active, what, 60_000);
+
+  it("keeps a set of titles, not a job per edit: 5,000 edits of 200 titles are 200 retags, two files at most at once", async () => {
+    setSetting("writeAudioTagsMode", "sync");
+    const music = await root("edits-many", "artist");
+    const titles: Fixture[] = [];
+    for (let i = 0; i < 200; i++) titles.push(await title(music, { title: `Edited Artist ${i}`, names: ["One"] }));
+
+    const { writeAudioTags } = await import("../src/services/audioTagWriter.js");
+    const retagged: string[] = [];
+    const countingWriter: Writer = async (file, info, options) => {
+      retagged.push(file);
+      return writeAudioTags(file, info, options);
+    };
+    // Counted where an MP3 is really rewritten (read in whole, renamed over), whoever asks.
+    let active = 0;
+    let peak = 0;
+    const realRead = fsp.readFile.bind(fsp) as (...args: unknown[]) => Promise<unknown>;
+    const realRename = fsp.rename.bind(fsp);
+    vi.spyOn(fsp, "readFile").mockImplementation((async (...args: unknown[]) => {
+      if (!String(args[0]).endsWith(".mp3")) return realRead(...args);
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 2));
+      return realRead(...args);
+    }) as never);
+    vi.spyOn(fsp, "rename").mockImplementation((async (from: string, to: string) => {
+      await realRename(from, to);
+      if (String(to).endsWith(".mp3")) active--;
+    }) as never);
+    audioRetag.configureEditRetagForTests({ debounceMs: 10, options: { throttleMs: 0, writer: countingWriter } });
+
+    const jobsBefore = backgroundJobs.listBackgroundJobs().map((j) => j.id).sort();
+    const started = performance.now();
+    for (let n = 0; n < 5000; n++) audioRetag.retagTitleAfterEdit(titles[n % 200].itemId, "artist");
+    const elapsed = performance.now() - started;
+
+    // Constant time each: 5,000 edits queue in a few milliseconds, as 200 ids, and no job of their own was started.
+    expect(elapsed).toBeLessThan(250);
+    expect(audioRetag.pendingEditRetags()).toEqual({ queued: 200, active: true });
+    expect(backgroundJobs.listBackgroundJobs().map((j) => j.id).sort()).toEqual(jobsBefore);
+
+    // While the worker is at it, eight imports tag files of their own: together never more than two files are being rewritten.
+    await new Promise((r) => setTimeout(r, 40));
+    const imported = Array.from({ length: 8 }, (_, i) => {
+      const file = path.join(music.dir, "imported-" + i + ".mp3");
+      fs.writeFileSync(file, Buffer.from("pretend audio"));
+      return file;
+    });
+    const importResults = await Promise.all(imported.map((file) => writeAudioTags(file, { title: "Imported", artist: "Someone", album: "Else" })));
+    expect(importResults.map((r) => r.outcome)).toEqual(Array(8).fill("written"));
+
+    await idle("the worker to retag 200 titles");
+
+    expect(retagged).toHaveLength(200);
+    expect(new Set(retagged).size).toBe(200);
+    expect(peak).toBeGreaterThanOrEqual(1);
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(NodeID3.read(titles[0].files[0]).artist).toBe("Edited Artist 0");
+    expect(NodeID3.read(titles[199].files[0]).artist).toBe("Edited Artist 199");
+    // One job for the whole pass, not one per title.
+    const jobsAfter = backgroundJobs.listBackgroundJobs().map((j) => j.id).filter((id) => !jobsBefore.includes(id) || id === "retag:edits");
+    expect(jobsAfter).toEqual(["retag:edits"]);
+    expect(backgroundJobs.listBackgroundJobs().find((j) => j.id === "retag:edits")).toMatchObject({ running: false, total: 200, done: 200, error: null });
+  }, 60_000);
+
+  it("a burst of edits is one pass, and a title edited ten times is retagged once", async () => {
+    setSetting("writeAudioTagsMode", "sync");
+    const music = await root("edits-burst", "artist");
+    const { itemId } = await title(music, { names: ["One"] });
+    const { writer, calls } = stubWriter();
+    audioRetag.configureEditRetagForTests({ debounceMs: 100, options: { throttleMs: 0, writer } });
+
+    for (let n = 0; n < 10; n++) {
+      audioRetag.retagTitleAfterEdit(itemId, "artist");
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(calls).toHaveLength(0);
+    await idle("the pass");
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it("goes again for a title that is edited while its files are being retagged", async () => {
+    setSetting("writeAudioTagsMode", "sync");
+    const music = await root("edits-again", "artist");
+    const { itemId } = await title(music, { names: ["One"] });
+    const seen: string[] = [];
+    let edited = false;
+    const writer: Writer = async (file, info) => {
+      seen.push(info.artist);
+      if (!edited) {
+        edited = true;
+        await db.prepare("UPDATE media_items SET title = 'Second Name' WHERE id = ?").run(itemId);
+        audioRetag.retagTitleAfterEdit(itemId, "artist");
+      }
+      return { outcome: "written", format: "MP3" };
+    };
+    audioRetag.configureEditRetagForTests({ debounceMs: 20, options: { throttleMs: 0, writer } });
+
+    audioRetag.retagTitleAfterEdit(itemId, "artist");
+    await idle("both passes");
+
+    expect(seen).toEqual(["Some Artist", "Second Name"]);
+  });
+
+  it("waits for a title that is being moved or retagged by hand, then retags it", async () => {
+    setSetting("writeAudioTagsMode", "sync");
+    const music = await root("edits-busy", "artist");
+    const { itemId } = await title(music, { names: ["One"] });
+    const { writer, calls } = stubWriter();
+    audioRetag.configureEditRetagForTests({ debounceMs: 20, options: { throttleMs: 0, writer } });
+    titleMoveLock.tryLockTitleMove(itemId);
+
+    audioRetag.retagTitleAfterEdit(itemId, "artist");
+    await new Promise((r) => setTimeout(r, 150));
+    expect(calls).toHaveLength(0);
+    expect(audioRetag.pendingEditRetags().queued).toBe(1);
+
+    titleMoveLock.unlockTitleMove(itemId);
+    await idle("the title to be retagged");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("drops the waiting titles when the mode is changed away from sync", async () => {
+    setSetting("writeAudioTagsMode", "sync");
+    const music = await root("edits-off", "artist");
+    const { itemId } = await title(music, { names: ["One"] });
+    const { writer, calls } = stubWriter();
+    audioRetag.configureEditRetagForTests({ debounceMs: 50, options: { throttleMs: 0, writer } });
+
+    audioRetag.retagTitleAfterEdit(itemId, "artist");
+    setSetting("writeAudioTagsMode", "new");
+    await idle("the worker");
+
+    expect(calls).toHaveLength(0);
+    expect(audioRetag.pendingEditRetags()).toEqual({ queued: 0, active: false });
+  });
+
+  describe("through the routes, only an edit that changes what the files carry is followed", () => {
+    const patch = (url: string, body: object) => request(app).patch(url).set("X-Api-Key", apiKey).send(body);
+    const rematch = (url: string, body: object) => request(app).post(url).set("X-Api-Key", apiKey).send(body);
+
+    it("a title PATCH that sends the same name, or changes only the year, overview or poster, queues nothing", async () => {
+      setSetting("writeAudioTagsMode", "sync");
+      const music = await root("route-same", "artist");
+      const { itemId } = await title(music, { names: ["One"], genres: ["Rock"] });
+      const { writer, calls } = stubWriter();
+      audioRetag.configureEditRetagForTests({ debounceMs: 30, options: { throttleMs: 0, writer } });
+
+      expect((await patch(`/api/media/${itemId}`, { title: "Some Artist" })).status).toBe(200);
+      expect((await patch(`/api/media/${itemId}`, { title: "Some Artist", year: 2021, overview: "About", posterUrl: "https://example.com/p.jpg" })).status).toBe(200);
+      expect((await patch(`/api/media/${itemId}`, { monitored: 0 })).status).toBe(200);
+      await quiet();
+      expect(calls).toHaveLength(0);
+
+      expect((await patch(`/api/media/${itemId}`, { title: "Another Name" })).status).toBe(200);
+      await idle("the retag");
+      expect(calls).toHaveLength(1);
+      expect(calls[0].info.artist).toBe("Another Name");
+    });
+
+    it("a PATCH of an album that sends the narrator it has queues nothing; a different one does", async () => {
+      setSetting("writeAudioTagsMode", "sync");
+      const books = await root("route-same-books", "audiobook");
+      const book = await title(books, { type: "audiobook", title: "Some Author", names: ["Part"], sub: { title: "The Book", narrator: "A Reader", series_name: "A Series", series_position: 2 } });
+      const { writer, calls } = stubWriter();
+      audioRetag.configureEditRetagForTests({ debounceMs: 30, options: { throttleMs: 0, writer } });
+      const url = `/api/media/${book.itemId}/subitems/${book.subId}`;
+
+      expect((await patch(url, { narrator: "A Reader", seriesName: "A Series", seriesPosition: 2 })).status).toBe(200);
+      expect((await patch(url, { seriesPosition: "2", monitored: 1 })).status).toBe(200);
+      await quiet();
+      expect(calls).toHaveLength(0);
+
+      expect((await patch(url, { narrator: "Another Reader" })).status).toBe(200);
+      await idle("the retag");
+      expect(calls).toHaveLength(1);
+      expect(calls[0].info.composer).toBe("Another Reader");
+    });
+
+    it("a rematch to the same match queues nothing", async () => {
+      setSetting("writeAudioTagsMode", "sync");
+      const music = await root("route-rematch", "artist");
+      const artist = await title(music, { names: ["One"], genres: ["Rock"], sub: { title: "Some Album", release_date: "2020-05-06", external_id: "g1", external_provider: "musicbrainz" } });
+      const { writer, calls } = stubWriter();
+      audioRetag.configureEditRetagForTests({ debounceMs: 30, options: { throttleMs: 0, writer } });
+
+      expect((await rematch(`/api/media/${artist.itemId}/subitems/${artist.subId}/rematch`, { title: "Some Album", releaseDate: "2020-05-06", externalIds: { musicbrainz: "g1" } })).status).toBe(200);
+      expect((await rematch(`/api/media/${artist.itemId}/rematch`, { title: "Some Artist", genres: ["Rock"] })).status).toBe(200);
+      await quiet();
+      expect(calls).toHaveLength(0);
+
+      expect((await rematch(`/api/media/${artist.itemId}/rematch`, { title: "Some Artist", genres: ["Jazz"] })).status).toBe(200);
+      await idle("the retag");
+      expect(calls).toHaveLength(1);
+    });
   });
 });
 

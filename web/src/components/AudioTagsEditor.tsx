@@ -53,8 +53,9 @@ export default function AudioTagsEditor({ settings, saveSetting }: { settings: R
   // Again when a run ends: the counts of the new run are what the page should show.
   useEffect(loadStatus, [running]);
 
-  // A mode that was never chosen follows the old on/off setting, which meant "new".
-  const mode = settings.writeAudioTagsMode || (settings.writeAudioTagsOnImport === "1" ? "new" : "none");
+  // No mode chosen and the old on/off switch on: the old switch's reach (MP3 files only, five fields) stays until a mode is chosen.
+  const legacy = !settings.writeAudioTagsMode && settings.writeAudioTagsOnImport === "1";
+  const mode = legacy ? "legacy" : settings.writeAudioTagsMode || "none";
   const last = status?.last ?? null;
 
   async function retagNow() {
@@ -76,12 +77,23 @@ export default function AudioTagsEditor({ settings, saveSetting }: { settings: R
       </p>
       <label htmlFor="settings-audio-tags-mode">Write audio tags</label>
       <select id="settings-audio-tags-mode" key={mode} defaultValue={mode} onChange={(e) => saveSetting("writeAudioTagsMode", e.target.value)}>
+        {legacy && (
+          <option value="legacy" disabled>
+            Old on/off switch (on): MP3 files only, five fields
+          </option>
+        )}
         {MODES.map(([value, text]) => (
           <option key={value} value={value}>
             {text}
           </option>
         ))}
       </select>
+      {legacy && (
+        <p style={help}>
+          The old on/off switch tags MP3 files only; choose a mode to tag other formats and write more fields. Until then an import writes title, artist, album, track number
+          and year into MP3 files, as before, and touches nothing else.
+        </p>
+      )}
 
       <label htmlFor="settings-audio-tags-scrub">Remove the tags a file has first</label>
       <select id="settings-audio-tags-scrub" key={settings.scrubAudioTags ?? "scrub-empty"} defaultValue={settings.scrubAudioTags ?? "0"} onChange={(e) => saveSetting("scrubAudioTags", e.target.value)}>

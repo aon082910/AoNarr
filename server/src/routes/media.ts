@@ -28,7 +28,7 @@ import { ALIAS_STATE_KEYS, refreshProviderAliases } from "../services/aliasBackf
 import { getDownloadClientAdapter } from "../services/downloadClient.js";
 import { findPossibleDuplicates } from "../services/duplicateCheck.js";
 import { isBackgroundJobRunning } from "../services/backgroundJobs.js";
-import { getAudioTagSettings, getLastLibraryRetag, retagTitleAfterEdit, startTitleRetag } from "../services/audioRetag.js";
+import { getAudioTagSettings, getLastLibraryRetag, retagTitleAfterEdit, startTitleRetag, subItemTagSourceChanged, tagSourceChanged } from "../services/audioRetag.js";
 import { TAGGABLE_EXTENSIONS } from "../services/audioTagCommon.js";
 import { isJobBusy, runJobNow } from "../services/jobRegistry.js";
 import { autoSelectRootFolderId } from "../services/rootFolderSelect.js";
@@ -1887,8 +1887,9 @@ mediaRouter.patch(
       }
       refreshNfoSidecar(row, externalIds);
     }
-    // Write-tags mode "sync": the files follow the edit.
-    if (metadataFieldsChanged) retagTitleAfterEdit(Number(req.params.id), row.type);
+    // Write-tags mode "sync": the files follow an edit that changes what they are tagged with (a PATCH that sends the same name
+    // again changes nothing and queues nothing).
+    if (tagSourceChanged(existing, row)) retagTitleAfterEdit(Number(req.params.id), row.type);
     res.json(moveJob ? { ...mediaItemFromRow(row), moveJob } : mediaItemFromRow(row));
   })
 );
@@ -1963,7 +1964,7 @@ mediaRouter.post(
 
     const row = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(req.params.id)) as any;
     if (row.path) refreshNfoSidecar(row, b.externalIds ?? {});
-    retagTitleAfterEdit(Number(req.params.id), row.type);
+    if (tagSourceChanged(existing, row)) retagTitleAfterEdit(Number(req.params.id), row.type);
     // A rematch fixes an item matched to the wrong entry, so the title it carried until now is
     // usually another work's ("Extraction 2" for "Extraction"); as an alias it would make that
     // work's releases match this item for good. It is kept only when the admin says it was one of
@@ -2647,19 +2648,18 @@ mediaRouter.patch(
       values.push(b.narrator || null);
     }
     // Scoped to the item in the URL, since that is the parent the missing-file rollup below updates.
-    if (!(await db.prepare("SELECT id FROM sub_items WHERE id = ? AND media_item_id = ?").get(req.params.subItemId, req.params.id))) {
-      throw new HttpError(404, "Sub-item not found");
-    }
+    const subBefore = await db.prepare("SELECT * FROM sub_items WHERE id = ? AND media_item_id = ?").get(req.params.subItemId, req.params.id);
+    if (!subBefore) throw new HttpError(404, "Sub-item not found");
     if (sets.length > 0) {
       values.push(req.params.subItemId, req.params.id);
       await db.prepare(`UPDATE sub_items SET ${sets.join(", ")} WHERE id = ? AND media_item_id = ?`).run(...values);
       await wakeLeaf("sub_items", Number(req.params.subItemId));
     }
     if (fileCleared) await rollUpParentMissing(req.params.id);
-    // Write-tags mode "sync": an audiobook's narrator and series are in its files' tags.
-    if (b.seriesName !== undefined || b.seriesPosition !== undefined || b.narrator !== undefined) await retagParentAfterEdit(req.params.id);
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
     if (!row) throw new HttpError(404, "Sub-item not found");
+    // Write-tags mode "sync": an audiobook's narrator and series are in its files' tags (only when the edit changed one of them).
+    if (subItemTagSourceChanged(subBefore, row)) await retagParentAfterEdit(req.params.id);
     res.json(subItemFromRow(row));
   })
 );
@@ -2714,7 +2714,7 @@ mediaRouter.post(
   "/:id/subitems/:subItemId/rematch",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const sub = (await db.prepare("SELECT id FROM sub_items WHERE id = ? AND media_item_id = ?").get(req.params.subItemId, req.params.id)) as any;
+    const sub = (await db.prepare("SELECT * FROM sub_items WHERE id = ? AND media_item_id = ?").get(req.params.subItemId, req.params.id)) as any;
     if (!sub) throw new HttpError(404, "Sub-item not found");
 
     const b = req.body ?? {};
@@ -2729,8 +2729,8 @@ mediaRouter.post(
 
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "subitem_rematched", `"${b.title}"`);
-    await retagParentAfterEdit(req.params.id);
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
+    if (subItemTagSourceChanged(sub, row)) await retagParentAfterEdit(req.params.id);
     res.json(subItemFromRow(row));
   })
 );

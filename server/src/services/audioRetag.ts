@@ -4,11 +4,11 @@ import { db } from "../db/index.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { writeAudioTags } from "./audioTagWriter.js";
 import type { AudioTagInfo, CoverImage, TagWriteResult, WriteAudioTagsOptions } from "./audioTagCommon.js";
-import { formatLabelOf, modeFollowsEdits, modeRetagsLibrary, modeTagsOnImport, resolveWriteTagsMode, type WriteTagsMode } from "./audioTagCommon.js";
-import { finishBackgroundJob, incrementBackgroundJobDone, isBackgroundJobRunning, startBackgroundJob } from "./backgroundJobs.js";
+import { formatLabelOf, isLegacyTagSwitch, modeFollowsEdits, modeRetagsLibrary, modeTagsOnImport, resolveWriteTagsMode, type WriteTagsMode } from "./audioTagCommon.js";
+import { fetchImageBytes } from "./artworkFiles.js";
+import { finishBackgroundJob, incrementBackgroundJobDone, isBackgroundJobRunning, startBackgroundJob, updateBackgroundJob } from "./backgroundJobs.js";
 import { StorageTimeoutError, readdirNamesAsync, statAsync } from "./fsAsync.js";
 import { log } from "./logger.js";
-import { isLocalAddress } from "./networkAddress.js";
 import { rootFolderUnmountedReason } from "./rootFolderCheck.js";
 import { getSetting } from "./settingsStore.js";
 import { isTitleMoving, tryLockTitleMove, unlockTitleMove } from "./titleMoveLock.js";
@@ -28,13 +28,21 @@ export interface AudioTagSettings {
   mode: WriteTagsMode;
   scrub: boolean;
   embedCover: boolean;
+  /**
+   * No mode was ever chosen and the old on/off switch is on: an import then tags MP3 files only, with the five fields that
+   * switch always wrote (see isLegacyTagSwitch). Choosing a mode ends it.
+   */
+  legacy: boolean;
 }
 
 export function getAudioTagSettings(): AudioTagSettings {
+  const modeSetting = getSetting("writeAudioTagsMode");
+  const onImport = getSetting("writeAudioTagsOnImport");
   return {
-    mode: resolveWriteTagsMode(getSetting("writeAudioTagsMode"), getSetting("writeAudioTagsOnImport")),
+    mode: resolveWriteTagsMode(modeSetting, onImport),
     scrub: getSetting("scrubAudioTags") === "1",
     embedCover: getSetting("embedAudioCover") === "1",
+    legacy: isLegacyTagSwitch(modeSetting, onImport),
   };
 }
 
@@ -135,7 +143,6 @@ export function audioTagInfoFor(rows: TagSourceRows): AudioTagInfo {
 const COVER_NAMES = ["cover", "folder", "front", "albumart", "album"];
 const COVER_EXTENSIONS = [".jpg", ".jpeg", ".png"];
 const MAX_COVER_BYTES = 10 * 1024 * 1024;
-const COVER_FETCH_TIMEOUT_MS = 15_000;
 
 /** The picture's type from its first bytes, or null when it is neither a JPEG nor a PNG (the formats ffmpeg and ID3 take as they are). */
 export function coverFromBytes(data: Buffer): CoverImage | null {
@@ -172,21 +179,11 @@ async function localCover(folder: string): Promise<CoverImage | null> {
 }
 
 async function remoteCover(url: string | null | undefined, fetchImpl: typeof fetch): Promise<CoverImage | null> {
-  if (!url) return null;
-  let parsed: URL;
+  if (!url || !/^https?:\/\//i.test(url)) return null;
   try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  // A provider's picture, never an address on the admin's own network.
-  if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || isLocalAddress(parsed.hostname)) return null;
-  try {
-    const res = await fetchImpl(parsed.toString(), { signal: AbortSignal.timeout(COVER_FETCH_TIMEOUT_MS) });
-    if (!res.ok) return null;
-    const declared = Number(res.headers.get("content-length"));
-    if (Number.isFinite(declared) && declared > MAX_COVER_BYTES) return null;
-    return coverFromBytes(Buffer.from(await res.arrayBuffer()));
+    // The artwork files' own fetch: a provider's picture, never an address on the admin's own network, and that holds for every
+    // redirect hop as for the first; the body is read up to a cap while it streams, and has to be a picture.
+    return coverFromBytes(await fetchImageBytes(url, undefined, fetchImpl));
   } catch {
     return null;
   }
@@ -425,7 +422,12 @@ export function getLastLibraryRetag(): RetagSummary | null {
 
 export function resetRetagStateForTests(): void {
   lastLibraryRetag = null;
-  retagAgain.clear();
+  if (editTimer) clearTimeout(editTimer);
+  editTimer = null;
+  pendingEdits.clear();
+  editDeferrals.clear();
+  editRetag.debounceMs = EDIT_DEBOUNCE_MS;
+  editRetag.options = {};
 }
 
 /** Titles of the retaggable types that have a track file. */
@@ -482,9 +484,6 @@ export async function runLibraryRetag(signal: AbortSignal, options: RetagOptions
   return summary;
 }
 
-/** Titles edited while their retag was running: the run may have read the old metadata, so they go again when it ends. */
-const retagAgain = new Set<number>();
-
 export interface TitleRetagStart {
   started: boolean;
   reason?: "already-running";
@@ -524,17 +523,130 @@ export async function startTitleRetag(itemId: number): Promise<TitleRetagStart> 
       log.warn(`[audioRetag] retagging "${row.title}" failed:`, error);
     } finally {
       finishBackgroundJob(jobId, error, text);
-      if (retagAgain.delete(itemId)) {
-        startTitleRetag(itemId).catch((err) => log.warn(`[audioRetag] second retag of "${row.title}" after an edit not started:`, (err as Error).message));
-      }
     }
   })();
   return { started: true, files };
 }
 
+// ---- following edits (mode sync) ------------------------------------------------------------------------------------
+
+/** Whether an edit of a title changed anything its files are tagged with: the name (the artist or author), the genres or the MusicBrainz id. */
+export function tagSourceChanged(before: any, after: any): boolean {
+  const musicBrainz = (row: any) => parseObject(row?.external_ids ?? row?.externalIds).musicbrainz ?? null;
+  return before?.title !== after?.title || genreText(before?.genres) !== genreText(after?.genres) || musicBrainz(before) !== musicBrainz(after);
+}
+
+/** The same for an album or book: its name, release date, provider id, narrator and series. */
+export function subItemTagSourceChanged(before: any, after: any): boolean {
+  const keys = ["title", "release_date", "external_id", "external_provider", "series_name", "narrator"];
+  const position = (row: any) => partText(row?.series_position);
+  return keys.some((key) => (before?.[key] ?? null) !== (after?.[key] ?? null)) || position(before) !== position(after);
+}
+
+/** A burst of edits is one pass: the worker starts this long after the first edit of the burst. */
+const EDIT_DEBOUNCE_MS = 5_000;
+/** A title that is being moved, or retagged by hand, is looked at again after every debounce; this many times, then it is let go. */
+const MAX_EDIT_DEFERRALS = 60;
+
+/** What the worker passes to retagTitle, and its debounce; tests replace both. */
+const editRetag: { debounceMs: number; options: Pick<RetagOptions, "writer" | "throttleMs" | "coverFor" | "settings"> } = { debounceMs: EDIT_DEBOUNCE_MS, options: {} };
+
+/** The titles whose files wait for a retag after an edit (a set: a title edited ten times is retagged once). */
+const pendingEdits = new Set<number>();
+const editDeferrals = new Map<number, number>();
+let editTimer: NodeJS.Timeout | null = null;
+let editWorker: Promise<void> | null = null;
+
+/** Replaces the worker's debounce and the options it hands to retagTitle (tests). */
+export function configureEditRetagForTests(config: { debounceMs?: number; options?: typeof editRetag.options }): void {
+  if (config.debounceMs !== undefined) editRetag.debounceMs = config.debounceMs;
+  if (config.options) editRetag.options = config.options;
+}
+
+/** How many titles wait for a retag after an edit, and whether the worker (or its timer) is going. */
+export function pendingEditRetags(): { queued: number; active: boolean } {
+  return { queued: pendingEdits.size, active: editTimer !== null || editWorker !== null };
+}
+
+function armEditWorker(): void {
+  if (editTimer || editWorker) return;
+  editTimer = setTimeout(() => {
+    editTimer = null;
+    editWorker = drainEditRetags()
+      .catch((err) => log.warn("[audioRetag] retagging after edits failed:", (err as Error).message))
+      .finally(() => {
+        editWorker = null;
+        // An edit that came in as the worker finished.
+        if (pendingEdits.size > 0) armEditWorker();
+      });
+  }, editRetag.debounceMs);
+  editTimer.unref?.();
+}
+
 /**
- * `sync` mode: a metadata edit or rematch of a title is followed by a retag of its files. Fire and forget, tracked in the
- * progress widget; any other mode does nothing. Never throws.
+ * Retags the waiting titles one after the other until none is left, as one tracked job ("Retag edited titles"). A title edited
+ * while it is being retagged is waiting again by then, so it goes once more; a title being moved or retagged by hand is tried
+ * again after the next debounce.
+ */
+async function drainEditRetags(): Promise<void> {
+  const summary = emptyRetagSummary();
+  const later = new Set<number>();
+  let jobId: string | null = null;
+  let processed = 0;
+  try {
+    for (;;) {
+      const next = pendingEdits.values().next();
+      if (next.done) break;
+      const itemId = next.value as number;
+      pendingEdits.delete(itemId);
+      let followsEdits = false;
+      try {
+        followsEdits = modeFollowsEdits(getAudioTagSettings().mode);
+      } catch {
+        // settings not loaded: nothing to follow
+      }
+      if (!followsEdits) {
+        // The mode was changed since the edit: those edits are not followed.
+        pendingEdits.clear();
+        editDeferrals.clear();
+        break;
+      }
+      if (isTitleMoving(itemId) || isBackgroundJobRunning("retag", `title-${itemId}`)) {
+        const tries = (editDeferrals.get(itemId) ?? 0) + 1;
+        if (tries > MAX_EDIT_DEFERRALS) {
+          editDeferrals.delete(itemId);
+          log.warn(`[audioRetag] title ${itemId} stayed busy (moved or retagged by hand); its files were not retagged after the edit`);
+        } else {
+          editDeferrals.set(itemId, tries);
+          later.add(itemId);
+        }
+        continue;
+      }
+      editDeferrals.delete(itemId);
+      jobId ??= startBackgroundJob("retag", "edits", "Retag edited titles", 1);
+      updateBackgroundJob("retag", "edits", { total: processed + 1 + pendingEdits.size });
+      try {
+        mergeRetagSummary(summary, await retagTitle(itemId, { ...editRetag.options }));
+      } catch (err) {
+        // A title deleted since the edit, or one that is not music any more.
+        log.warn(`[audioRetag] retag of title ${itemId} after an edit failed:`, (err as Error).message);
+      }
+      processed++;
+      incrementBackgroundJobDone("retag", "edits");
+    }
+  } finally {
+    for (const itemId of later) pendingEdits.add(itemId);
+    if (jobId) {
+      finishBackgroundJob(jobId, summary.failed > 0 ? `${summary.failed} file(s) could not be tagged — see the Logs page` : undefined, retagSummaryText(summary));
+      log.info(`[audioRetag] ${processed} edited title(s): ${retagSummaryText(summary)}`);
+    }
+  }
+}
+
+/**
+ * `sync` mode: a metadata edit or rematch of a title is followed by a retag of its files. The title joins a set that one worker
+ * works through (started a few seconds after the first edit, one title at a time, stopping when the set is empty), so a script
+ * editing thousands of titles queues ids, not jobs. Any other mode does nothing. Constant time; never throws.
  */
 export function retagTitleAfterEdit(itemId: number, type: string): void {
   try {
@@ -542,9 +654,6 @@ export function retagTitleAfterEdit(itemId: number, type: string): void {
   } catch {
     return;
   }
-  if (isBackgroundJobRunning("retag", `title-${itemId}`)) {
-    retagAgain.add(itemId);
-    return;
-  }
-  startTitleRetag(itemId).catch((err) => log.warn(`[audioRetag] retag after an edit of title ${itemId} not started:`, (err as Error).message));
+  pendingEdits.add(Number(itemId));
+  armEditWorker();
 }
