@@ -5,6 +5,8 @@ import path from "node:path";
 import os from "node:os";
 import NodeID3 from "node-id3";
 import { writeAudioTags } from "../src/services/audioTagWriter.js";
+import { isAudioFileLocked, resetAudioFileLocksForTests, tryLockAudioFile, unlockAudioFile } from "../src/services/audioFileLock.js";
+import type { AudioTagInfo } from "../src/services/audioTagCommon.js";
 
 let tmpDir: string;
 
@@ -14,6 +16,7 @@ beforeAll(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  resetAudioFileLocksForTests();
 });
 
 describe("writeAudioTags", () => {
@@ -252,5 +255,231 @@ describe("writeAudioTags", () => {
     expect(fs.readFileSync(download).equals(audio)).toBe(true);
     expect(fs.lstatSync(library).isSymbolicLink()).toBe(true);
     expect(fs.readFileSync(library).equals(audio)).toBe(true);
+  });
+});
+
+describe("an MP3 whose file is replaced while its tagged copy is being made", () => {
+  const info = { title: "New Title", artist: "Artist", album: "Album" };
+
+  it("is not overwritten by the tagged copy of the bytes that were read before", async () => {
+    const dir = fs.mkdtempSync(path.join(tmpDir, "replace-"));
+    const filePath = path.join(dir, "track.mp3");
+    fs.writeFileSync(filePath, Buffer.from("old mpeg frames"));
+    const better = Buffer.from("the better file, from an upgrade import");
+    // The import lands after the tagged copy is on disk and before it would be renamed over the path.
+    const realChmod = fsp.chmod.bind(fsp);
+    let replaced = false;
+    vi.spyOn(fsp, "chmod").mockImplementation(async (...args: Parameters<typeof fsp.chmod>) => {
+      if (!replaced && String(args[0]).includes(".aonarr-tmp-")) {
+        replaced = true;
+        const incoming = path.join(dir, "incoming.mp3");
+        fs.writeFileSync(incoming, better);
+        fs.renameSync(incoming, filePath);
+      }
+      return realChmod(...args);
+    });
+
+    const result = await writeAudioTags(filePath, info);
+
+    expect(replaced).toBe(true);
+    expect(result).toEqual({ outcome: "skipped", reason: "the file changed while it was being tagged", format: "MP3" });
+    expect(fs.readFileSync(filePath).equals(better)).toBe(true);
+    expect(fs.readdirSync(dir)).toEqual(["track.mp3"]);
+  });
+
+  it("is not recreated by the tagged copy when the file is moved away in that window", async () => {
+    const dir = fs.mkdtempSync(path.join(tmpDir, "gone-"));
+    const filePath = path.join(dir, "track.mp3");
+    fs.writeFileSync(filePath, Buffer.from("old mpeg frames"));
+    const realChmod = fsp.chmod.bind(fsp);
+    vi.spyOn(fsp, "chmod").mockImplementation(async (...args: Parameters<typeof fsp.chmod>) => {
+      if (String(args[0]).includes(".aonarr-tmp-")) fs.rmSync(filePath);
+      return realChmod(...args);
+    });
+
+    const result = await writeAudioTags(filePath, info);
+
+    expect(result.outcome).toBe("skipped");
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it("is not written when the file was appended to in that window", async () => {
+    const dir = fs.mkdtempSync(path.join(tmpDir, "appended-"));
+    const filePath = path.join(dir, "track.mp3");
+    fs.writeFileSync(filePath, Buffer.from("mpeg frames"));
+    const realChmod = fsp.chmod.bind(fsp);
+    vi.spyOn(fsp, "chmod").mockImplementation(async (...args: Parameters<typeof fsp.chmod>) => {
+      if (String(args[0]).includes(".aonarr-tmp-")) fs.appendFileSync(filePath, "more frames");
+      return realChmod(...args);
+    });
+
+    expect(await writeAudioTags(filePath, info)).toMatchObject({ outcome: "skipped", reason: "the file changed while it was being tagged" });
+    expect(fs.readFileSync(filePath, "utf-8")).toBe("mpeg framesmore frames");
+    expect(fs.readdirSync(dir)).toEqual(["track.mp3"]);
+  });
+});
+
+describe("one writer per file", () => {
+  const info = { title: "Locked", artist: "Artist", album: "Album" };
+
+  it("leaves an MP3 alone while an import is replacing it, and tags it once the import is done", async () => {
+    const filePath = path.join(tmpDir, "locked.mp3");
+    fs.writeFileSync(filePath, Buffer.from("mpeg frames"));
+    expect(tryLockAudioFile(filePath)).toBe(true);
+
+    const busy = await writeAudioTags(filePath, info);
+
+    expect(busy).toEqual({ outcome: "skipped", reason: "it is being replaced or tagged right now", format: "MP3" });
+    expect(NodeID3.read(filePath).title).toBeUndefined();
+    unlockAudioFile(filePath);
+    expect((await writeAudioTags(filePath, info)).outcome).toBe("written");
+    expect(isAudioFileLocked(filePath)).toBe(false);
+  });
+
+  it("a write that waits for the lock (an import's own) tags the file the import left", async () => {
+    const filePath = path.join(tmpDir, "locked-wait.mp3");
+    fs.writeFileSync(filePath, Buffer.from("mpeg frames"));
+    tryLockAudioFile(filePath);
+    setTimeout(() => {
+      fs.writeFileSync(filePath, Buffer.from("the upgraded mpeg frames"));
+      unlockAudioFile(filePath);
+    }, 40);
+
+    const result = await writeAudioTags(filePath, info, { lockWaitMs: 2_000 });
+
+    expect(result.outcome).toBe("written");
+    const data = fs.readFileSync(filePath);
+    expect(data.subarray(data.length - 24).toString()).toBe("the upgraded mpeg frames");
+    expect(NodeID3.read(filePath).title).toBe("Locked");
+  });
+
+  it("two writes of one file at once: the second is skipped, not run over the first", async () => {
+    const filePath = path.join(tmpDir, "twice.mp3");
+    fs.writeFileSync(filePath, Buffer.from("mpeg frames"));
+
+    const [first, second] = await Promise.all([writeAudioTags(filePath, info), writeAudioTags(filePath, { ...info, title: "Other" })]);
+
+    expect([first.outcome, second.outcome]).toEqual(["written", "skipped"]);
+    expect(second.reason).toBe("it is being replaced or tagged right now");
+    expect(NodeID3.read(filePath).title).toBe("Locked");
+  });
+});
+
+describe("the old on/off switch (legacy)", () => {
+  const info: AudioTagInfo = {
+    title: "New Title",
+    artist: "New Artist",
+    albumArtist: "Album Artist",
+    album: "New Album",
+    trackNumber: 3,
+    trackTotal: 12,
+    discNumber: 1,
+    year: "2021",
+    date: "2021-05-04",
+    genre: "Rock",
+    composer: "A Narrator",
+    series: "The Series",
+    seriesPart: "2",
+    musicbrainz: { artistId: "mb-artist", releaseGroupId: "mb-group" },
+  };
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(16, 1)]);
+
+  it("writes the five fields it always wrote and nothing else", async () => {
+    const filePath = path.join(tmpDir, "legacy.mp3");
+    fs.writeFileSync(filePath, Buffer.from("mpeg frames"));
+
+    const result = await writeAudioTags(filePath, info, { legacy: true });
+
+    expect(result.outcome).toBe("written");
+    const tags = NodeID3.read(filePath);
+    expect(tags).toMatchObject({ title: "New Title", artist: "New Artist", album: "New Album", year: "2021" });
+    // The track number is the plain number, as the old writer wrote it.
+    expect(tags.trackNumber).toBe("3");
+    for (const absent of ["performerInfo", "partOfSet", "genre", "composer", "contentGroup", "userDefinedText", "image"] as const) expect(tags[absent], absent).toBeUndefined();
+  });
+
+  it("leaves every other frame of the file as it is, and ignores the scrub and cover options", async () => {
+    const filePath = path.join(tmpDir, "legacy-own.mp3");
+    fs.writeFileSync(filePath, Buffer.from("mpeg frames"));
+    NodeID3.write(
+      {
+        title: "Old",
+        performerInfo: "My Album Artist",
+        genre: "Jazz",
+        composer: "My Composer",
+        partOfSet: "2/3",
+        comment: { language: "eng", text: "keep me" },
+        userDefinedText: [{ description: "SERIES", value: "Mine" }],
+      },
+      filePath
+    );
+
+    const result = await writeAudioTags(filePath, info, { legacy: true, scrub: true, cover: { data: jpeg, mime: "image/jpeg" } });
+
+    expect(result.outcome).toBe("written");
+    const tags = NodeID3.read(filePath);
+    expect(tags.title).toBe("New Title");
+    expect(tags).toMatchObject({ performerInfo: "My Album Artist", genre: "Jazz", composer: "My Composer", partOfSet: "2/3" });
+    expect(tags.comment).toMatchObject({ text: "keep me" });
+    expect(tags.userDefinedText).toEqual([{ description: "SERIES", value: "Mine" }]);
+    expect(tags.image).toBeUndefined();
+    // The same call a second time has nothing to do.
+    expect(await writeAudioTags(filePath, info, { legacy: true })).toMatchObject({ outcome: "skipped", reason: "the tags are already up to date" });
+  });
+
+  it("skips every other format with the reason, without starting ffprobe or ffmpeg", async () => {
+    const runner = vi.fn();
+    for (const [name, label] of [
+      ["legacy.flac", "FLAC"],
+      ["legacy.m4a", "M4A/M4B"],
+      ["legacy.m4b", "M4A/M4B"],
+      ["legacy.ogg", "OGG"],
+      ["legacy.opus", "Opus"],
+    ] as const) {
+      const filePath = path.join(tmpDir, name);
+      fs.writeFileSync(filePath, Buffer.from("not touched"));
+      const result = await writeAudioTags(filePath, info, { legacy: true, runner });
+      expect(result, name).toEqual({ outcome: "skipped", reason: "legacy setting: MP3 only", format: label });
+      expect(fs.readFileSync(filePath, "utf-8")).toBe("not touched");
+    }
+    expect(runner).not.toHaveBeenCalled();
+  });
+
+  it("without the legacy option the same call writes everything", async () => {
+    const filePath = path.join(tmpDir, "not-legacy.mp3");
+    fs.writeFileSync(filePath, Buffer.from("mpeg frames"));
+    await writeAudioTags(filePath, info);
+    expect(NodeID3.read(filePath)).toMatchObject({ performerInfo: "Album Artist", genre: "Rock", composer: "A Narrator", trackNumber: "3/12" });
+  });
+});
+
+describe("free space before a tag rewrite of an MP3", () => {
+  const info = { title: "Roomy", artist: "Artist", album: "Album" };
+  const free = (bytes: number) => async () => ({ bavail: Math.floor(bytes / 4096), bsize: 4096, blocks: 10_000_000 });
+
+  it("skips the file when the folder cannot hold a copy of it and 256 MB more", async () => {
+    const dir = fs.mkdtempSync(path.join(tmpDir, "space-"));
+    const filePath = path.join(dir, "track.mp3");
+    const audio = Buffer.from("mpeg frames");
+    fs.writeFileSync(filePath, audio);
+    const asked: string[] = [];
+
+    const result = await writeAudioTags(filePath, info, { statfs: async (folder) => (asked.push(folder), free(100 * 1024 * 1024)()) });
+
+    expect(result).toEqual({ outcome: "skipped", reason: "not enough free space", format: "MP3" });
+    expect(asked).toEqual([dir]);
+    expect(fs.readFileSync(filePath).equals(audio)).toBe(true);
+    expect(fs.readdirSync(dir)).toEqual(["track.mp3"]);
+  });
+
+  it("writes when the room is there, and does not ask about a file whose tags are already right", async () => {
+    const dir = fs.mkdtempSync(path.join(tmpDir, "space-ok-"));
+    const filePath = path.join(dir, "track.mp3");
+    fs.writeFileSync(filePath, Buffer.from("mpeg frames"));
+    expect((await writeAudioTags(filePath, info, { statfs: free(1024 * 1024 * 1024) })).outcome).toBe("written");
+
+    const statfs = vi.fn(free(0));
+    expect(await writeAudioTags(filePath, info, { statfs })).toMatchObject({ outcome: "skipped", reason: "the tags are already up to date" });
+    expect(statfs).not.toHaveBeenCalled();
   });
 });

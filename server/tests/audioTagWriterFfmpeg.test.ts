@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { writeAudioTags } from "../src/services/audioTagWriter.js";
+import { resetEmbedFailuresForTests } from "../src/services/audioTagFfmpeg.js";
 import type { AudioTagInfo, CoverImage } from "../src/services/audioTagCommon.js";
 
 // The real thing: tiny audio files made with ffmpeg itself, tagged by the writer, read back with ffprobe. Skipped when ffmpeg
@@ -80,6 +81,10 @@ describe.skipIf(!available)("writeAudioTags through ffmpeg (real files)", () => 
 
   afterAll(() => {
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    resetEmbedFailuresForTests();
   });
 
   const formats: { label: string; name: string; make: (target: string) => void; tagged: string[] }[] = [
@@ -196,13 +201,38 @@ describe.skipIf(!available)("writeAudioTags through ffmpeg (real files)", () => 
       expect(await writeAudioTags(file, INFO, { cover: { data: jpeg, mime: "image/jpeg" } })).toMatchObject({ outcome: "written" });
       expect(streamsOf(file, "video")[0].codec_name).toBe("mjpeg");
 
-      // The file has a picture and the tags are right: a cover offered again changes nothing...
+      // The file has a picture and the tags are right: a cover offered again changes nothing, scrubbing or not...
+      const before = fs.statSync(file);
       expect(await writeAudioTags(file, INFO, { cover: { data: png, mime: "image/png" } })).toMatchObject({ outcome: "skipped" });
-      // ...unless the tags are being scrubbed, which puts the new cover in the old one's place.
-      expect(await writeAudioTags(file, INFO, { scrub: true, cover: { data: png, mime: "image/png" } })).toMatchObject({ outcome: "written" });
+      expect(await writeAudioTags(file, INFO, { scrub: true, cover: { data: png, mime: "image/png" } })).toMatchObject({ outcome: "skipped", reason: "the tags are already up to date" });
+      expect(fs.statSync(file).ino).toBe(before.ino);
+      expect(fs.statSync(file).mtimeMs).toBe(before.mtimeMs);
+      // ...until the tags have to be rewritten anyway: then, scrubbing, the new cover takes the old one's place.
+      expect(await writeAudioTags(file, { ...INFO, title: "Renamed" }, { scrub: true, cover: { data: png, mime: "image/png" } })).toMatchObject({ outcome: "written" });
       const pictures = streamsOf(file, "video");
       expect(pictures).toHaveLength(1);
       expect(pictures[0].codec_name).toBe("png");
+      expect(tagsOf(file).title).toBe("Renamed");
+    });
+
+    it("does not copy a FLAC and an M4A again on every pass when the tags are scrubbed and a cover is on", async () => {
+      const cover: CoverImage = { data: jpeg, mime: "image/jpeg" };
+      for (const [name, make] of [
+        ["every-pass.flac", sine(["-c:a", "flac"])],
+        ["every-pass.m4a", sine(["-c:a", "aac", "-b:a", "64k"])],
+      ] as const) {
+        const file = fresh(name, make);
+        expect(await writeAudioTags(file, INFO, { scrub: true, cover })).toMatchObject({ outcome: "written" });
+        const written = fs.statSync(file);
+        expect(streamsOf(file, "video")).toHaveLength(1);
+
+        for (let pass = 0; pass < 3; pass++) {
+          expect(await writeAudioTags(file, INFO, { scrub: true, cover }), name).toMatchObject({ outcome: "skipped", reason: "the tags are already up to date" });
+        }
+        expect(fs.statSync(file).ino, name).toBe(written.ino);
+        expect(fs.statSync(file).mtimeMs, name).toBe(written.mtimeMs);
+        expect(leftovers(path.dirname(file))).toEqual([]);
+      }
     });
 
     it("writes the tags of an Ogg file and says the cover was left out (ffmpeg has no picture block for Ogg)", async () => {
@@ -222,10 +252,47 @@ describe.skipIf(!available)("writeAudioTags through ffmpeg (real files)", () => 
       const result = await writeAudioTags(file, INFO, { cover: { data: Buffer.from("this is not an image at all"), mime: "image/jpeg" } });
 
       expect(result.outcome).toBe("written");
-      expect(result.reason).toMatch(/cover/);
+      expect(result.reason).toMatch(/cover not embedded/);
       expect(tagsOf(file).title).toBe("Song One");
       expect(leftovers(path.dirname(file))).toEqual([]);
+
+      // And the next pass does not try the same picture again: the file is not rewritten for it.
+      const written = fs.statSync(file);
+      const cover = { data: Buffer.from("this is not an image at all"), mime: "image/jpeg" as const };
+      expect(await writeAudioTags(file, INFO, { cover })).toMatchObject({ outcome: "skipped", reason: "the tags are already up to date" });
+      expect(fs.statSync(file).ino).toBe(written.ino);
+      expect(fs.statSync(file).mtimeMs).toBe(written.mtimeMs);
     });
+
+    it("leaves a file with right tags alone when only its picture is wanted and ffmpeg cannot take it", async () => {
+      const file = fresh("onlycover.flac", sine(["-c:a", "flac"]));
+      await writeAudioTags(file, INFO);
+      const before = fs.statSync(file);
+      const bytes = fs.readFileSync(file);
+      const cover = { data: Buffer.from("not an image either"), mime: "image/jpeg" as const };
+
+      const first = await writeAudioTags(file, INFO, { cover });
+
+      expect(first.outcome).toBe("skipped");
+      expect(first.reason).toMatch(/cover not embedded/);
+      expect(fs.readFileSync(file).equals(bytes)).toBe(true);
+      expect(fs.statSync(file).ino).toBe(before.ino);
+      expect(await writeAudioTags(file, INFO, { cover })).toMatchObject({ outcome: "skipped", reason: "the tags are already up to date" });
+      expect(leftovers(path.dirname(file))).toEqual([]);
+    });
+  });
+
+  it("skips a file the folder has no room to copy, with the real file system's numbers", async () => {
+    const file = fresh("space.flac", sine(["-c:a", "flac"]));
+    const bytes = fs.readFileSync(file);
+
+    const result = await writeAudioTags(file, INFO, { statfs: async () => ({ bavail: 10, bsize: 4096, blocks: 1_000_000 }) });
+
+    expect(result).toEqual({ outcome: "skipped", reason: "not enough free space", format: "FLAC" });
+    expect(fs.readFileSync(file).equals(bytes)).toBe(true);
+    expect(leftovers(path.dirname(file))).toEqual([]);
+    // The real file system has room for a two second file.
+    expect((await writeAudioTags(file, INFO)).outcome).toBe("written");
   });
 
   describe("an audiobook M4B", () => {

@@ -7,6 +7,7 @@ import { writeAudioTags } from "../src/services/audioTagWriter.js";
 import {
   FFMPEG_TAG_CONCURRENCY,
   buildFfmpegArgs,
+  resetEmbedFailuresForTests,
   ffmpegTagPairs,
   missingTagPairs,
   mp4TagPairs,
@@ -19,6 +20,7 @@ import {
   type FfmpegPlan,
 } from "../src/services/audioTagFfmpeg.js";
 import type { AudioTagInfo, ToolRunResult, ToolRunner } from "../src/services/audioTagCommon.js";
+import { lockAudioFile, resetAudioFileLocksForTests, tryLockAudioFile, unlockAudioFile } from "../src/services/audioFileLock.js";
 
 // Everything about the ffmpeg writer that does not need ffmpeg: the arguments it builds, the rules the tagged copy must pass
 // before it replaces the file, and what is left on disk on every way it can go wrong. The real binary is audioTagWriterFfmpeg.test.ts.
@@ -31,6 +33,8 @@ beforeAll(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  resetEmbedFailuresForTests();
+  resetAudioFileLocksForTests();
 });
 
 const INFO: AudioTagInfo = { title: "Song", artist: "Artist", albumArtist: "Artist", album: "Album", trackNumber: 2, trackTotal: 10, year: "2020", date: "2020-02-03" };
@@ -475,6 +479,188 @@ describe("writing a file through a runner", () => {
       expect(f.ffmpegCalls[1].join(" ")).not.toContain("1:v");
       expect(fs.readdirSync(folder)).toEqual(["s.flac"]);
     });
+
+    describe("when the tags are scrubbed too", () => {
+      const rightTags = { title: "Song", artist: "Artist", album: "Album", album_artist: "Artist", track: "2", tracktotal: "10", date: "2020-02-03" };
+
+      it("a file that is up to date and has its picture is left alone, however many passes", async () => {
+        for (const name of ["u1.flac", "u2.m4a"]) {
+          const { file } = audioFile(name);
+          const tags = name.endsWith(".m4a") ? { title: "Song", artist: "Artist", album: "Album", album_artist: "Artist", track: "2/10", date: "2020-02-03" } : rightTags;
+          for (let pass = 0; pass < 3; pass++) {
+            const f = fake({ source: { pictures: 1, tags }, sourcePath: file });
+            const result = await writeAudioTags(file, INFO, { runner: f.runner, cover, scrub: true });
+            expect(result, `${name} pass ${pass}`).toEqual({ outcome: "skipped", reason: "the tags are already up to date", format: name.endsWith(".m4a") ? "M4A/M4B" : "FLAC" });
+            expect(f.ffmpegCalls, `${name} pass ${pass}`).toHaveLength(0);
+          }
+        }
+      });
+
+      it("puts the new cover in place of the picture when the tags have to be rewritten anyway", async () => {
+        const { file } = audioFile("u3.flac");
+        const f = fake({ source: { pictures: 1, tags: { ...rightTags, title: "Old Title" } }, sourcePath: file, output: (d) => ({ ...d, pictures: 1 }) });
+
+        const result = await writeAudioTags(file, INFO, { runner: f.runner, cover, scrub: true });
+
+        expect(result).toEqual({ outcome: "written", format: "FLAC" });
+        expect(f.ffmpegCalls).toHaveLength(1);
+        expect(f.ffmpegCalls[0].join(" ")).toContain("-map 1:v");
+      });
+
+      it("a file with no picture gets one", async () => {
+        const { file } = audioFile("u4.flac");
+        const f = fake({ source: { pictures: 0, tags: rightTags }, sourcePath: file, output: (d) => ({ ...d, pictures: 1 }) });
+        expect(await writeAudioTags(file, INFO, { runner: f.runner, cover, scrub: true })).toEqual({ outcome: "written", format: "FLAC" });
+        expect(f.ffmpegCalls[0].join(" ")).toContain("-map 1:v");
+      });
+    });
+
+    describe("a cover ffmpeg cannot embed", () => {
+      const rightTags = { title: "Song", artist: "Artist", album: "Album", album_artist: "Artist", track: "2", tracktotal: "10", date: "2020-02-03" };
+      const refuse = () => ok({ code: 1, stderr: "Invalid data found when processing input" });
+
+      it("is not tried again on a file whose tags are right: the first pass says so, the next ones find nothing to do", async () => {
+        const { file, folder } = audioFile("v1.flac");
+        const bytes = fs.readFileSync(file);
+        const first = fake({ source: { pictures: 0, tags: rightTags }, sourcePath: file, ffmpeg: refuse });
+
+        const result = await writeAudioTags(file, INFO, { runner: first.runner, cover });
+
+        expect(result).toMatchObject({ outcome: "skipped", format: "FLAC" });
+        expect(result.reason).toMatch(/^cover not embedded/);
+        expect(first.ffmpegCalls).toHaveLength(1);
+        // Only the picture was wanted: the file was not rewritten without it.
+        expect(fs.readFileSync(file).equals(bytes)).toBe(true);
+        expect(fs.readdirSync(folder)).toEqual(["v1.flac"]);
+
+        for (let pass = 0; pass < 3; pass++) {
+          const again = fake({ source: { pictures: 0, tags: rightTags }, sourcePath: file });
+          expect(await writeAudioTags(file, INFO, { runner: again.runner, cover })).toEqual({ outcome: "skipped", reason: "the tags are already up to date", format: "FLAC" });
+          expect(again.ffmpegCalls).toHaveLength(0);
+        }
+
+        // Another picture, or the file changed, is tried afresh.
+        const other = fake({ source: { pictures: 0, tags: rightTags }, sourcePath: file, ffmpeg: refuse });
+        await writeAudioTags(file, INFO, { runner: other.runner, cover: { data: Buffer.from("another picture"), mime: "image/jpeg" } });
+        expect(other.ffmpegCalls).toHaveLength(1);
+        fs.appendFileSync(file, "x");
+        const changed = fake({ source: { pictures: 0, tags: rightTags }, sourcePath: file, ffmpeg: refuse });
+        await writeAudioTags(file, INFO, { runner: changed.runner, cover });
+        expect(changed.ffmpegCalls).toHaveLength(1);
+      });
+
+      it("is remembered after a write that left it out, so the file is not remuxed for it on the next pass", async () => {
+        const { file } = audioFile("v2.flac");
+        let call = 0;
+        const first = fake({ source: { pictures: 0, tags: { ...rightTags, title: "Old Title" } }, sourcePath: file, ffmpeg: () => (++call === 1 ? refuse() : ok()) });
+
+        const written = await writeAudioTags(file, INFO, { runner: first.runner, cover });
+
+        expect(written.outcome).toBe("written");
+        expect(written.reason).toMatch(/^cover not embedded/);
+        expect(first.ffmpegCalls).toHaveLength(2);
+
+        // The file is the one that was written; its tags are right now and it still has no picture.
+        const next = fake({ source: { pictures: 0, tags: rightTags }, sourcePath: file });
+        expect(await writeAudioTags(file, INFO, { runner: next.runner, cover })).toEqual({ outcome: "skipped", reason: "the tags are already up to date", format: "FLAC" });
+        expect(next.ffmpegCalls).toHaveLength(0);
+      });
+
+      it("does not cost a later tag change the doomed first attempt: that file is written without trying the cover", async () => {
+        const { file } = audioFile("v3.flac");
+        const first = fake({ source: { pictures: 0, tags: rightTags }, sourcePath: file, ffmpeg: refuse });
+        await writeAudioTags(file, INFO, { runner: first.runner, cover });
+        expect(first.ffmpegCalls).toHaveLength(1);
+
+        const edited = fake({ source: { pictures: 0, tags: { ...rightTags, title: "Old Title" } }, sourcePath: file });
+        const result = await writeAudioTags(file, INFO, { runner: edited.runner, cover });
+
+        expect(result.outcome).toBe("written");
+        expect(edited.ffmpegCalls).toHaveLength(1);
+        expect(edited.ffmpegCalls[0].join(" ")).not.toContain("1:v");
+      });
+    });
+  });
+
+  describe("free space", () => {
+    const MB = 1024 * 1024;
+    /** What statfs says for a folder with `freeBytes` free. */
+    const withFree = (freeBytes: number) => async () => ({ bavail: Math.floor(freeBytes / 4096), bsize: 4096, blocks: 10_000_000 });
+
+    it("skips a file when the folder cannot hold a copy of it and 256 MB more, and runs nothing", async () => {
+      const { file, folder } = audioFile("space.flac");
+      const f = fake({ source: {}, sourcePath: file });
+
+      const result = await writeAudioTags(file, INFO, { runner: f.runner, statfs: withFree(4096 + 256 * MB - 4096) });
+
+      expect(result).toEqual({ outcome: "skipped", reason: "not enough free space", format: "FLAC" });
+      expect(f.ffmpegCalls).toHaveLength(0);
+      expect(fs.readdirSync(folder)).toEqual(["space.flac"]);
+    });
+
+    it("writes when there is exactly room for the copy and the reserve", async () => {
+      const { file } = audioFile("room.flac");
+      const f = fake({ source: {}, sourcePath: file });
+      expect(await writeAudioTags(file, INFO, { runner: f.runner, statfs: withFree(4096 + 256 * MB) })).toMatchObject({ outcome: "written" });
+    });
+
+    it("asks about the folder the copy is written into", async () => {
+      const { file, folder } = audioFile("where.flac");
+      const f = fake({ source: {}, sourcePath: file });
+      const asked: string[] = [];
+      await writeAudioTags(file, INFO, { runner: f.runner, statfs: async (dir) => (asked.push(dir), withFree(10 * 1024 * MB)()) });
+      expect(asked).toEqual([folder]);
+    });
+
+    it("does not call a file that is up to date short of space", async () => {
+      const { file } = audioFile("done.flac");
+      const f = fake({ source: { tags: { title: "Song", artist: "Artist", album: "Album", album_artist: "Artist", track: "2", tracktotal: "10", date: "2020-02-03" } }, sourcePath: file });
+      expect(await writeAudioTags(file, INFO, { runner: f.runner, statfs: withFree(0) })).toMatchObject({ reason: "the tags are already up to date" });
+    });
+
+    it("takes a file system that cannot say how much it has for roomy", async () => {
+      const { file } = audioFile("unknown.flac");
+      const f = fake({ source: {}, sourcePath: file });
+      expect(await writeAudioTags(file, INFO, { runner: f.runner, statfs: async () => ({ bavail: 0, bsize: 0, blocks: 0 }) })).toMatchObject({ outcome: "written" });
+      const { file: other } = audioFile("fails.flac");
+      const g = fake({ source: {}, sourcePath: other });
+      expect(await writeAudioTags(other, INFO, { runner: g.runner, statfs: async () => Promise.reject(new Error("ENOSYS")) })).toMatchObject({ outcome: "written" });
+    });
+  });
+
+  describe("one writer per file", () => {
+    it("leaves a file alone while an import is replacing it, and says why", async () => {
+      const { file } = audioFile("busy.flac");
+      const f = fake({ source: {}, sourcePath: file });
+      expect(tryLockAudioFile(file)).toBe(true);
+
+      const result = await writeAudioTags(file, INFO, { runner: f.runner });
+
+      expect(result).toEqual({ outcome: "skipped", reason: "it is being replaced or tagged right now", format: "FLAC" });
+      expect(f.ffprobeCalls).toHaveLength(0);
+      unlockAudioFile(file);
+      // And it takes the lock only for as long as it works.
+      expect(await writeAudioTags(file, INFO, { runner: f.runner })).toMatchObject({ outcome: "written" });
+      expect(tryLockAudioFile(file)).toBe(true);
+    });
+
+    it("waits for the lock when it is told to (an import's own tag write), and goes on when it is free", async () => {
+      const { file } = audioFile("wait.flac");
+      const f = fake({ source: {}, sourcePath: file });
+      expect(await lockAudioFile(file, 0)).toBe(true);
+      setTimeout(() => unlockAudioFile(file), 40);
+
+      const result = await writeAudioTags(file, INFO, { runner: f.runner, lockWaitMs: 2_000 });
+
+      expect(result).toMatchObject({ outcome: "written" });
+    });
+
+    it("gives the lock back when the write fails", async () => {
+      const { file } = audioFile("fails.flac");
+      const f = fake({ source: {}, sourcePath: file, ffmpeg: () => ok({ code: 1, stderr: "boom" }) });
+      expect((await writeAudioTags(file, INFO, { runner: f.runner })).outcome).toBe("failed");
+      expect(tryLockAudioFile(file)).toBe(true);
+    });
   });
 
   it("starts no more than two ffmpeg runs at once, however many files are waiting", async () => {
@@ -498,6 +684,48 @@ describe("writing a file through a runner", () => {
 
     expect(results.every((r) => r.outcome === "written")).toBe(true);
     expect(FFMPEG_TAG_CONCURRENCY).toBe(2);
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(peak).toBe(2);
+  });
+
+  it("counts ffprobe, ffmpeg and an MP3 rewrite together: two files at most are being written at any moment", async () => {
+    let active = 0;
+    let peak = 0;
+    const enter = () => {
+      active++;
+      peak = Math.max(peak, active);
+    };
+    const flacs = Array.from({ length: 6 }, (_, i) => audioFile(`cap-${i}.flac`).file);
+    const mp3s = Array.from({ length: 6 }, (_, i) => audioFile(`cap-${i}.mp3`).file);
+    // An MP3 rewrite is counted from the moment its file is read in until the tagged copy is renamed over it.
+    const realRead = fsp.readFile.bind(fsp) as (...args: unknown[]) => Promise<unknown>;
+    const realRename = fsp.rename.bind(fsp);
+    vi.spyOn(fsp, "readFile").mockImplementation((async (...args: unknown[]) => {
+      if (!String(args[0]).endsWith(".mp3")) return realRead(...args);
+      enter();
+      await new Promise((r) => setTimeout(r, 15));
+      return realRead(...args);
+    }) as never);
+    vi.spyOn(fsp, "rename").mockImplementation((async (from: string, to: string) => {
+      await realRename(from, to);
+      if (String(to).endsWith(".mp3")) active--;
+    }) as never);
+    // A tool run is counted for as long as it lasts; between the ffprobe and the ffmpeg of one file nothing else may start.
+    const runner: ToolRunner = async (tool, args) => {
+      enter();
+      try {
+        await new Promise((r) => setTimeout(r, 15));
+        if (tool === "ffprobe") return ok({ stdout: probeJson(flacs.includes(args[args.length - 1]) ? {} : { tags: { title: "Song", artist: "Artist", album: "Album", album_artist: "Artist", track: "2", tracktotal: "10", date: "2020-02-03" } }) });
+        fs.writeFileSync(args[args.length - 1], Buffer.alloc(4096, 1));
+        return ok();
+      } finally {
+        active--;
+      }
+    };
+
+    const results = await Promise.all([...flacs, ...mp3s].map((file) => writeAudioTags(file, INFO, { runner })));
+
+    expect(results.map((r) => r.outcome)).toEqual(Array(12).fill("written"));
     expect(peak).toBeLessThanOrEqual(2);
     expect(peak).toBe(2);
   });
