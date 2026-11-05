@@ -155,6 +155,8 @@ const TMDB_BACKDROP_BASE = "https://image.tmdb.org/t/p/w1280";
 const TMDB_EPISODE_STILL_BASE = "https://image.tmdb.org/t/p/original";
 const MUSICBRAINZ_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
 const DISCOGS_USER_AGENT = "AoNarr/0.1 (self-hosted media manager)";
+/** How long the lookup of an artist by its MusicBrainz id waits for the poster Deezer may have for it. */
+const POSTER_WAIT_MS = 3000;
 
 /**
  * A bare fetch() has no timeout — a single stalled request hangs forever. That's tolerable for a
@@ -1143,11 +1145,21 @@ async function fetchAlbumTracksMusicbrainz(releaseGroupMbid: string): Promise<Me
   return tracks;
 }
 
+/** The Open Library author id (OL...A) in an `authors` entry of a book record: its `url` or `key` is a path such as /authors/OL79034A/Frank_Herbert. */
+function openLibraryAuthorKey(author: any): string | null {
+  for (const field of [author?.key, author?.url, author?.author?.key]) {
+    const hit = typeof field === "string" ? /\/authors\/(OL\d+A)(?:[/?#]|$)/i.exec(field) : null;
+    if (hit) return hit[1].toUpperCase();
+  }
+  return null;
+}
+
 async function searchArtistsDeezer(query: string): Promise<MetadataSearchResult[]> {
   const url = new URL("https://api.deezer.com/search/artist");
   url.searchParams.set("q", query);
 
-  const res = await fetch(url.toString());
+  // Bounded like the MusicBrainz call: the add of an artist (one queue for all four Starr apps) waits for this poster lookup.
+  const res = await fetchWithTimeout(url.toString());
   if (!res.ok) throw new Error(`Deezer artist search failed: HTTP ${res.status}`);
   const body: any = await res.json();
 
@@ -3146,12 +3158,14 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
       const entry = body?.[`ISBN:${digits}`];
       if (!entry) throw new Error(`No Open Library record found for ISBN "${digits}"`);
       const authorName = entry.authors?.[0]?.name;
+      // The author's own Open Library id (OL...A) is what makes the result an author that can be added (Readarr's lookup).
+      const authorKey = openLibraryAuthorKey(entry.authors?.[0]);
       return {
         title: authorName ?? entry.title,
         year: entry.publish_date ? Number(String(entry.publish_date).slice(-4)) || null : null,
         overview: authorName ? `Matched via ISBN ${digits}: "${entry.title}"` : `No author listed for ISBN ${digits} — showing the book itself.`,
         posterUrl: entry.cover?.medium ?? entry.cover?.large ?? null,
-        externalIds: {},
+        externalIds: authorKey ? { openlibrary: authorKey } : {},
       };
     }
 
@@ -3165,11 +3179,21 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
       const a: any = await res.json();
       if (!a?.id || !a?.name) throw new Error(`No MusicBrainz artist found for id "${id}"`);
       // MusicBrainz has no artist artwork of its own; Deezer's public search does, by name (as searchMetadata does for a search).
+      // A poster is not worth a stalled add: after POSTER_WAIT_MS the artist is answered without one.
       let posterUrl: string | null = null;
+      let posterTimer: NodeJS.Timeout | undefined;
       try {
-        posterUrl = (await searchArtistsDeezer(a.name)).find((d) => d.posterUrl && d.title.toLowerCase() === String(a.name).toLowerCase())?.posterUrl ?? null;
+        const found = await Promise.race([
+          searchArtistsDeezer(a.name),
+          new Promise<MetadataSearchResult[]>((resolve) => {
+            posterTimer = setTimeout(() => resolve([]), POSTER_WAIT_MS);
+          }),
+        ]);
+        posterUrl = found.find((d) => d.posterUrl && d.title.toLowerCase() === String(a.name).toLowerCase())?.posterUrl ?? null;
       } catch {
         // best-effort enrichment only
+      } finally {
+        if (posterTimer) clearTimeout(posterTimer);
       }
       return {
         title: a.name,

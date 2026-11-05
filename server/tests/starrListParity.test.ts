@@ -98,6 +98,10 @@ async function seed() {
   await book(author, "Dune", { has_file: 1, quality: "EPUB", file_path: "/books/Frank Herbert/Dune.epub", size_bytes: 2000000, series_name: "Dune Chronicles" });
   await book(author, "Dune Messiah", { release_date: "1969-10-01", series_name: "Dune Chronicles" });
   await insert("media_items", { ...base, type: "author", title: "No Books", sort_title: "no books", external_ids: JSON.stringify({ goodreads: "1" }) });
+
+  // Inserted last on purpose: a new row takes the highest id, so no id in the expected bodies moves. It pins the "none" branch of
+  // monitorNewItems (every other series row has NULL there and answers "all").
+  await insert("media_items", { ...base, type: "series", title: "Watch Nothing", sort_title: "watch nothing", year: 2031, external_ids: JSON.stringify({ tvdb: "4242" }), root_folder_id: tv, status: "Planned", monitor_new_items: "none" });
 }
 
 const LISTS: [string, string][] = [
@@ -136,6 +140,6 @@ describe("the unpaged lists keep their body", () => {
     const movies = (await get("/radarr/api/v3/movie")).body as any[];
     expect(movies.map((m) => m.title)).toEqual(["!!!", "Amélie", "Folder Path", "Future Cinema", "The Matrix", "No Profile", "Odd Quality", "Unicode Ö Ünïcode"]);
     const series = (await get("/sonarr/api/v3/series")).body as any[];
-    expect(series.map((s) => s.title)).toEqual(["Anime Show", "Breaking Bad", "Cancelled Show", "No Episodes Yet"]);
+    expect(series.map((s) => s.title)).toEqual(["Anime Show", "Breaking Bad", "Cancelled Show", "No Episodes Yet", "Watch Nothing"]);
   });
 });

@@ -130,6 +130,8 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
   }
 
   let synced = 0;
+  // Indexers Prowlarr pushed itself: counted, and said once after the loop (a library of 40 would otherwise log 40 lines per sync).
+  let pushedByProwlarr = 0;
   // A new or newly enabled indexer, or one that now covers other media types, can find what the others could not.
   let reach = false;
   for (const idx of indexers) {
@@ -150,7 +152,7 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
       // it renamed it ("X (Prowlarr)" became "X"), so Prowlarr edited it back at every sync and this pull renamed it again.
       const pushedTo = existing ? parseIndexerConfig(existing.config).starrApps : undefined;
       if (Array.isArray(pushedTo) && pushedTo.length > 0) {
-        log.info(`[prowlarrSync] indexer "${idx.name}" is already pushed to AoNarr by Prowlarr (Settings > Apps): not pulled over it`);
+        pushedByProwlarr++;
         continue;
       }
 
@@ -197,6 +199,9 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
     }
   }
   if (reach) await resetSearchBackoff();
+  if (pushedByProwlarr > 0) {
+    log.info(`[prowlarrSync] ${pushedByProwlarr} indexer${pushedByProwlarr === 1 ? " is" : "s are"} managed by Prowlarr's push (Settings > Apps) and ${pushedByProwlarr === 1 ? "was" : "were"} not pulled`);
+  }
 
   return { synced };
 }

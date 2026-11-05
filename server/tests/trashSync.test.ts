@@ -382,3 +382,79 @@ describe("syncTrashFormats keeps the score sets (ST15)", () => {
     expect(row.trash_scores).toBeNull();
   });
 });
+
+describe("syncTrashFormats and an earlier copy whose pattern no longer compiles (round 30g review)", () => {
+  // .NET reads the first ] of [])] as a member of the class; JS ends the class there, so a pattern like this does not compile.
+  const BAD = "[])]dubs?\\b";
+  const title = (value: string) => ({ implementation: "ReleaseTitleSpecification", required: true, fields: { value } });
+  const resolution = { implementation: "ResolutionSpecification", required: true, fields: { value: 1080 } };
+
+  it("lists a skipped format's stored copy that cannot compile, leaves the copy alone, and logs 'not synced'", async () => {
+    const { syncTrashFormats, getLastTrashSyncResult } = await import("../src/services/trashSync.js");
+    const { log } = await import("../src/services/logger.js");
+    const info = vi.spyOn(log, "info");
+    const warn = vi.spyOn(log, "warn");
+    try {
+      const brokenGroups = JSON.stringify([{ type: "title", patterns: [BAD], negate: false }]);
+      const goodGroups = JSON.stringify([{ type: "title", patterns: ["\\bdubs\\b"], negate: false }]);
+      const insert = db.prepare("INSERT INTO custom_formats (name, patterns, media_types, trash_id) VALUES (?, ?, NULL, ?)");
+      await insert.run("Stale Only Copy", brokenGroups, "stale-only");
+      await insert.run("Stale Partial Copy", brokenGroups, "stale-partial");
+      await insert.run("Healthy Partial Copy", goodGroups, "healthy-partial");
+      await insert.run("Manual Format", brokenGroups, null);
+      const entries = ["stale-only", "stale-partial", "healthy-partial", "not-stored"].map((id) => ({ name: `${id}.json`, download_url: `https://raw/${id}.json`, type: "file" }));
+      mockGithub(entries, {
+        "https://raw/stale-only.json": { trash_id: "stale-only", name: "TRaSH Stale Only", specifications: [title(BAD)] },
+        "https://raw/stale-partial.json": { trash_id: "stale-partial", name: "TRaSH Stale Partial", specifications: [title(BAD), resolution] },
+        "https://raw/healthy-partial.json": { trash_id: "healthy-partial", name: "TRaSH Healthy Partial", specifications: [title(BAD), resolution] },
+        "https://raw/not-stored.json": { trash_id: "not-stored", name: "TRaSH Not Stored", specifications: [title(BAD)] },
+      });
+
+      const result = await syncTrashFormats("radarr");
+
+      expect(result.unsupported).toEqual(["TRaSH Stale Only", "TRaSH Not Stored"]);
+      expect(result.partiallyUnsupported.map((p) => p.name)).toEqual(["TRaSH Stale Partial", "TRaSH Healthy Partial"]);
+      // The stored names are reported (not TRaSH's), in file order; a healthy copy, a manual format and a format never stored are not.
+      expect(result.staleStored).toEqual(["Stale Only Copy", "Stale Partial Copy"]);
+      expect(getLastTrashSyncResult("radarr")?.staleStored).toEqual(["Stale Only Copy", "Stale Partial Copy"]);
+      // Nothing was changed.
+      const rows = (await db.prepare("SELECT name, patterns FROM custom_formats WHERE name LIKE '%Copy' ORDER BY name").all()) as { name: string; patterns: string }[];
+      expect(rows.map((r) => [r.name, r.patterns === brokenGroups])).toEqual([["Healthy Partial Copy", false], ["Stale Only Copy", true], ["Stale Partial Copy", true]]);
+
+      const said = info.mock.calls.map((c) => String(c[0]));
+      expect(said.some((line) => line.includes('"TRaSH Stale Partial" not synced'))).toBe(true);
+      expect(said.some((line) => /synced with unsupported/.test(line))).toBe(false);
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes("stored copy of")).map((c) => String(c[0]))).toEqual([
+        expect.stringContaining('"Stale Only Copy"'),
+        expect.stringContaining('"Stale Partial Copy"'),
+      ]);
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("does not list a stored copy once the format syncs again, or one whose stored conditions are not JSON", async () => {
+    const { syncTrashFormats } = await import("../src/services/trashSync.js");
+    await db.prepare("INSERT INTO custom_formats (name, patterns, media_types, trash_id) VALUES ('Not Json Copy', 'not json', NULL, 'not-json')").run();
+    await db.prepare("INSERT INTO custom_formats (name, patterns, media_types, trash_id) VALUES ('Fixed Copy', ?, NULL, 'fixed')").run(JSON.stringify([{ type: "title", patterns: ["(?i)\\bdubs\\b"], negate: false }]));
+    mockGithub(
+      [
+        { name: "not-json.json", download_url: "https://raw/not-json.json", type: "file" },
+        { name: "fixed.json", download_url: "https://raw/fixed.json", type: "file" },
+      ],
+      {
+        "https://raw/not-json.json": { trash_id: "not-json", name: "TRaSH Not Json", specifications: [title(BAD)] },
+        // A leading (?i) is dropped by the translation, so this one syncs and repairs the stored copy.
+        "https://raw/fixed.json": { trash_id: "fixed", name: "TRaSH Fixed", specifications: [title("(?i)\\bdubs\\b")] },
+      }
+    );
+
+    const result = await syncTrashFormats("radarr");
+
+    expect(result.staleStored).toEqual([]);
+    expect(result.updated).toBe(1);
+    const fixed = (await db.prepare("SELECT patterns FROM custom_formats WHERE trash_id = 'fixed'").get()) as { patterns: string };
+    expect(JSON.parse(fixed.patterns)[0].patterns).toEqual(["\\bdubs\\b"]);
+  });
+});

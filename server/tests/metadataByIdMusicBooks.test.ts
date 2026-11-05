@@ -60,6 +60,61 @@ describe("fetchByExternalId: musicbrainz", () => {
   });
 });
 
+describe("fetchByExternalId: musicbrainz, when Deezer does not answer", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("asks Deezer with a timeout, as it asks MusicBrainz", async () => {
+    const fetchMock = routedFetch([
+      { test: (u) => u.includes("musicbrainz.org"), response: ok({ id: MBID, name: "Massive Attack" }) },
+      { test: (u) => u.includes("api.deezer.com/search/artist"), response: ok({ data: [] }) },
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    await metadata.fetchByExternalId("artist", "musicbrainz", MBID);
+    const deezer = fetchMock.mock.calls.find((c) => String(c[0]).includes("api.deezer.com")) as unknown as [string, RequestInit | undefined];
+    expect(deezer[1]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("gives up on the poster after three seconds and answers the artist without one", async () => {
+    // The add of an artist waits for this call inside the one queue all four Starr apps share: a stalled Deezer must not hold it.
+    const fetchMock = vi.fn((url: string) => (url.includes("musicbrainz.org") ? Promise.resolve(ok({ id: MBID, name: "Massive Attack" })) : new Promise<never>(() => undefined)));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    let answer: any;
+    const pending = metadata.fetchByExternalId("artist", "musicbrainz", MBID).then((a) => (answer = a));
+    await vi.advanceTimersByTimeAsync(2900);
+    expect(answer).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(200);
+    await pending;
+    expect(answer).toMatchObject({ title: "Massive Attack", posterUrl: null, externalIds: { musicbrainz: MBID } });
+  });
+});
+
+describe("fetchByExternalId: isbn", () => {
+  const ISBN = "9780441013593";
+  const bookRecord = (authors: unknown) => ({ [`ISBN:${ISBN}`]: { title: "Dune", publish_date: "August 1990", authors, cover: { medium: "https://covers.example/dune.jpg" } } });
+
+  it("carries the Open Library id of the author the book lists", async () => {
+    vi.stubGlobal("fetch", routedFetch([{ test: (u) => u.includes(`bibkeys=ISBN:${ISBN}`), response: ok(bookRecord([{ url: "https://openlibrary.org/authors/OL79034A/Frank_Herbert", name: "Frank Herbert" }])) }]));
+    expect(await metadata.fetchByExternalId("author", "isbn", "978-0-441-01359-3")).toMatchObject({ title: "Frank Herbert", year: 1990, externalIds: { openlibrary: "OL79034A" } });
+  });
+
+  it("reads the author id from a key too, and takes the first author", async () => {
+    vi.stubGlobal("fetch", routedFetch([{ test: (u) => u.includes("openlibrary.org/api/books"), response: ok(bookRecord([{ key: "/authors/OL12345a", name: "First" }, { key: "/authors/OL2A", name: "Second" }])) }]));
+    expect((await metadata.fetchByExternalId("author", "isbn", ISBN)).externalIds).toEqual({ openlibrary: "OL12345A" });
+  });
+
+  it("answers the book itself, with no author id, when the record lists no author or an id of another shape", async () => {
+    for (const authors of [undefined, [], [{ name: "Someone", url: "https://openlibrary.org/people/someone" }]]) {
+      vi.stubGlobal("fetch", routedFetch([{ test: (u) => u.includes("openlibrary.org/api/books"), response: ok(bookRecord(authors)) }]));
+      const found = await metadata.fetchByExternalId("author", "isbn", ISBN);
+      expect(found.externalIds).toEqual({});
+      expect(found.title).toBe(authors && (authors as any[])[0]?.name ? "Someone" : "Dune");
+    }
+  });
+});
+
 describe("fetchByExternalId: openlibrary", () => {
   it("reads an author by its Open Library id", async () => {
     const fetchMock = routedFetch([{ test: (u) => u === "https://openlibrary.org/authors/OL79034A.json", response: ok({ name: "Frank Herbert", birth_date: "October 8, 1920", bio: { type: "/type/text", value: "American author." } }) }]);

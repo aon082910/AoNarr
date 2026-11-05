@@ -117,6 +117,9 @@ async function lookupTitles(ctx: LibraryContext, term: string): Promise<any[]> {
       // A provider that does not answer, or does not know the id, finds nothing: the caller shows "not found".
       return [];
     }
+    // An ISBN names a book. The author it resolves to is the one the book lists; a book that lists none (the provider then
+    // answers the book itself) is not an author, and a result without an author id could not be added.
+    if (named.provider === "isbn" && !results[0].externalIds?.openlibrary) return [];
   } else if (/^(?:goodreads|readarr|lidarr|lidarrid|mbid|musicbrainz|openlibrary|olid|asin|isbn):/i.test(term)) {
     // An id form no provider here can resolve (Goodreads and ASIN ids, a malformed id): nothing is found.
     return [];

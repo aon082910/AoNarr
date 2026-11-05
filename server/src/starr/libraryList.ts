@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
 import { db } from "../db/index.js";
+import { log } from "../services/logger.js";
 import { appUrlBase } from "../services/urlBase.js";
 import { type StarrApp, typeFilter } from "./apps.js";
 import {
@@ -148,18 +149,45 @@ interface Entry {
   version: number;
 }
 
-/** What the kept resources may take up (their JSON bytes and the length of their fingerprints). Past it the whole cache starts over. */
+/** What the kept resources may take up (their JSON bytes and the memory of their fingerprints). Past it the whole cache starts over. */
 const CACHE_LIMIT = 96 * 1024 * 1024;
+let cacheLimit = CACHE_LIMIT;
 const caches = new Map<string, Map<number, Entry>>();
 let cachedSize = 0;
 let versions = 0;
+/** When the cap was last reported, so a library that does not fit logs once in a while instead of once per request. */
+let lastCapWarning = 0;
+const CAP_WARNING_EVERY_MS = 10 * 60 * 1000;
 /** Makes a tag of an earlier run of the process unequal to every tag of this one, whatever versions were handed out. */
 const RUN = crypto.randomBytes(5).toString("hex");
 
-/** For tests: forget everything kept. */
-export function clearListCache(): void {
+/** For tests: forget everything kept (and, with a number, lower the cap so the overflow can be reached with a few entries). */
+export function clearListCache(limit = CACHE_LIMIT): void {
   caches.clear();
   cachedSize = 0;
+  cacheLimit = limit;
+  lastCapWarning = 0;
+}
+
+/** For tests: what the accounting believes is kept, next to what is really in the maps. */
+export function listCacheStats(): { cachedSize: number; entries: number; recounted: number } {
+  let entries = 0;
+  let recounted = 0;
+  for (const cache of caches.values()) {
+    for (const entry of cache.values()) {
+      entries++;
+      recounted += costOf(entry);
+    }
+  }
+  return { cachedSize, entries, recounted };
+}
+
+/**
+ * What an entry takes up. The JSON is a Buffer, so its length is bytes. A string of the fingerprint is two bytes per character
+ * as soon as one character is outside Latin-1 (a CJK title), and the count must not guess, so the upper bound is used.
+ */
+function costOf(entry: Entry): number {
+  return entry.fingerprint.length * 2 + entry.json.length;
 }
 
 /** The text of a value, delimited so that two lists of values never read alike. */
@@ -181,16 +209,29 @@ function entryFor(kind: string, id: number, fingerprint: string, build: () => un
   const have = cache.get(id);
   if (have && have.fingerprint === fingerprint) return have;
   const json = Buffer.from(JSON.stringify(build()), "utf8");
-  if (cachedSize > CACHE_LIMIT) {
+  // The replaced entry leaves the count first: a clear below drops it with the rest, and it must not be subtracted twice.
+  if (have) cachedSize -= costOf(have);
+  if (cachedSize > cacheLimit) {
+    warnCapReached();
     caches.clear();
     cachedSize = 0;
     caches.set(kind, (cache = new Map()));
   }
-  if (have) cachedSize -= have.fingerprint.length + have.json.length;
   const entry = { fingerprint, json, version: ++versions };
   cache.set(id, entry);
-  cachedSize += fingerprint.length + json.length;
+  cachedSize += costOf(entry);
   return entry;
+}
+
+/**
+ * A library whose list does not fit in the cap throws the cache away in the middle of every full list: every request rebuilds
+ * most entries and the ETag never repeats. That is correct but slow, so it is said once in a while where the operator can see it.
+ */
+function warnCapReached(): void {
+  const now = Date.now();
+  if (now - lastCapWarning < CAP_WARNING_EVERY_MS) return;
+  lastCapWarning = now;
+  log.warn(`[starr] the kept list resources reached ${Math.round(cacheLimit / (1024 * 1024))} MB and were dropped; a library this large rebuilds its lists on every request`);
 }
 
 /** Entries of the kept list that this full listing did not see are gone from the library: let them go. */
@@ -199,7 +240,7 @@ function forgetMissing(kind: string, seen: Set<number>): void {
   if (!cache || cache.size <= seen.size) return;
   for (const [id, entry] of cache) {
     if (seen.has(id)) continue;
-    cachedSize -= entry.fingerprint.length + entry.json.length;
+    cachedSize -= costOf(entry);
     cache.delete(id);
   }
 }

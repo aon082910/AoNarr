@@ -183,6 +183,10 @@ describe("the folder browser of a Starr app (Bazarr's path mapping and root fold
   fs.mkdirSync(path.join(base, "B-dir"));
   fs.mkdirSync(path.join(base, ".hidden"));
   fs.writeFileSync(path.join(base, "movie.mkv"), "12345");
+  // The browser lists only places AoNarr uses (tests/starrFilesystem.test.ts); this folder is a root folder for these tests.
+  beforeAll(async () => {
+    await insert("INSERT INTO root_folders (path, media_type) VALUES (?, 'movie')", base);
+  });
 
   it("lists the folders under a path, without hidden ones and without files unless asked", async () => {
     const res = await get(`/radarr/api/v3/filesystem?path=${encodeURIComponent(base)}&allowFoldersWithoutTrailingSlashes=true&includeFiles=false`);
