@@ -459,7 +459,9 @@ one book.
   enable "Send All Properties"; Emby sends `PlaybackInfo.PlayedToCompletion` on its own, and its
   `item.markplayed` event also counts.
 - **Self-hosted API docs** — Swagger UI at `/api-docs`, served from `GET /api/openapi.json`
-  (no external CDN), covering the core resources for anyone scripting against AoNarr directly.
+  (no external CDN). The document is generated from the registered routes (about 400 operations, with the admin-only
+  and open ones marked) and the hand-written descriptions of the core resources are merged over it; a test fails when a
+  route is added without a line in `server/tests/fixtures/openapi-routes.txt` (run it with `UPDATE_OPENAPI_ROUTES=1`).
 - **Download queue reordering** — a "Prioritize" action on a queued/downloading item calls through
   to qBittorrent's `topPrio` or SABnzbd's force-priority, for the download clients that actually
   have a real queue to reorder.
@@ -513,12 +515,24 @@ one book.
   files), Homepage and Homarr (status, queue, calendar, wanted) and Unpackerr (queue, commands) ask for:
   `/ping`, `system/status`, `health`, `rootfolder`, `tag`, `qualityprofile`, `indexer`, `queue`, `history`,
   `calendar`, `wanted/missing`, `wanted/cutoff`, `series`, `episode`, `episodefile`, `movie`, `moviefile`,
-  the Lidarr and Readarr equivalents and `command` (searches, refresh, rescan and RSS sync; the scan of finished
-  downloads runs the queue check and takes no path). Its OpenAPI document is at `<mount>/api/<v3 or v1>/openapi.json`.
+  the Lidarr and Readarr equivalents (including `artist`/`author` lookup and add), `release/push` (autobrr and scripts
+  hand a release over; it is matched, judged like a release of a feed and grabbed or held, never fetched by the API
+  itself) and `command` (searches, refresh, rescan and RSS sync; `DownloadedEpisodesScan` and its siblings without a path
+  run the queue check, with a path they import that folder or file: it must be outside the library, inside the downloads
+  folder, the local folder of the remote path mapping the path goes through, or a folder in the `scanPathAllowList`
+  setting; with no mode (or Auto) a file in a torrent client's folder is hardlinked, or copied across disks, so it keeps
+  seeding, and only an explicit Move moves it; a mapping for a disk root or a folder that holds a library root is refused).
+  `filesystem` (Bazarr's folder picker) lists only AoNarr's own places (root folders, downloads and mapping folders,
+  Blackhole watch folders, the allow-list) and the folders leading to them. The lists (`series`,
+  `movie`, ...) are cached per title and answer `304` for an unchanged list; `page` and `pageSize` page them. Its OpenAPI
+  document is at `<mount>/api/<v3 or v1>/openapi.json`. Checked live against Prowlarr 2.7, Bazarr 1.6, Homepage 2.7,
+  Unpackerr 1.0, Jellyseerr 2.7 and Seerr 3.5 (their server code; the Jellyseerr web UI was not driven): Bazarr has no live feed
+  from AoNarr (no SignalR) and syncs hourly, and shows no posters.
   Where a tool can send the key as a header, do: a key in the URL ends up in a reverse proxy's log (the bundled
   nginx leaves it out for these paths). An indexer AoNarr already has at the address Prowlarr pushes is not taken
-  over; Prowlarr is told to remove it first. Not built: release push (autobrr), quality profile and custom format
-  writes (Recyclarr), adding artists and authors by lookup.
+  over; Prowlarr is told to remove it first. Not built: quality profile and custom format
+  writes (Recyclarr: it checks that what it reads back equals what it pushed, which AoNarr's flat model cannot give, so
+  it stops at its first request; use the built-in TRaSH sync), Goodreads lookups, adding one album or book by itself.
 
 ## Architecture
 
