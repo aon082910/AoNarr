@@ -1,5 +1,7 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { downloadClientFromRow, qualityProfileFromRow } from "../db/mappers.js";
@@ -7,7 +9,8 @@ import { getBuildInfo } from "../services/buildInfo.js";
 import { getHealthReport } from "../services/healthReport.js";
 import { getSetting } from "../services/settingsStore.js";
 import { withAppUrlBase } from "../services/urlBase.js";
-import { readdirAsync, statAsync, statfsAsync } from "../services/fsAsync.js";
+import { guardedFsCall, readdirAsync, statAsync, statfsAsync } from "../services/fsAsync.js";
+import { allowListEntries } from "../services/pathScan.js";
 import { callNative } from "./native.js";
 import { typeFilter } from "./apps.js";
 import type { StarrRoutes } from "./router.js";
@@ -24,6 +27,26 @@ async function spaceOf(path: string): Promise<{ freeSpace: number | null; totalS
   // bavail, not bfree: the server runs unprivileged and cannot use the blocks reserved for root.
   return { freeSpace: stat.bavail * stat.bsize, totalSpace: stat.blocks * stat.bsize };
 }
+
+/**
+ * The folders the folder picker may open: the library's root folders, AoNarr's downloads folder, the local side of every remote
+ * path mapping, a Blackhole client's watch folder and the folders of the scanPathAllowList setting. These are the places a tool
+ * that browses (Bazarr's path mapping and root folder pickers) has a reason to look in; the rest of the disk is not its business.
+ */
+async function pickerFolders(): Promise<string[]> {
+  const places: string[] = [config.downloadsDir, ...allowListEntries()];
+  for (const row of (await db.prepare("SELECT path FROM root_folders").all()) as { path: string | null }[]) if (row.path) places.push(row.path);
+  for (const row of (await db.prepare("SELECT local_path FROM remote_path_mappings").all()) as { local_path: string | null }[]) if (row.local_path) places.push(row.local_path);
+  for (const row of (await db.prepare("SELECT host FROM download_clients WHERE type = 'blackhole'").all()) as { host: string | null }[]) if (row.host) places.push(row.host);
+  return [...new Set(places.filter((p) => path.isAbsolute(p)).map((p) => path.resolve(p)))];
+}
+
+function insidePath(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+const realPathOrNull = (target: string): Promise<string | null> => guardedFsCall("realpath", target, FILESYSTEM_TIMEOUT_MS, () => fs.promises.realpath(target)).catch(() => null);
 
 export const LANGUAGES = [
   { id: -1, name: "Any" },
@@ -191,16 +214,39 @@ export function registerSystemRoutes(r: StarrRoutes): void {
   });
 
   // Bazarr's path-mapping and folder pickers, and Starr's own, list folders through this; without it they show nothing to pick.
+  // Only the folders AoNarr itself uses (see pickerFolders), and the names of the folders on the way to them: a path outside is
+  // refused rather than listed, so an API key cannot be used to read file names anywhere the process can.
   r.get("/filesystem", "Folders, and files on request, under a path", async (req) => {
-    const requested = String(req.query.path ?? "").trim() || "/";
+    const requested = path.resolve(String(req.query.path ?? "").trim() || "/");
     const withFiles = flag(req.query.includeFiles);
     const bare = flag(req.query.allowFoldersWithoutTrailingSlashes);
+    const folders = await pickerFolders();
+    const folderPath = (name: string) => (bare ? path.join(requested, name) : path.join(requested, name) + path.sep);
+    const parent = path.dirname(requested);
+    const parentOf = parent === requested ? null : parent;
+
+    // A path is judged by where it really is: a link inside an allowed folder that points out of it is not allowed.
+    const real = await realPathOrNull(requested);
+    const target = real ?? requested;
+    const allowed = [...folders, ...(await Promise.all(folders.map(realPathOrNull))).filter((p): p is string => !!p)];
+    if (!allowed.some((folder) => insidePath(target, folder))) {
+      // Above an allowed folder, the way down to it: the next folder of each, and nothing else.
+      const onTheWay = new Set<string>();
+      for (const folder of folders) {
+        if (folder === requested || !insidePath(folder, requested)) continue;
+        onTheWay.add(path.relative(requested, folder).split(path.sep)[0]);
+      }
+      if (onTheWay.size === 0) throw new HttpError(400, "path is not one AoNarr uses");
+      const directories = [...onTheWay].sort((a, b) => a.localeCompare(b)).map((name) => ({ type: "folder", name, path: folderPath(name), size: 0 }));
+      return { parent: parentOf, directories, files: [] };
+    }
+
     // A folder that is missing or cannot be read lists as empty, as it does in Starr.
     const entries = (await readdirAsync(requested, FILESYSTEM_TIMEOUT_MS).catch(() => [])).filter((e) => !e.name.startsWith(".")).sort((a, b) => a.name.localeCompare(b.name));
     const directories = entries
       .filter((e) => e.isDirectory())
       .slice(0, FILESYSTEM_MAX_ENTRIES)
-      .map((e) => ({ type: "folder", name: e.name, path: bare ? path.join(requested, e.name) : path.join(requested, e.name) + path.sep, size: 0 }));
+      .map((e) => ({ type: "folder", name: e.name, path: folderPath(e.name), size: 0 }));
     const files = [];
     if (withFiles) {
       for (const e of entries.filter((entry) => entry.isFile()).slice(0, FILESYSTEM_MAX_ENTRIES)) {
@@ -209,8 +255,7 @@ export function registerSystemRoutes(r: StarrRoutes): void {
         files.push({ type: "file", name: e.name, path: full, size: stat?.size ?? 0, lastModified: stat?.mtime.toISOString() });
       }
     }
-    const parent = path.dirname(requested);
-    return { parent: parent === requested ? null : parent, directories, files };
+    return { parent: parentOf, directories, files };
   });
 
   const rootFolder = async (row: any) => {
