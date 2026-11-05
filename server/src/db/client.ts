@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { config } from "../config.js";
 import { currentBuildId, recordMigrationDone, snapshotBeforeMigration } from "./preMigrationBackup.js";
 import { DEFAULT_QUALITY_SIZES, seedQualitySizesEnabled } from "./defaultQualitySizes.js";
+import { DEFAULT_PROFILE_QUALITIES, DEFAULT_QUALITY_ORDER } from "./qualityLadder.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -196,6 +197,8 @@ ensureColumn("quality_profiles", "upgrade_allowed", "upgrade_allowed INTEGER NOT
 ensureColumn("quality_profiles", "cutoff_format_score", "cutoff_format_score INTEGER NOT NULL DEFAULT 0");
 ensureColumn("quality_profiles", "min_upgrade_format_score", "min_upgrade_format_score INTEGER NOT NULL DEFAULT 1");
 ensureColumn("quality_profiles", "quality_groups", "quality_groups TEXT NOT NULL DEFAULT '[]'");
+// Round 30f: the order a profile ranks the ladder in (NULL: the global order).
+ensureColumn("quality_profiles", "quality_order", "quality_order TEXT");
 for (const table of ["media_items", "episodes", "sub_items"]) {
   ensureColumn(table, "file_release_title", "file_release_title TEXT");
   ensureColumn(table, "file_format_score", "file_format_score INTEGER");
@@ -606,24 +609,7 @@ dropCheckConstraint(
    )`
 );
 
-const DEFAULT_QUALITY_SEED = [
-  "SD",
-  "DVD",
-  "HDTV-720p",
-  "WEBRip-720p",
-  "WEBDL-720p",
-  "Bluray-720p",
-  "HDTV-1080p",
-  "WEBRip-1080p",
-  "WEBDL-1080p",
-  "Bluray-1080p",
-  "Remux-1080p",
-  "HDTV-2160p",
-  "WEBRip-2160p",
-  "WEBDL-2160p",
-  "Bluray-2160p",
-  "Remux-2160p",
-];
+const DEFAULT_QUALITY_SEED: string[] = [...DEFAULT_QUALITY_ORDER];
 const qualityCount = (db.prepare("SELECT COUNT(*) as c FROM qualities").get() as { c: number }).c;
 if (qualityCount === 0) {
   const insert = db.prepare("INSERT INTO qualities (name, rank, min_size_mb, max_size_mb, preferred_size_mb) VALUES (?, ?, ?, ?, ?)");
@@ -647,7 +633,7 @@ if (profileCount === 0) {
     "INSERT INTO quality_profiles (name, allowed_qualities, cutoff) VALUES (?, ?, ?)"
   ).run(
     "Any",
-    JSON.stringify(["SD", "HDTV-720p", "WEBDL-720p", "Bluray-720p", "HDTV-1080p", "WEBDL-1080p", "Bluray-1080p", "Remux-2160p"]),
+    JSON.stringify(DEFAULT_PROFILE_QUALITIES),
     "WEBDL-1080p"
   );
 }

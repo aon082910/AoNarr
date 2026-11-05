@@ -125,8 +125,21 @@ export const openApiSpec = {
       post: { summary: "Send the test message to this connection, whatever its events say", responses: { "200": { description: "{ ok } or { ok: false, error }, without any secret or full URL" } } },
     },
     "/quality-profiles": {
-      get: { summary: "List quality profiles", responses: { "200": { description: "OK" } } },
-      post: { summary: "Create a quality profile", responses: { "201": { description: "Created" } } },
+      get: {
+        summary: "List quality profiles (allowedQualities, cutoff, qualityGroups, qualityOrder: the order the profile ranks the quality ladder in, worst to best, or null for the global order of /qualities)",
+        responses: { "200": { description: "OK" } },
+      },
+      post: {
+        summary:
+          "Create a quality profile. qualityOrder (optional, a list of different quality names on the ladder, worst to best) gives the profile its own ranking: a quality it leaves out ranks below every listed one; null or [] ranks by the global order",
+        responses: { "201": { description: "Created" } },
+      },
+    },
+    "/quality-profiles/{id}": {
+      patch: {
+        summary: "Edit a quality profile. qualityOrder sets, or with null / [] resets, the order the profile ranks the ladder in; a quality newly allowed is put into an existing order by its place on the ladder when the order is not sent",
+        responses: { "200": { description: "OK" } },
+      },
     },
     "/root-folders": {
       get: { summary: "List root folders (with live free/total disk space)", responses: { "200": { description: "OK" } } },

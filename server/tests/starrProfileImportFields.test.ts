@@ -105,7 +105,7 @@ describe("importStarrQualityProfiles keeps the profile's upgrade settings (ST2)"
             name: "Mixed",
             allowed: true,
             items: [
-              { quality: { id: 20, name: "Raw-HD" }, allowed: true },
+              { quality: { id: 20, name: "Unknown" }, allowed: true },
               { quality: { id: 3, name: "WEBDL-1080p" }, allowed: true },
             ],
           },

@@ -63,18 +63,20 @@ import {
 import { backfillProviderAliases } from "./aliasBackfill.js";
 import { backfillAnilistSeasons } from "./anilistSeasons.js";
 import {
+  GLOBAL_RANKING,
   groupedRank,
   isUnderCutoff,
   groupRankOfRank,
   knownReleaseSize,
-  parseQualityGroups,
   pickBestAllowedQuality,
   preferredSizeDistance,
   qualityRank,
+  rankingForProfile,
+  rankingOf,
   sameQualityGroup,
   sizeWithinQualityBounds,
   usesQualityTiers,
-  type QualityGroups,
+  type ProfileRanking,
 } from "./quality.js";
 import { indexerInfoOf, scoreRelease } from "./customFormatScoring.js";
 import { mapLimit } from "./mapLimit.js";
@@ -503,8 +505,8 @@ export interface ChooseOptions {
   /** Overrides quality_profiles.prefer_cutoff_quality for this call (true = never pick a quality
    * above the cutoff while one at or below it is on offer). Omitted = the profile's own setting. */
   preferCutoffQuality?: boolean;
-  /** Qualities the profile treats as one tier; read from the quality profile when omitted. */
-  qualityGroups?: QualityGroups;
+  /** How the profile ranks the ladder (the qualities it treats as one tier and its order); read from the quality profile when omitted. */
+  ranking?: ProfileRanking;
   /** An album, book or issue that has a file: the format preference of that file (nonVideoMatch.ts). Only a release a
    * format step better than it is taken, so the file is replaced by a better format and never by an equal one. */
   nonVideoUpgradeFrom?: number;
@@ -832,27 +834,20 @@ async function preferCutoffQualityFor(qualityProfileId: number | null): Promise<
 
 /** Quality tiers in the order the profile prefers them: pickBestAllowedQuality's choice first,
  * then its choice among what's left, and so on. */
-function tierPreference(qualities: string[], allowedQualities: string[], cutoff: string, capAtCutoff: boolean, groups: QualityGroups = []): string[] {
+function tierPreference(qualities: string[], allowedQualities: string[], cutoff: string, capAtCutoff: boolean, ranking: ProfileRanking = GLOBAL_RANKING): string[] {
   const remaining = Array.from(new Set(qualities));
   const order: string[] = [];
   while (remaining.length > 0) {
     const next =
       allowedQualities.length > 0
-        ? pickBestAllowedQuality(remaining, allowedQualities, cutoff, capAtCutoff, groups)
-        : [...remaining].sort((a, b) => groupedRank(b, groups) - groupedRank(a, groups))[0];
+        ? pickBestAllowedQuality(remaining, allowedQualities, cutoff, capAtCutoff, ranking)
+        : [...remaining].sort((a, b) => groupedRank(b, ranking) - groupedRank(a, ranking))[0];
     if (!next) break;
     order.push(next);
     // A group is one tier: its other members are not a tier of their own.
-    for (let i = remaining.length - 1; i >= 0; i--) if (sameQualityGroup(remaining[i], next, groups)) remaining.splice(i, 1);
+    for (let i = remaining.length - 1; i >= 0; i--) if (sameQualityGroup(remaining[i], next, ranking)) remaining.splice(i, 1);
   }
   return order;
-}
-
-/** The groups of qualities a profile treats as one tier (quality_profiles.quality_groups). */
-async function qualityGroupsFor(qualityProfileId: number | null): Promise<QualityGroups> {
-  if (!qualityProfileId) return [];
-  const row = (await db.prepare("SELECT quality_groups FROM quality_profiles WHERE id = ?").get(qualityProfileId)) as { quality_groups: string | null } | undefined;
-  return parseQualityGroups(row?.quality_groups);
 }
 
 /**
@@ -908,14 +903,14 @@ export async function chooseBestResult(
   // Names TheXEM gives a season of the show (a cour's own title): a release counted from 1 under one is that season's.
   const aliasSeasons = tiered && mediaItemId != null ? await aliasSeasonsFor(mediaItemId) : new Map<string, number>();
   const aliasSeasonCounts = aliasSeasons.size > 0 && mediaItemId != null ? await seasonEpisodeCounts(mediaItemId) : undefined;
-  const qualityGroups = options.qualityGroups ?? (tiered ? await qualityGroupsFor(qualityProfileId) : []);
+  const ranking = options.ranking ?? (tiered ? await rankingForProfile(qualityProfileId) : GLOBAL_RANKING);
   // The profile's wanted language (Radarr): a release named in another language is not taken.
   const wantedLanguage =
     tiered && qualityProfileId
       ? (((await db.prepare("SELECT language FROM quality_profiles WHERE id = ?").get(qualityProfileId)) as { language: string | null } | undefined)?.language ?? null)
       : null;
   // The rank of what is on disk, as the profile reads it (a group ranks as its best member).
-  const upgradeFromGroupRank = upgradeFromRank === null ? null : groupRankOfRank(upgradeFromRank, qualityGroups);
+  const upgradeFromGroupRank = upgradeFromRank === null ? null : groupRankOfRank(upgradeFromRank, ranking);
 
   const minimumSeedersById = new Map((options.indexers ?? []).map((i) => [i.id, i.minimumSeeders ?? 0]));
   // A download client scoped to tags takes only titles carrying one of them: a release no allowed client can take is not a candidate.
@@ -1020,7 +1015,7 @@ export async function chooseBestResult(
         item: packContext.item,
         packQuality: parsed.quality,
         cutoff,
-        qualityGroups,
+        ranking,
         settings,
         upgrade: { profile: upgradeProfile, mode: revisionMode, packTitle: result.title, packScore },
       });
@@ -1125,7 +1120,7 @@ export async function chooseBestResult(
         return false;
       }
       if (verdict === "needs-score") needsScore.add(result);
-    } else if (!(options.packJudgesUpgrades && parsed.isFullSeason) && upgradeFromGroupRank !== null && groupedRank(parsed.quality, qualityGroups) <= upgradeFromGroupRank) {
+    } else if (!(options.packJudgesUpgrades && parsed.isFullSeason) && upgradeFromGroupRank !== null && groupedRank(parsed.quality, ranking) <= upgradeFromGroupRank) {
       noteRejected(result, `quality "${parsed.quality}" isn't an upgrade over what's already on disk`);
       return false;
     }
@@ -1152,7 +1147,7 @@ export async function chooseBestResult(
   const delay = await applyDelayProfile(
     relevant,
     delayProfile,
-    { cutoff, allowedQualities, qualityGroups, preferCutoffQuality, userInvoked: !!options.userInvoked },
+    { cutoff, allowedQualities, ranking, preferCutoffQuality, userInvoked: !!options.userInvoked },
     ({ parsed }) => parsed.quality,
     async ({ result, size }) => {
       const scored = await scoreRelease(result.title, size, qualityProfileId, mediaType, indexerInfoOf(result), mediaItemId, result.indexerId ?? null);
@@ -1212,9 +1207,9 @@ export async function chooseBestResult(
     totalScore: number;
   }[] = [];
   for (const pool of pools) {
-    const tiers: (string | null)[] = tiered ? tierPreference(pool.map((c) => c.parsed.quality), allowedQualities, cutoff, preferCutoffQuality, qualityGroups) : [null];
+    const tiers: (string | null)[] = tiered ? tierPreference(pool.map((c) => c.parsed.quality), allowedQualities, cutoff, preferCutoffQuality, ranking) : [null];
     for (const tier of tiers) {
-      const inTier = tier === null ? pool : pool.filter((c) => sameQualityGroup(c.parsed.quality, tier, qualityGroups));
+      const inTier = tier === null ? pool : pool.filter((c) => sameQualityGroup(c.parsed.quality, tier, ranking));
       candidates = (
         await Promise.all(
           inTier.map(async ({ result, parsed, size }) => ({
@@ -1844,13 +1839,13 @@ export async function existingFileQuality(item: MediaItem, episodeId: number | n
 /** existingFileQuality for a season-level grab: importing a pack replaces the file of every episode
  * it covers (the whole season, or just `episodeNumbers`), so the best quality among those files is
  * the one it has to beat. */
-async function seasonFileQuality(mediaItemId: number, seasonNumber: number, episodeNumbers: number[] | null, groups?: QualityGroups): Promise<string | null | undefined> {
+async function seasonFileQuality(mediaItemId: number, seasonNumber: number, episodeNumbers: number[] | null, ranking?: ProfileRanking): Promise<string | null | undefined> {
   const rows = (await db
     .prepare("SELECT episode_number, quality FROM episodes WHERE media_item_id = ? AND season_number = ? AND has_file = 1")
     .all(mediaItemId, seasonNumber)) as { episode_number: number; quality: string | null }[];
   const covered = episodeNumbers ? rows.filter((r) => episodeNumbers.includes(Number(r.episode_number))) : rows;
   if (covered.length === 0) return undefined;
-  return covered.reduce<string | null>((best, r) => (groupedRank(r.quality, groups) > groupedRank(best, groups) ? r.quality : best), null);
+  return covered.reduce<string | null>((best, r) => (groupedRank(r.quality, ranking) > groupedRank(best, ranking) ? r.quality : best), null);
 }
 
 /** Parses "HH:MM" into minutes-since-midnight and checks whether the current local time falls
@@ -2539,25 +2534,25 @@ interface BulkSearchContext {
   automatic?: boolean;
 }
 
-export function isBelowCutoff(quality: string | null, cutoff: string, groups?: QualityGroups): boolean {
-  return isUnderCutoff(quality, cutoff, groups);
+export function isBelowCutoff(quality: string | null, cutoff: string, ranking?: ProfileRanking): boolean {
+  return isUnderCutoff(quality, cutoff, ranking);
 }
 
 /** Sonarr/Radarr's "existing file meets cutoff": with lower tiers filtered out, the profile's best
  * pick is whatever allowed tier lies above the cutoff, so an upgrade search would otherwise replace
  * a file that's already good enough with, say, a 70 GB remux. */
-export function meetsCutoff(quality: string | null, cutoff: string, groups?: QualityGroups): boolean {
-  const cutoffRank = groupedRank(cutoff, groups);
-  return cutoffRank >= 0 && groupedRank(quality, groups) >= cutoffRank;
+export function meetsCutoff(quality: string | null, cutoff: string, ranking?: ProfileRanking): boolean {
+  const cutoffRank = groupedRank(cutoff, ranking);
+  return cutoffRank >= 0 && groupedRank(quality, ranking) >= cutoffRank;
 }
 
 /** A show/artist/author can't be grabbed as one item-level release: the importer only places a
  * download against an episode or sub-item, so such a grab never imports. Its monitored children
  * that are missing — or, for a type with quality tiers, below the profile's cutoff — are searched
  * one by one instead, missing ones first, the way Missing and Cutoff Unmet search them. */
-async function searchableChildrenOf(item: MediaItem, cutoff: string, groups?: QualityGroups): Promise<{ episodeId?: number; subItemId?: number }[]> {
+async function searchableChildrenOf(item: MediaItem, cutoff: string, ranking?: ProfileRanking): Promise<{ episodeId?: number; subItemId?: number }[]> {
   const tiered = usesQualityTiers(item.type);
-  const wanted = (row: { has_file: number; quality: string | null }) => !Number(row.has_file) || (tiered && isBelowCutoff(row.quality, cutoff, groups));
+  const wanted = (row: { has_file: number; quality: string | null }) => !Number(row.has_file) || (tiered && isBelowCutoff(row.quality, cutoff, ranking));
   const missingFirst = (a: { has_file: number }, b: { has_file: number }) => Number(a.has_file) - Number(b.has_file);
   if (getMediaTypeConfig(item.type).shape === "episodic") {
     const today = new Date().toISOString().slice(0, 10);
@@ -2667,7 +2662,7 @@ async function searchSeasonsFirst(item: MediaItem, episodeIds: number[], ctx: Bu
     .all(item.id, ...episodeIds)) as { id: number; season_number: number; scene_season_number: number | null; has_file: number; quality: string | null }[];
   const seasonProfile = await getQualityProfile(item.qualityProfileId);
   const cutoff = seasonProfile?.cutoff ?? "";
-  const groups = seasonProfile?.qualityGroups ?? [];
+  const ranking = rankingOf(seasonProfile);
   let searches = 0;
   let grabbed = 0;
   for (const group of seasonGroupsOf(rows)) {
@@ -2679,7 +2674,7 @@ async function searchSeasonsFirst(item: MediaItem, episodeIds: number[], ctx: Bu
     // What is wanted of the season is an upgrade when every one of its episodes has a file: the pack has to beat the worst of them.
     const groupRows = rows.filter((r) => group.ids.includes(r.id));
     // Each episode's quality as the profile ranks it (a group as its best member) before the worst is taken.
-    const upgradeFromRank = groupRows.every((r) => Number(r.has_file)) ? Math.min(...groupRows.map((r) => groupedRank(r.quality, groups))) : null;
+    const upgradeFromRank = groupRows.every((r) => Number(r.has_file)) ? Math.min(...groupRows.map((r) => groupedRank(r.quality, ranking))) : null;
     try {
       const found = await searchAndGrabSeason(item, group, upgradeFromRank, ctx);
       searches++;
@@ -2838,7 +2833,7 @@ async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: Bu
   if (existingFile && !upgradeProfile.upgradeAllowed) {
     return { grabbed: false, error: "This quality profile does not allow upgrades" };
   }
-  if (onDisk !== undefined && meetsCutoff(onDisk, cutoff, profile?.qualityGroups) && !(existingFile && formatCutoffNotMet(upgradeProfile, existingFile))) {
+  if (onDisk !== undefined && meetsCutoff(onDisk, cutoff, rankingOf(profile)) && !(existingFile && formatCutoffNotMet(upgradeProfile, existingFile))) {
     return { grabbed: false, error: `Already meets the profile's cutoff (${cutoff})` };
   }
 
@@ -2977,7 +2972,7 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[], opts: { 
 
       const profile = await getQualityProfile(item.qualityProfileId);
       const children: { episodeId?: number; subItemId?: number }[] = [];
-      for (const child of await searchableChildrenOf(item, profile?.cutoff ?? "", profile?.qualityGroups)) {
+      for (const child of await searchableChildrenOf(item, profile?.cutoff ?? "", rankingOf(profile))) {
         if (!(await isAlreadyQueued(item.id, child.episodeId ?? null, child.subItemId ?? null))) children.push(child);
       }
       const label = typeConfig.shape === "episodic" ? "episodes" : `${(typeConfig.childLabel ?? "item").toLowerCase()}s`;
@@ -3410,12 +3405,12 @@ export async function retryFailedGrab(
     const onDisk =
       seasonPack === null
         ? await existingFileQuality(item, match.episodeId, match.subItemId)
-        : await seasonFileQuality(item.id, seasonPack, seasonEpisodes, profile?.qualityGroups);
+        : await seasonFileQuality(item.id, seasonPack, seasonEpisodes, rankingOf(profile));
     if (onDisk !== undefined && !usesQualityTiers(item.type)) {
       await notifyFailed(mediaTitle, `${reason} (not retried: it already has a file)`, notifyContext);
       return;
     }
-    if (onDisk !== undefined && meetsCutoff(onDisk, profile?.cutoff ?? "", profile?.qualityGroups)) {
+    if (onDisk !== undefined && meetsCutoff(onDisk, profile?.cutoff ?? "", rankingOf(profile))) {
       log.info(`[scheduler] retry grabbed nothing for "${mediaTitle}": it already meets the profile's cutoff (${profile!.cutoff})`);
       await notifyFailed(mediaTitle, `${reason} (not retried: it already meets the profile's cutoff (${profile!.cutoff}))`, notifyContext);
       return;

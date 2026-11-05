@@ -1,5 +1,5 @@
 import { db } from "../db/index.js";
-import { groupedRank, isUnderCutoff, parseQualityGroups, usesQualityTiers, type QualityGroups } from "./quality.js";
+import { groupedRank, isUnderCutoff, rankingFromRow, usesQualityTiers, type ProfileRanking } from "./quality.js";
 import { formatUpgradeFloor } from "./nonVideoMatch.js";
 import { getSetting } from "./settingsStore.js";
 
@@ -15,23 +15,24 @@ export interface UpgradeCandidate {
 
 interface ProfileInfo {
   cutoff: string;
-  qualityGroups: QualityGroups;
+  ranking: ProfileRanking;
   name: string;
   upgradeAllowed: boolean;
   cutoffFormatScore: number;
 }
 
 async function loadProfiles(): Promise<Map<number, ProfileInfo>> {
-  const rows = (await db.prepare("SELECT id, name, cutoff, quality_groups, upgrade_allowed, cutoff_format_score FROM quality_profiles").all()) as {
+  const rows = (await db.prepare("SELECT id, name, cutoff, quality_groups, quality_order, upgrade_allowed, cutoff_format_score FROM quality_profiles").all()) as {
     id: number;
     name: string;
     cutoff: string;
     quality_groups: string | null;
+    quality_order: string | null;
     upgrade_allowed: number | boolean | null;
     cutoff_format_score: number | string | null;
   }[];
   return new Map(
-    rows.map((r) => [r.id, { name: r.name, cutoff: r.cutoff, qualityGroups: parseQualityGroups(r.quality_groups), upgradeAllowed: r.upgrade_allowed == null || !!Number(r.upgrade_allowed), cutoffFormatScore: Number(r.cutoff_format_score ?? 0) }])
+    rows.map((r) => [r.id, { name: r.name, cutoff: r.cutoff, ranking: rankingFromRow(r), upgradeAllowed: r.upgrade_allowed == null || !!Number(r.upgrade_allowed), cutoffFormatScore: Number(r.cutoff_format_score ?? 0) }])
   );
 }
 
@@ -42,9 +43,9 @@ async function loadProfiles(): Promise<Map<number, ProfileInfo>> {
  * on every run forever. */
 function belowCutoff(quality: string, profile: ProfileInfo, formatScore: number | string | null): boolean {
   if (!profile.upgradeAllowed) return false;
-  const current = groupedRank(quality, profile.qualityGroups);
+  const current = groupedRank(quality, profile.ranking);
   if (current < 0) return false;
-  if (isUnderCutoff(quality, profile.cutoff, profile.qualityGroups)) return true;
+  if (isUnderCutoff(quality, profile.cutoff, profile.ranking)) return true;
   // At the quality cutoff, but under the format cutoff (a custom-format score the profile wants more of).
   return profile.cutoffFormatScore > 0 && Number(formatScore ?? 0) < profile.cutoffFormatScore;
 }

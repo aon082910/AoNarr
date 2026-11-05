@@ -36,10 +36,23 @@ describe("a new install starts with Starr's size limits, per minute (ST7)", () =
     }
   });
 
-  it("covers all sixteen tiers, each with a minimum", async () => {
+  it("covers every tier on the ladder, each with a minimum", async () => {
+    const { DEFAULT_QUALITY_ORDER } = await import("../src/services/quality.js");
     const q = await sizes();
-    expect(q.size).toBe(16);
+    expect(q.size).toBe(DEFAULT_QUALITY_ORDER.length);
     for (const row of q.values()) expect(row.min_size_mb, row.name).not.toBeNull();
+  });
+
+  it("gives the tiers Starr has beyond the original sixteen Starr's own limits", async () => {
+    const q = await sizes();
+    for (const name of ["SDTV", "DVD-R", "WEBRip-480p", "WEBDL-480p", "Bluray-480p", "Bluray-576p"]) {
+      expect(q.get(name), name).toMatchObject({ min_size_mb: 2, max_size_mb: 100 });
+    }
+    for (const name of ["WORKPRINT", "CAM", "TELESYNC", "TELECINE", "REGIONAL", "DVDSCR"]) {
+      expect(q.get(name), name).toMatchObject({ min_size_mb: 0, max_size_mb: 100 });
+    }
+    expect(q.get("BR-DISK")).toMatchObject({ min_size_mb: 0, max_size_mb: null });
+    expect(q.get("Raw-HD")).toMatchObject({ min_size_mb: 4, max_size_mb: null });
   });
 
   it("reads the numbers per minute, so a season pack and an episode are judged alike", async () => {

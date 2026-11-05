@@ -4,7 +4,7 @@ import helmet from "helmet";
 import { db, initDb } from "./db/index.js";
 import { loadSettingsCache, getSetting } from "./services/settingsStore.js";
 import { migrateNotificationConnections } from "./services/notificationConnections.js";
-import { ensureBluray720pQuality, loadQualityCaches } from "./services/quality.js";
+import { ensureBluray720pQuality, ensureExtendedQualityLadder, loadQualityCaches } from "./services/quality.js";
 import { backfillEpisodicAndCollectionHasFile } from "./services/libraryScan.js";
 import { backfillCleanTitles } from "./services/releaseAliases.js";
 import { errorHandler, asyncHandler } from "./middleware/errorHandler.js";
@@ -301,6 +301,7 @@ export async function createApp(): Promise<Express> {
   await loadClientStatuses().catch((err) => log.warn("[startup] could not load the download client failure state:", (err as Error).message));
   await reencryptLegacyCredentials();
   await ensureBluray720pQuality();
+  await ensureExtendedQualityLadder();
   await loadQualityCaches();
   await bootstrapAdminFromEnv();
   applySocksProxySetting();

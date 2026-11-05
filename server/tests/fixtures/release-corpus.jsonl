@@ -8,7 +8,7 @@
 {"title": "The.Daily.Show.2024.08.25.1080p.WEB-GRP", "kind": "release", "expect": {"airDate": "2024-08-25", "season": null, "episodes": null, "year": 2024, "title": "The Daily Show", "titleYear": null}, "identity": [{"item": "dailyShow1996", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "The.Daily.Show.08.25.2024.1080p.WEB-GRP", "kind": "release", "expect": {"airDate": "2024-08-25", "season": null, "episodes": null, "title": "The Daily Show", "titleYear": null}, "identity": [{"item": "dailyShow1996", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "The.Late.Show.2024.08.25.1080p.WEB-GRP", "kind": "release", "expect": {"airDate": "2024-08-25"}, "identity": [{"item": "dailyShow1996", "round": "R1", "expect": {"ok": false, "matchType": "none", "reason": "title"}}, {"item": "lateShow2015", "round": "R3", "expect": {"ok": true, "matchType": "alias"}}]}
-{"title": "Inception.2010.COMPLETE.BLURAY-SharpHD", "kind": "release", "expect": {"year": 2010, "quality": "Unknown", "source": "Bluray", "group": "SharpHD", "fullSeason": false, "releaseType": null, "title": "Inception"}}
+{"title": "Inception.2010.COMPLETE.BLURAY-SharpHD", "kind": "release", "expect": {"year": 2010, "quality": "BR-DISK", "source": "Bluray", "group": "SharpHD", "fullSeason": false, "releaseType": null, "title": "Inception"}}
 {"title": "Blade.Runner.2049.2017.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"year": 2049, "quality": "Bluray-1080p", "title": "Blade Runner 2049", "titleYear": 2017}, "identity": [{"item": "bladeRunner2049", "round": "R1", "expect": {"ok": true, "matchType": "title"}}, {"item": "bladeRunner1982", "round": "R1", "expect": {"ok": false, "matchType": "none", "reason": "title"}}]}
 {"title": "2001.A.Space.Odyssey.1968.1080p.BluRay-GRP", "kind": "release", "expect": {"year": 2001, "title": "2001 A Space Odyssey", "titleYear": 1968}}
 {"title": "1917.2019.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"year": 1917, "title": "1917", "titleYear": 2019}}
@@ -52,8 +52,8 @@
 {"title": "Show.Name.Season.2.Episode.5.720p.HDTV-GRP", "kind": "release", "expect": {"season": 2, "episodes": [5], "title": "Show Name", "releaseType": "single"}}
 {"title": "Show.Name.S01-S05.COMPLETE.1080p.WEB-GRP", "kind": "release", "expect": {"season": 1, "fullSeason": true, "seasonRange": [1, 5]}}
 {"title": "Movie.Name.2020.1080p.WEBRip.x264-GROUP[tt1234567]", "kind": "release", "expect": {"year": 2020, "imdbId": "tt1234567", "quality": "WEBRip-1080p"}}
-{"title": "Movie.Name.2020.1080p.HDCAM-GRP", "kind": "release", "expect": {"year": 2020, "quality": "Unknown", "source": "Cam"}}
-{"title": "Show.S01E01.HDTV.x264-LOL", "kind": "release", "expect": {"season": 1, "episodes": [1], "quality": "SD", "source": "HDTV", "group": "LOL"}}
+{"title": "Movie.Name.2020.1080p.HDCAM-GRP", "kind": "release", "expect": {"year": 2020, "quality": "CAM", "source": "Cam"}}
+{"title": "Show.S01E01.HDTV.x264-LOL", "kind": "release", "expect": {"season": 1, "episodes": [1], "quality": "SDTV", "source": "HDTV", "group": "LOL"}}
 {"title": "Show.Name.S02E05.PROPER.1080p.WEB-DL-GRP", "kind": "release", "expect": {"flags": ["proper"], "quality": "WEBDL-1080p"}}
 {"title": "Movie.Name.2019.MULTi.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"languages": ["multi"], "year": 2019}}
 {"title": "Show.Name.Christmas.Special.2023.1080p.WEB-GRP", "kind": "release", "expect": {"season": null, "episodes": null, "year": 2023, "edition": null}}
@@ -83,22 +83,22 @@
 {"title": "[SubsPlease] Jujutsu Kaisen S2 - 05 (1080p) [ABCD1234]", "kind": "release", "expect": {"title": "Jujutsu Kaisen", "season": 2, "episodes": [5]}, "identity": [{"item": "jujutsuKaisenS2", "round": "R1", "expect": {"ok": true, "matchType": "title"}}, {"item": "jujutsuKaisen", "round": "R1", "expect": {"ok": true, "matchType": "title"}}]}
 {"title": "Season.of.the.Witch.2011.1080p.BluRay-GRP", "kind": "release", "expect": {"title": "Season of the Witch", "titleYear": 2011}}
 {"title": "Agents.of.S.H.I.E.L.D.S01E01.1080p.WEB-DL-GRP", "kind": "release", "expect": {"title": "Agents of S H I E L D", "season": 1, "episodes": [1]}, "identity": [{"item": "agentsOfShield", "round": "R3", "expect": {"ok": true, "matchType": "alias"}}]}
-{"title": "Movie.Name.2024.1080p.HQCAM.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Cam", "group": "GRP", "title": "Movie Name", "titleYear": 2024}}
-{"title": "Movie Name (2024) New HDCAMRip 1080p", "kind": "release", "expect": {"quality": "Unknown", "source": "Cam", "title": "Movie Name", "titleYear": 2024}}
-{"title": "Movie.Name.2024.NEWCAM.1080p.HEVC-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Cam"}}
-{"title": "Movie.Name.2024.1080p.TSRip.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Telesync"}}
-{"title": "Movie.Name.2024.HD-TS.1080p.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Telesync"}}
-{"title": "Movie.Name.2024.1080p.TS.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Telesync"}}
-{"title": "Movie.Name.2024.720p.TELESYNCH.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Telesync"}}
-{"title": "Movie.Name.2024.1080p.TC.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "source": "Telecine"}}
-{"title": "Movie.Name.2024.1080p.SCREENER.x264-GRP", "kind": "release", "expect": {"quality": "Unknown", "qualityModifier": "screener"}}
+{"title": "Movie.Name.2024.1080p.HQCAM.x264-GRP", "kind": "release", "expect": {"quality": "CAM", "source": "Cam", "group": "GRP", "title": "Movie Name", "titleYear": 2024}}
+{"title": "Movie Name (2024) New HDCAMRip 1080p", "kind": "release", "expect": {"quality": "CAM", "source": "Cam", "title": "Movie Name", "titleYear": 2024}}
+{"title": "Movie.Name.2024.NEWCAM.1080p.HEVC-GRP", "kind": "release", "expect": {"quality": "CAM", "source": "Cam"}}
+{"title": "Movie.Name.2024.1080p.TSRip.x264-GRP", "kind": "release", "expect": {"quality": "TELESYNC", "source": "Telesync"}}
+{"title": "Movie.Name.2024.HD-TS.1080p.x264-GRP", "kind": "release", "expect": {"quality": "TELESYNC", "source": "Telesync"}}
+{"title": "Movie.Name.2024.1080p.TS.x264-GRP", "kind": "release", "expect": {"quality": "TELESYNC", "source": "Telesync"}}
+{"title": "Movie.Name.2024.720p.TELESYNCH.x264-GRP", "kind": "release", "expect": {"quality": "TELESYNC", "source": "Telesync"}}
+{"title": "Movie.Name.2024.1080p.TC.x264-GRP", "kind": "release", "expect": {"quality": "TELECINE", "source": "Telecine"}}
+{"title": "Movie.Name.2024.1080p.SCREENER.x264-GRP", "kind": "release", "expect": {"quality": "DVDSCR", "qualityModifier": "screener"}}
 {"title": "Movie.Name.2024.1080p.WEB-DL.DDP5.1.H.264-TS", "kind": "release", "expect": {"quality": "WEBDL-1080p", "source": "WEBDL", "group": "TS"}}
 {"title": "Cam.Girl.2018.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"quality": "Bluray-1080p", "source": "Bluray", "title": "Cam Girl", "titleYear": 2018}}
-{"title": "Movie Title 2014 1080p Blu-ray AVC DTS-HD MA 5.1-PTP", "kind": "release", "expect": {"quality": "Unknown", "rawDisc": true, "qualityModifier": "brdisk"}}
-{"title": "Movie Title 1976 2160p UHD Blu-ray DTS-HD MA 5.1 DV HDR HEVC-UNTOUCHED", "kind": "release", "expect": {"quality": "Unknown", "rawDisc": true}}
-{"title": "Movie.Title.2010.COMPLETE.UHD.BLURAY-GRP", "kind": "release", "expect": {"quality": "Unknown", "rawDisc": true, "fullSeason": false}}
-{"title": "Movie.Title.1997.1080p.NL.BD-50", "kind": "release", "expect": {"quality": "Unknown", "rawDisc": true}}
-{"title": "Movie.Title.2008.DVD9.NTSC-GRP", "kind": "release", "expect": {"quality": "Unknown", "rawDisc": true}}
+{"title": "Movie Title 2014 1080p Blu-ray AVC DTS-HD MA 5.1-PTP", "kind": "release", "expect": {"quality": "BR-DISK", "rawDisc": true, "qualityModifier": "brdisk"}}
+{"title": "Movie Title 1976 2160p UHD Blu-ray DTS-HD MA 5.1 DV HDR HEVC-UNTOUCHED", "kind": "release", "expect": {"quality": "BR-DISK", "rawDisc": true}}
+{"title": "Movie.Title.2010.COMPLETE.UHD.BLURAY-GRP", "kind": "release", "expect": {"quality": "BR-DISK", "rawDisc": true, "fullSeason": false}}
+{"title": "Movie.Title.1997.1080p.NL.BD-50", "kind": "release", "expect": {"quality": "BR-DISK", "rawDisc": true}}
+{"title": "Movie.Title.2008.DVD9.NTSC-GRP", "kind": "release", "expect": {"quality": "DVD-R", "rawDisc": true}}
 {"title": "Movie.Title.2010.1080p.BluRay.x264-GRP", "kind": "release", "expect": {"quality": "Bluray-1080p", "rawDisc": false, "qualityModifier": null}}
 {"title": "Movie.2019.2160p.UHD.BluRay.REMUX.HEVC.HDR-GRP", "kind": "release", "expect": {"quality": "Remux-2160p", "rawDisc": false}}
 {"title": "Show.Name.S01.COMPLETE.1080p.BluRay.AAC.5.1-GRP", "kind": "release", "expect": {"quality": "Bluray-1080p", "rawDisc": false, "fullSeason": true, "season": 1}}
@@ -266,13 +266,13 @@
 {"title": "Movie (2020) [1080p] [BluRay] [5.1] [YTS.MX]", "kind": "release", "expect": {"group": "YTS.MX", "quality": "Bluray-1080p"}}
 {"title": "Show.S01E01.720p.HDTV.x264-[eztv]", "kind": "release", "expect": {"group": null, "season": 1, "episodes": [1]}}
 {"title": "Movie (2020) [1080p] [BluRay] [5.1]", "kind": "release", "expect": {"group": null}}
-{"title": "Movie.2020.BDMV.1080p-GRP", "kind": "release", "expect": {"quality": "Unknown", "group": "GRP"}}
+{"title": "Movie.2020.BDMV.1080p-GRP", "kind": "release", "expect": {"quality": "BR-DISK", "group": "GRP"}}
 
 {"title":"Series.Title.S01E01.720p.HDTV.x264-CTU","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[1],"quality":"HDTV-720p","source":"HDTV","resolution":"720p","group":"CTU","releaseType":"single"}}
 {"title":"Series.Title.S01E01E02.720p.HDTV.x264-CTU","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[1,2],"quality":"HDTV-720p","source":"HDTV","resolution":"720p","group":"CTU","releaseType":"multi"}}
 {"title":"Series.Title.S01E01-E03.1080p.WEB-DL.DD5.1.H.264-NTb","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[1,2,3],"quality":"WEBDL-1080p","source":"WEBDL","resolution":"1080p","group":"NTb","releaseType":"multi"}}
 {"title":"Series.Title.S2009E10.1080p.WEB-DL-GRP","kind":"release","expect":{"title":"Series Title","season":2009,"episodes":[10],"quality":"WEBDL-1080p","source":"WEBDL","resolution":"1080p","group":"GRP","releaseType":"single"}}
-{"title":"Series.Title.1x05.HDTV.XviD-LOL","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[5],"quality":"SD","source":"HDTV","group":"LOL","releaseType":"single"}}
+{"title":"Series.Title.1x05.HDTV.XviD-LOL","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[5],"quality":"SDTV","source":"HDTV","group":"LOL","releaseType":"single"}}
 {"title":"Series.Title.S03.COMPLETE.720p.BluRay.x264-ROVERS","kind":"release","expect":{"title":"Series Title","season":3,"episodes":null,"fullSeason":true,"quality":"Bluray-720p","source":"Bluray","resolution":"720p","group":"ROVERS","releaseType":"seasonPack"}}
 {"title":"Series.Title.Season.4.1080p.WEB-DL.DD5.1.x264-GRP","kind":"release","expect":{"title":"Series Title","season":4,"episodes":null,"fullSeason":true,"quality":"WEBDL-1080p","source":"WEBDL","resolution":"1080p","group":"GRP","releaseType":"seasonPack"}}
 {"title":"Series.Title.S01-S03.COMPLETE.1080p.BluRay.x265-GRP","kind":"release","expect":{"title":"Series Title","season":1,"episodes":null,"fullSeason":true,"quality":"Bluray-1080p","source":"Bluray","resolution":"1080p","group":"GRP","releaseType":"seasonPack"}}
@@ -296,7 +296,7 @@
 {"title":"Series.Title.S01E01.480p.DVDRip.x264-GRP","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[1],"quality":"DVD","source":"DVD","resolution":"480p","group":"GRP","releaseType":"single"}}
 {"title":"Series.Title.S01E01.DVDRip.XviD-GRP","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[1],"quality":"DVD","source":"DVD","group":"GRP","releaseType":"single"}}
 {"title":"Series.Title.S01E01.576p.PAL.DVD.DD2.0.MPEG2-GRP","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[1],"quality":"DVD","source":"DVD","resolution":"576p","group":"GRP","releaseType":"single"}}
-{"title":"Series.Title.S01E01.HDTV.x264-GRP","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[1],"quality":"SD","source":"HDTV","group":"GRP","releaseType":"single"}}
+{"title":"Series.Title.S01E01.HDTV.x264-GRP","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[1],"quality":"SDTV","source":"HDTV","group":"GRP","releaseType":"single"}}
 {"title":"Series.Title.S01E01.1080i.HDTV.MPEG2-GRP","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[1],"quality":"HDTV-1080p","source":"HDTV","resolution":"1080p","group":"GRP","releaseType":"single"}}
 {"title":"Series.Title.S01.Extras.1080p.WEB-DL-GRP","kind":"release","expect":{"title":"Series Title","season":1,"episodes":null,"quality":"WEBDL-1080p","source":"WEBDL","resolution":"1080p","group":"GRP"}}
 {"title":"Series.Title.S01E01.Sample.mkv","kind":"release","expect":{"title":"Series Title","season":1,"episodes":[1],"quality":"Unknown","group":null,"releaseType":"single"}}
@@ -318,15 +318,15 @@
 {"title":"Movie.Title.2019.720p.WEB-DL.DD5.1.H.264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"WEBDL-720p","source":"WEBDL","resolution":"720p","group":"GRP"}}
 {"title":"Movie.Title.2019.1080p.WEBRip.x264-RARBG","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"WEBRip-1080p","source":"WEBRip","resolution":"1080p","group":"RARBG"}}
 {"title":"Movie.Title.2019.DVDRip.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"DVD","source":"DVD","group":"GRP"}}
-{"title":"Movie.Title.2019.CAM.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","source":"Cam","group":"GRP"}}
-{"title":"Movie.Title.2019.HDCAM.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","source":"Cam","group":"GRP"}}
-{"title":"Movie.Title.2019.TS.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","source":"Telesync","group":"GRP"}}
-{"title":"Movie.Title.2019.TELESYNC.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","source":"Telesync","group":"GRP"}}
-{"title":"Movie.Title.2019.HDTS.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","source":"Telesync","group":"GRP"}}
-{"title":"Movie.Title.2019.R5.DVDRip.XviD-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"DVD","source":"DVD","group":"GRP"}}
-{"title":"Movie.Title.2019.SCR.XviD-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","group":"GRP"}}
-{"title":"Movie.Title.2019.DVDSCR.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","group":"GRP"}}
-{"title":"Movie.Title.2019.WORKPRINT-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","source":"Workprint","group":"GRP"}}
+{"title":"Movie.Title.2019.CAM.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"CAM","source":"Cam","group":"GRP"}}
+{"title":"Movie.Title.2019.HDCAM.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"CAM","source":"Cam","group":"GRP"}}
+{"title":"Movie.Title.2019.TS.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"TELESYNC","source":"Telesync","group":"GRP"}}
+{"title":"Movie.Title.2019.TELESYNC.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"TELESYNC","source":"Telesync","group":"GRP"}}
+{"title":"Movie.Title.2019.HDTS.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"TELESYNC","source":"Telesync","group":"GRP"}}
+{"title":"Movie.Title.2019.R5.DVDRip.XviD-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"REGIONAL","source":"DVD","group":"GRP"}}
+{"title":"Movie.Title.2019.SCR.XviD-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"DVDSCR","group":"GRP"}}
+{"title":"Movie.Title.2019.DVDSCR.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"DVDSCR","group":"GRP"}}
+{"title":"Movie.Title.2019.WORKPRINT-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"WORKPRINT","source":"Workprint","group":"GRP"}}
 {"title":"Movie.Title.2019.EXTENDED.1080p.BluRay.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Bluray-1080p","source":"Bluray","resolution":"1080p","group":"GRP","edition":"EXTENDED"}}
 {"title":"Movie.Title.2019.Directors.Cut.1080p.BluRay.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Bluray-1080p","source":"Bluray","resolution":"1080p","group":"GRP","edition":"Directors Cut"}}
 {"title":"Movie.Title.2019.UNRATED.1080p.BluRay.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Bluray-1080p","source":"Bluray","resolution":"1080p","group":"GRP","edition":"UNRATED"}}
@@ -355,14 +355,14 @@
 {"title":"Movie.Title.(2019).1080p.BluRay.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Bluray-1080p","source":"Bluray","resolution":"1080p","group":"GRP"}}
 {"title":"Movie Title (2019) [1080p] [BluRay] [YTS.MX]","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Bluray-1080p","source":"Bluray","resolution":"1080p","group":"YTS.MX"}}
 {"title":"Movie.Title.2019.1080p.BluRay.x264.imdb-tt1234567-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Bluray-1080p","source":"Bluray","resolution":"1080p","group":"GRP"}}
-{"title":"Movie.Title.2019.COMPLETE.UHD.BLURAY-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","source":"Bluray","resolution":"2160p","group":"GRP","rawDisc":true}}
+{"title":"Movie.Title.2019.COMPLETE.UHD.BLURAY-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"BR-DISK","source":"Bluray","resolution":"2160p","group":"GRP","rawDisc":true}}
 {"title":"Movie.Title.2019.BDRip.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"SD","source":"Bluray","group":"GRP"}}
 {"title":"Movie.Title.2019.BRRip.XviD-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"SD","source":"Bluray","group":"GRP"}}
 {"title":"Movie.Title.2019.HDRip.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","group":"GRP"}}
-{"title":"Movie.Title.2019.WEBRip.XviD-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"SD","source":"WEBRip","group":"GRP"}}
-{"title":"Movie.Title.2019.HDTV.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"SD","source":"HDTV","group":"GRP"}}
-{"title":"Movie.Title.2019.PDTV.XviD-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"SD","group":"GRP"}}
+{"title":"Movie.Title.2019.WEBRip.XviD-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"WEBRip-480p","source":"WEBRip","group":"GRP"}}
+{"title":"Movie.Title.2019.HDTV.x264-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"SDTV","source":"HDTV","group":"GRP"}}
+{"title":"Movie.Title.2019.PDTV.XviD-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"SDTV","group":"GRP"}}
 {"title":"Movie.Title.2019.1080p.Remux.AVC-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Remux-1080p","source":"Remux","resolution":"1080p","group":"GRP"}}
-{"title":"Movie.Title.2019.BD25-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"Unknown","group":"GRP","rawDisc":true}}
+{"title":"Movie.Title.2019.BD25-GRP","kind":"release","expect":{"title":"Movie Title","titleYear":2019,"season":null,"episodes":null,"quality":"BR-DISK","group":"GRP","rawDisc":true}}
 {"title": "Movie.2020.1080p.WEB-DL.x264 [Remastered]", "kind": "release", "expect": {"group": null}}
 {"title": "Movie.2020.1080p.WEB-DL.DDP5.1.x264-GRP [YTS.MX]", "kind": "release", "expect": {"group": null}}

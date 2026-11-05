@@ -467,23 +467,26 @@ describe("parseReleaseTitle", () => {
     expect(parseReleaseTitle("Show.Name.S01E01.576i.DVDRip.x264-GROUP").resolution).toBe("576p");
   });
 
-  it("keeps grading a 480p/576p DVD rip as plain 'DVD' quality — there's no WEBDL-480p tier", () => {
+  it("keeps grading a 480p/576p DVD rip as plain 'DVD' quality: the DVD is its source, whatever the picture size", () => {
     expect(parseReleaseTitle("Show.Name.S01E01.576i.DVDRip.x264-GROUP").quality).toBe("DVD");
     expect(parseReleaseTitle("Movie.2003.480p.DVDRip.x264-GROUP").quality).toBe("DVD");
   });
 
-  it("grades any other sub-720p video release as the SD tier, so a profile allowing SD can grab it", () => {
-    expect(parseReleaseTitle("Show.Name.S01E01.480p.WEBRip.x264-GROUP").quality).toBe("SD");
-    expect(parseReleaseTitle("Show.S01E01.480p.WEB-DL.x264-GRP").quality).toBe("SD");
-    expect(parseReleaseTitle("Show.S01E01.HDTV.x264-LOL").quality).toBe("SD");
-    expect(parseReleaseTitle("Show.S01E01.SDTV.x264-LOL").quality).toBe("SD");
-    expect(parseReleaseTitle("Movie.2004.576p.BluRay.x264-GRP").quality).toBe("SD");
+  it("grades a sub-720p video release by its source, and as plain SD only when the source cannot be told", () => {
+    expect(parseReleaseTitle("Show.Name.S01E01.480p.WEBRip.x264-GROUP").quality).toBe("WEBRip-480p");
+    expect(parseReleaseTitle("Show.S01E01.480p.WEB-DL.x264-GRP").quality).toBe("WEBDL-480p");
+    expect(parseReleaseTitle("Show.S01E01.HDTV.x264-LOL").quality).toBe("SDTV");
+    expect(parseReleaseTitle("Show.S01E01.SDTV.x264-LOL").quality).toBe("SDTV");
+    expect(parseReleaseTitle("Movie.2004.576p.BluRay.x264-GRP").quality).toBe("Bluray-576p");
+    expect(parseReleaseTitle("Movie.2004.480p.BluRay.x264-GRP").quality).toBe("Bluray-480p");
+    expect(parseReleaseTitle("Show.S01E01.DSR.x264-GRP").quality).toBe("SDTV");
+    expect(parseReleaseTitle("Show.S01E01.SATRip.XviD-GRP").quality).toBe("SDTV");
+    // No source to go by: a bare resolution, a bare "WEB" with a codec, a BDRip with no resolution.
+    expect(parseReleaseTitle("Show.S01E01.480p.x264-GRP").quality).toBe("SD");
     expect(parseReleaseTitle("Show.S01E01.WEB.h264-GRP").quality).toBe("SD");
-    expect(parseReleaseTitle("Show.S01E01.DSR.x264-GRP").quality).toBe("SD");
-    expect(parseReleaseTitle("Show.S01E01.SATRip.XviD-GRP").quality).toBe("SD");
     expect(parseReleaseTitle("Movie.2004.BDRip.XviD-GRP").quality).toBe("SD");
-    // A theatrical capture stays Unknown, and so does a title with no video tag at all.
-    expect(parseReleaseTitle("Movie.Name.2023.CAM.x264-GROUP").quality).toBe("Unknown");
+    // A theatrical capture is a pre-release tier of its own, and a title with no video tag at all is Unknown.
+    expect(parseReleaseTitle("Movie.Name.2023.CAM.x264-GROUP").quality).toBe("CAM");
     expect(parseReleaseTitle("Author - Book (2010) [EPUB]").quality).toBe("Unknown");
     expect(parseReleaseTitle("Artist - Album (2020) [WEB FLAC]").quality).toBe("Unknown");
     // A resolution tag still decides the tier of a WEB release.
@@ -491,15 +494,15 @@ describe("parseReleaseTitle", () => {
   });
 
   it("never grades a resolution-less disc image, remux or plain BluRay as SD", () => {
-    expect(parseReleaseTitle("Inception.2010.COMPLETE.BLURAY-SharpHD").quality).toBe("Unknown");
+    expect(parseReleaseTitle("Inception.2010.COMPLETE.BLURAY-SharpHD").quality).toBe("BR-DISK");
     expect(parseReleaseTitle("Movie.1999.BluRay.REMUX.AVC.DTS-HD.MA.5.1-GRP").quality).toBe("Unknown");
-    expect(parseReleaseTitle("Movie.1999.BDMV.BD50-GRP").quality).toBe("Unknown");
+    expect(parseReleaseTitle("Movie.1999.BDMV.BD50-GRP").quality).toBe("BR-DISK");
     expect(parseReleaseTitle("Movie.1999.BluRay.x264-GRP").quality).toBe("Unknown");
   });
 
-  it("grades a theatrical capture as Unknown quality, never as the WEBDL fallback for its resolution", () => {
-    expect(parseReleaseTitle("Movie.Name.2023.1080p.HDCAM.x264-GROUP").quality).toBe("Unknown");
-    expect(parseReleaseTitle("Movie.Name.2023.720p.TELESYNC.x264-GROUP").quality).toBe("Unknown");
+  it("grades a theatrical capture as its own pre-release tier, never as the WEBDL fallback for its resolution", () => {
+    expect(parseReleaseTitle("Movie.Name.2023.1080p.HDCAM.x264-GROUP").quality).toBe("CAM");
+    expect(parseReleaseTitle("Movie.Name.2023.720p.TELESYNC.x264-GROUP").quality).toBe("TELESYNC");
   });
 
   it("detects a quality modifier", () => {
@@ -702,7 +705,7 @@ describe("parseReleaseTitle title isolation — review follow-ups", () => {
 
   it("never calls a file a disc image, whatever its name says", () => {
     const name = "Movie.2020.1080p.BluRay.AVC.DTS-HD.MA.5.1-GRP";
-    expect(parseReleaseTitle(name)).toMatchObject({ rawDisc: true, quality: "Unknown" });
+    expect(parseReleaseTitle(name)).toMatchObject({ rawDisc: true, quality: "BR-DISK" });
     expect(parseReleaseTitle(name, FILE_NAME)).toMatchObject({ rawDisc: false, quality: "Bluray-1080p" });
   });
 

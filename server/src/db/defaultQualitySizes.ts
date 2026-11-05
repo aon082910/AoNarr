@@ -16,8 +16,21 @@ export interface DefaultQualitySize {
 }
 
 export const DEFAULT_QUALITY_SIZES: Record<string, DefaultQualitySize> = {
+  // Pre-release copies: Radarr's limits (no minimum, 100 MB per minute at most).
+  WORKPRINT: { min: 0, max: 100, preferred: 95 },
+  CAM: { min: 0, max: 100, preferred: 95 },
+  TELESYNC: { min: 0, max: 100, preferred: 95 },
+  TELECINE: { min: 0, max: 100, preferred: 95 },
+  REGIONAL: { min: 0, max: 100, preferred: 95 },
+  DVDSCR: { min: 0, max: 100, preferred: 95 },
   SD: { min: 2, max: 100, preferred: 95 },
+  SDTV: { min: 2, max: 100, preferred: 95 },
   DVD: { min: 2, max: 100, preferred: 95 },
+  "DVD-R": { min: 2, max: 100, preferred: 95 },
+  "WEBRip-480p": { min: 2, max: 100, preferred: 95 },
+  "WEBDL-480p": { min: 2, max: 100, preferred: 95 },
+  "Bluray-480p": { min: 2, max: 100, preferred: 95 },
+  "Bluray-576p": { min: 2, max: 100, preferred: 95 },
   "HDTV-720p": { min: 3, max: 125, preferred: 95 },
   "WEBRip-720p": { min: 3, max: 130, preferred: 95 },
   "WEBDL-720p": { min: 3, max: 130, preferred: 95 },
@@ -32,6 +45,8 @@ export const DEFAULT_QUALITY_SIZES: Record<string, DefaultQualitySize> = {
   "WEBDL-2160p": { min: 35, max: null, preferred: null },
   "Bluray-2160p": { min: 35, max: null, preferred: null },
   "Remux-2160p": { min: 35, max: null, preferred: null },
+  "BR-DISK": { min: 0, max: null, preferred: null },
+  "Raw-HD": { min: 4, max: null, preferred: null },
 };
 
 /** Off only when the environment says so; the test suite does, because its fixtures use releases of any size. */

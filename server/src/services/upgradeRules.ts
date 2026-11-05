@@ -1,4 +1,4 @@
-import { cutoffIsRanked, groupedRank, isUnderCutoff, type QualityGroups } from "./quality.js";
+import { cutoffIsRanked, groupedRank, isUnderCutoff, rankingOf, type QualityGroups } from "./quality.js";
 import { getSetting } from "./settingsStore.js";
 import { parseReleaseTitle, type ReleaseRevision } from "./releaseParser.js";
 
@@ -33,6 +33,8 @@ export interface UpgradeProfile {
   cutoff: string;
   /** Qualities the profile treats as one tier (quality.ts QualityGroups). */
   qualityGroups?: QualityGroups;
+  /** The order the profile ranks the ladder in, worst to best; null or absent ranks by the global order. */
+  qualityOrder?: string[] | null;
   upgradeAllowed: boolean;
   cutoffFormatScore: number;
   minUpgradeFormatScore: number;
@@ -54,11 +56,15 @@ export interface UpgradeOffer {
 }
 
 export function upgradeProfileOf(
-  profile: { cutoff?: string; qualityGroups?: QualityGroups; upgradeAllowed?: boolean; cutoffFormatScore?: number; minUpgradeFormatScore?: number } | null | undefined
+  profile:
+    | { cutoff?: string; qualityGroups?: QualityGroups; qualityOrder?: string[] | null; upgradeAllowed?: boolean; cutoffFormatScore?: number; minUpgradeFormatScore?: number }
+    | null
+    | undefined
 ): UpgradeProfile {
   return {
     cutoff: profile?.cutoff ?? "",
     qualityGroups: profile?.qualityGroups ?? [],
+    qualityOrder: profile?.qualityOrder ?? null,
     upgradeAllowed: profile?.upgradeAllowed !== false,
     cutoffFormatScore: profile?.cutoffFormatScore ?? 0,
     minUpgradeFormatScore: profile?.minUpgradeFormatScore ?? 1,
@@ -69,9 +75,10 @@ export function upgradeProfileOf(
  * deleted tier, "Unknown") never has: nothing is known about it to say it is enough. Neither has any file when the
  * cutoff itself is not on the ladder: there is nothing to reach. */
 export function qualityCutoffMet(profile: UpgradeProfile, file: ExistingFile): boolean {
-  if (!cutoffIsRanked(profile.cutoff, profile.qualityGroups)) return false;
-  const current = groupedRank(file.quality, profile.qualityGroups);
-  return current >= 0 && current >= groupedRank(profile.cutoff, profile.qualityGroups);
+  const ranking = rankingOf(profile);
+  if (!cutoffIsRanked(profile.cutoff, ranking)) return false;
+  const current = groupedRank(file.quality, ranking);
+  return current >= 0 && current >= groupedRank(profile.cutoff, ranking);
 }
 
 /** The format cutoff: switched off at 0, otherwise a file scoring less (an unknown score counts as 0) is below it. */
@@ -83,7 +90,7 @@ export function formatCutoffNotMet(profile: UpgradeProfile, file: ExistingFile):
  * the format cutoff. */
 export function cutoffNotMet(profile: UpgradeProfile, file: ExistingFile): boolean {
   if (!profile.upgradeAllowed) return false;
-  const qualityBelow = isUnderCutoff(file.quality, profile.cutoff, profile.qualityGroups);
+  const qualityBelow = isUnderCutoff(file.quality, profile.cutoff, rankingOf(profile));
   return qualityBelow || formatCutoffNotMet(profile, file);
 }
 
@@ -120,8 +127,9 @@ export type UpgradeVerdict = "yes" | "no" | "needs-score";
  */
 export function judgeUpgrade(profile: UpgradeProfile, mode: PropersMode, file: ExistingFile, candidate: UpgradeOffer): UpgradeVerdict {
   if (!profile.upgradeAllowed) return "no";
-  const current = groupedRank(file.quality, profile.qualityGroups);
-  const next = groupedRank(candidate.quality, profile.qualityGroups);
+  const ranking = rankingOf(profile);
+  const current = groupedRank(file.quality, ranking);
+  const next = groupedRank(candidate.quality, ranking);
   if (next > current) return qualityCutoffMet(profile, file) ? "no" : "yes";
   if (next < current || current < 0) return "no";
   // The same quality.

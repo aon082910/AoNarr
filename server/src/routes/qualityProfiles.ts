@@ -4,7 +4,8 @@ import { db } from "../db/index.js";
 import { qualityProfileFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { resetSearchBackoff } from "../services/searchBackoff.js";
-import { parseQualityGroups } from "../services/qualityGroups.js";
+import { parseQualityGroups, parseQualityOrder } from "../services/qualityGroups.js";
+import { reconcileQualityOrder } from "../services/quality.js";
 import { normalizeProfileLanguage, PROFILE_LANGUAGES } from "../services/profileLanguage.js";
 
 export const qualityProfilesRouter = Router();
@@ -41,6 +42,27 @@ function validateGroups(groups: unknown, allowedQualities: string[]): string[][]
   return parseQualityGroups(groups);
 }
 
+/**
+ * The order a profile ranks the ladder in, from a request: undefined when not sent, null when it is to rank by the global
+ * order (null, or an empty list), else a list of different quality names that are all on the ladder, worst to best.
+ * A quality the list leaves out ranks below every listed one.
+ */
+async function orderInput(value: unknown): Promise<string[] | null | undefined> {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (!Array.isArray(value) || value.some((n) => typeof n !== "string" || n === "")) throw new HttpError(400, "qualityOrder must be a list of quality names, or null for the default order");
+  if (value.length === 0) return null;
+  const seen = new Set<string>();
+  for (const name of value as string[]) {
+    if (seen.has(name)) throw new HttpError(400, `The quality "${name}" is in qualityOrder more than once`);
+    seen.add(name);
+  }
+  const ladder = new Set(((await db.prepare("SELECT name FROM qualities").all()) as { name: string }[]).map((r) => r.name));
+  const unknown = (value as string[]).filter((n) => !ladder.has(n));
+  if (unknown.length > 0) throw new HttpError(400, `qualityOrder names ${unknown.length === 1 ? "a quality" : "qualities"} that ${unknown.length === 1 ? "is" : "are"} not on the ladder: ${unknown.join(", ")}`);
+  return value as string[];
+}
+
 /** A profile's wanted language from a request: undefined when not sent, null for any, else a known language name. */
 function languageInput(value: unknown): string | null | undefined {
   if (value === undefined) return undefined;
@@ -74,8 +96,9 @@ qualityProfilesRouter.post(
     validateProfile(b.allowedQualities, b.cutoff);
     const maxSizeGb = b.maxSizeGb === undefined || b.maxSizeGb === null || b.maxSizeGb === "" ? null : Number(b.maxSizeGb);
     const language = languageInput(b.language);
+    const qualityOrder = await orderInput(b.qualityOrder);
     const result = await db
-      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb, min_format_score, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups, language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .prepare("INSERT INTO quality_profiles (name, allowed_qualities, cutoff, max_size_gb, min_format_score, prefer_cutoff_quality, upgrade_allowed, cutoff_format_score, min_upgrade_format_score, quality_groups, language, quality_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(
         b.name,
         JSON.stringify(b.allowedQualities),
@@ -87,7 +110,8 @@ qualityProfilesRouter.post(
         b.cutoffFormatScore === undefined || b.cutoffFormatScore === null ? 0 : formatScore(b.cutoffFormatScore),
         b.minUpgradeFormatScore === undefined || b.minUpgradeFormatScore === null ? 1 : formatScore(b.minUpgradeFormatScore),
         JSON.stringify(validateGroups(b.qualityGroups, b.allowedQualities)),
-        language ?? null
+        language ?? null,
+        qualityOrder ? JSON.stringify(qualityOrder) : null
       );
     const row = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(result.lastInsertRowid);
     res.status(201).json(qualityProfileFromRow(row));
@@ -137,6 +161,19 @@ qualityProfilesRouter.patch(
     if (b.allowedQualities !== undefined) {
       sets.push("allowed_qualities = ?");
       values.push(JSON.stringify(b.allowedQualities));
+    }
+    const qualityOrder = await orderInput(b.qualityOrder);
+    if (qualityOrder !== undefined) {
+      sets.push("quality_order = ?");
+      values.push(qualityOrder ? JSON.stringify(qualityOrder) : null);
+    } else if (Array.isArray(b.allowedQualities)) {
+      // The allowed list changed and the order was left alone: what is newly allowed takes its place in it.
+      const current = (await db.prepare("SELECT quality_order FROM quality_profiles WHERE id = ?").get(req.params.id)) as { quality_order: string | null } | undefined;
+      const order = parseQualityOrder(current?.quality_order);
+      if (order) {
+        sets.push("quality_order = ?");
+        values.push(JSON.stringify(reconcileQualityOrder(order, b.allowedQualities)));
+      }
     }
     if (b.cutoff !== undefined) {
       sets.push("cutoff = ?");

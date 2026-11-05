@@ -10,7 +10,7 @@ import { statfsAsync } from "../services/fsAsync.js";
 import { callNative } from "./native.js";
 import { typeFilter } from "./apps.js";
 import type { StarrRoutes } from "./router.js";
-import { loadQualityCatalog, numericId, qualityNameOf } from "./shapes.js";
+import { loadQualityCatalog, numericId, orderedForProfile, qualityNameOf } from "./shapes.js";
 
 const STATFS_TIMEOUT_MS = 5000;
 
@@ -250,7 +250,7 @@ export function registerSystemRoutes(r: StarrRoutes): void {
       name: profile.name,
       upgradeAllowed: profile.upgradeAllowed,
       cutoff: catalog.byName.get(profile.cutoff)?.id ?? 0,
-      items: catalog.ordered.map((q) => ({ quality: qualityNameOf(catalog, q.name), items: [], allowed: allowed.has(q.name) })),
+      items: orderedForProfile(catalog, profile.qualityOrder).map((q) => ({ quality: qualityNameOf(catalog, q.name), items: [], allowed: allowed.has(q.name) })),
       minFormatScore: profile.minFormatScore,
       cutoffFormatScore: profile.cutoffFormatScore,
       minUpgradeFormatScore: profile.minUpgradeFormatScore,

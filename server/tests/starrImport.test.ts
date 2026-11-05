@@ -602,7 +602,7 @@ describe("previewStarrQualityProfiles / importStarrQualityProfiles", () => {
             { quality: { id: 1, name: "SD" }, allowed: false },
             { quality: { id: 2, name: "HDTV-720p" }, allowed: true },
             { quality: { id: 3, name: "WEBDL-1080p" }, allowed: true },
-            { quality: { id: 4, name: "Raw-HD" }, allowed: true }, // Radarr-only, no AoNarr equivalent
+            { quality: { id: 4, name: "Unknown" }, allowed: true }, // Starr's catch-all, no AoNarr tier
           ],
         },
       ],
@@ -611,7 +611,7 @@ describe("previewStarrQualityProfiles / importStarrQualityProfiles", () => {
     const [preview] = await previewStarrQualityProfiles("http://radarr:7878", "key", "radarr");
 
     expect(preview.mappedQualities.sort()).toEqual(["HDTV-720p", "WEBDL-1080p"]);
-    expect(preview.unmappedQualities).toEqual(["Raw-HD"]);
+    expect(preview.unmappedQualities).toEqual(["Unknown"]);
     expect(preview.cutoff).toBe("WEBDL-1080p");
   });
 
@@ -686,7 +686,7 @@ describe("previewStarrQualityProfiles / importStarrQualityProfiles", () => {
           items: [
             { quality: { id: 1, name: "HDTV-720p" }, allowed: true },
             { quality: { id: 2, name: "Bluray-1080p" }, allowed: true },
-            { id: 1002, name: "Raw Group", allowed: true, items: [{ quality: { id: 20, name: "Raw-HD" }, allowed: true }] },
+            { id: 1002, name: "Unknown Group", allowed: true, items: [{ quality: { id: 20, name: "Unknown" }, allowed: true }] },
           ],
         },
       ],
@@ -780,7 +780,7 @@ describe("previewStarrQualityProfiles / importStarrQualityProfiles", () => {
   it("skips a profile with no mappable qualities instead of creating an empty/unusable one", async () => {
     mockStarrApi({
       "/api/v3/qualityprofile": [
-        { id: 6, name: "Nothing Maps", cutoff: 1, items: [{ quality: { id: 1, name: "Raw-HD" }, allowed: true }] },
+        { id: 6, name: "Nothing Maps", cutoff: 1, items: [{ quality: { id: 1, name: "Unknown" }, allowed: true }] },
       ],
     });
 
