@@ -8,6 +8,7 @@ import {
   fileAlbumTagsFrom,
   identifyFolderByTags,
   matchFoldersByTags,
+  quotedTag,
   sampleFiles,
   TAG_FILES_PER_FOLDER,
   TAG_FOLDERS_PER_RELEASE,
@@ -165,7 +166,60 @@ describe("naming a folder from the tags of its files", () => {
     const folder = folderOf("mixed", 9);
     const albumOf = (file: string) => (file.includes("/001 ") ? "Queen II" : file.includes("/005 ") ? "Sheer Heart Attack" : "Queen II");
     const result = await matchFoldersByTags([folder], ALBUMS, matchAlbumFolders([folder], "Queen", ALBUMS), async (file) => tagsOf(albumOf(file)), { artist: "Queen" });
-    expect(result.matches.get(folder.path)).toMatchObject({ kind: "ambiguous", reason: expect.stringContaining("different album tags") });
+    expect(result.matches.get(folder.path)).toMatchObject({ kind: "ambiguous", reason: expect.stringContaining("tracks of different albums") });
+  });
+
+  it("reads every file of the folder, so a mixed folder is not named after three of its files (M5)", async () => {
+    // Twelve files: 004-006 are Sheer Heart Attack, the rest Queen II. The first, middle and last file (001, 007, 012) all say Queen II.
+    const folder = folderOf("Rarities", 12);
+    const reading = readerFor({});
+    const reader: TagReader = async (file) => {
+      reading.asked.push(file);
+      return tagsOf(/\/00[456] /.test(file) ? "Sheer Heart Attack" : "Queen II");
+    };
+    const result = await matchFoldersByTags([folder], ALBUMS, matchAlbumFolders([folder], "Queen", ALBUMS), reader, { artist: "Queen" });
+    expect(reading.asked).toHaveLength(12);
+    expect(result.matches.get(folder.path)).toMatchObject({ kind: "ambiguous", reason: expect.stringContaining("tracks of different albums") });
+    expect(result.identified).toBe(0);
+    // And the folder whose twelve files all agree is still the album.
+    const whole = await matchFoldersByTags([folder], ALBUMS, matchAlbumFolders([folder], "Queen", ALBUMS), async () => tagsOf("Queen II"), { artist: "Queen" });
+    expect(whole.matches.get(folder.path)).toMatchObject({ kind: "album", albumId: 2, by: "tags" });
+  });
+
+  it("is ambiguous when the last file of a folder of many says another album", async () => {
+    const folder = folderOf("Rarities", 30);
+    const last = folder.audioFiles[29];
+    const result = await matchFoldersByTags([folder], ALBUMS, matchAlbumFolders([folder], "Queen", ALBUMS), async (file) => tagsOf(file === last ? "Sheer Heart Attack" : "Queen II"), { artist: "Queen" });
+    expect(result.matches.get(folder.path)).toMatchObject({ kind: "ambiguous", reason: expect.stringContaining("tracks of different albums") });
+  });
+
+  describe("a folder with more files than are read", () => {
+    const withTracks = (count: number | null): MatchableAlbum[] => ALBUMS.map((a) => (a.id === 2 ? { ...a, trackCount: count } : a));
+    const verdictFor = async (fileCount: number, albums: MatchableAlbum[], extra: Partial<FileAlbumTags> = {}) => {
+      const folder = folderOf("big", fileCount);
+      return (await matchFoldersByTags([folder], albums, matchAlbumFolders([folder], "Queen", albums), async () => tagsOf("Queen II", extra), { artist: "Queen" })).matches.get(folder.path);
+    };
+
+    it("is the album when it has about that many tracks", async () => {
+      expect(await verdictFor(60, withTracks(58))).toMatchObject({ kind: "album", albumId: 2, by: "tags" });
+      expect(await verdictFor(60, withTracks(60))).toMatchObject({ kind: "album", albumId: 2 });
+    });
+
+    it("is ambiguous when the album has far fewer tracks, or none are known", async () => {
+      expect(await verdictFor(60, withTracks(30))).toMatchObject({ kind: "ambiguous", reason: expect.stringContaining("more than the one album") });
+      expect(await verdictFor(60, withTracks(null))).toMatchObject({ kind: "ambiguous", reason: expect.stringContaining("tracks are not known") });
+      expect(await verdictFor(60, ALBUMS)).toMatchObject({ kind: "ambiguous" });
+    });
+
+    it("allows a disc more than the tracks when the tags say the album has several discs", async () => {
+      // 60 tracks on 2 discs: 30 more files are allowed (a bonus disc); 100 files are not.
+      expect(await verdictFor(85, withTracks(60), { discTotal: 2 })).toMatchObject({ kind: "album", albumId: 2 });
+      expect(await verdictFor(100, withTracks(60), { discTotal: 2 })).toMatchObject({ kind: "ambiguous" });
+    });
+
+    it("never asks about a folder of 40 files or fewer: all of them are read", async () => {
+      expect(await verdictFor(40, ALBUMS)).toMatchObject({ kind: "album", albumId: 2 });
+    });
   });
 
   it("leaves a folder with a file that has no album tag, or none that can be read", async () => {
@@ -293,11 +347,81 @@ describe("naming a folder from the tags of its files", () => {
     });
   });
 
+  // The import counts a disc's tracks after the files of the discs before it, so a disc short of a track (a bad rip) would put every
+  // later disc one title off: the discs are one album only when the earlier ones are whole by what their own tags say (L11).
+  describe("discs that must be whole to be placed together", () => {
+    const trackOf = (file: string) => Number(path.basename(file).slice(0, 3));
+    const named = (folderName: string, numbers: number[]): TagFolder => {
+      const dir = `/dl/Queen - Discography/${folderName}`;
+      return { path: dir, name: folderName, files: numbers.length, audioFiles: numbers.map((n) => `${dir}/${String(n).padStart(3, "0")} - Song.flac`) };
+    };
+    const reading = (spec: Record<string, Partial<FileAlbumTags>>): TagReader => async (file) => {
+      const extra = spec[path.basename(path.dirname(file))];
+      return extra ? tagsOf("A Night at the Opera", { track: trackOf(file), ...extra }) : null;
+    };
+    const place = async (folders: TagFolder[], spec: Record<string, Partial<FileAlbumTags>>) =>
+      matchFoldersByTags(folders, ALBUMS, matchAlbumFolders(folders, "Queen", ALBUMS), reading(spec), { artist: "Queen" });
+
+    it("are placed together when every disc but the last has as many files as its tags say tracks, numbered without a gap", async () => {
+      const folders = [named("Opera CD1", [1, 2, 3]), named("Opera CD2", [1, 2])];
+      const r = await place(folders, { "Opera CD1": { disc: 1, discTotal: 2, trackTotal: 3 }, "Opera CD2": { disc: 2, discTotal: 2, trackTotal: 2 } });
+      expect(r.matches.get(folders[0].path)).toMatchObject({ kind: "album", albumId: 4, by: "tags", discs: [{ disc: 1 }, { disc: 2 }] });
+      expect(r.identified).toBe(2);
+    });
+
+    it("are refused when an earlier disc has fewer files than its tags say tracks", async () => {
+      const folders = [named("Opera CD1", [1, 2]), named("Opera CD2", [1, 2])];
+      const r = await place(folders, { "Opera CD1": { disc: 1, discTotal: 2, trackTotal: 3 }, "Opera CD2": { disc: 2, discTotal: 2, trackTotal: 2 } });
+      expect(r.matches.get(folders[0].path)).toMatchObject({ kind: "ambiguous", reason: expect.stringContaining("disc 1") });
+      expect(r.matches.get(folders[0].path)).toMatchObject({ reason: expect.stringContaining("has 2 files and its tags say it has 3 tracks") });
+      expect(r.matches.get(folders[1].path)).toMatchObject({ kind: "ambiguous" });
+      expect(r.identified).toBe(0);
+    });
+
+    it("are refused when an earlier disc's track numbers have a gap, though the tags give no total", async () => {
+      const folders = [named("Opera CD1", [1, 2, 4]), named("Opera CD2", [1, 2])];
+      const r = await place(folders, { "Opera CD1": { disc: 1, discTotal: 2 }, "Opera CD2": { disc: 2, discTotal: 2 } });
+      expect(r.matches.get(folders[0].path)).toMatchObject({ kind: "ambiguous", reason: expect.stringContaining("do not run from 1 to 3 without a gap") });
+      expect(r.identified).toBe(0);
+    });
+
+    it("are refused when a middle disc is short, and the last disc's own count moves nothing", async () => {
+      const three = [named("Opera CD1", [1, 2]), named("Opera CD2", [1]), named("Opera CD3", [1, 2, 3])];
+      const spec = (middleTotal: number) => ({
+        "Opera CD1": { disc: 1, discTotal: 3, trackTotal: 2 },
+        "Opera CD2": { disc: 2, discTotal: 3, trackTotal: middleTotal },
+        "Opera CD3": { disc: 3, discTotal: 3, trackTotal: 9 },
+      });
+      expect((await place(three, spec(2))).identified).toBe(0);
+      // The same discs with the middle one whole are placed, whatever the last disc's tag says.
+      expect((await place(three, spec(1))).identified).toBe(3);
+    });
+
+    it("accepts the album's whole count on every disc (a tagger that writes 1/5, 2/5 ... on both discs)", async () => {
+      const folders = [named("Opera CD1", [1, 2, 3]), named("Opera CD2", [4, 5])];
+      const r = await place(folders, { "Opera CD1": { disc: 1, discTotal: 2, trackTotal: 5 }, "Opera CD2": { disc: 2, discTotal: 2, trackTotal: 5 } });
+      expect(r.matches.get(folders[0].path)).toMatchObject({ kind: "album", by: "tags" });
+    });
+
+    it("are placed as before when the tags give neither a total nor a number", async () => {
+      const folders = [named("Opera CD1", [1, 2]), named("Opera CD2", [1])];
+      const r = await matchFoldersByTags(folders, ALBUMS, matchAlbumFolders(folders, "Queen", ALBUMS), async (file) => tagsOf("A Night at the Opera", { disc: file.includes("CD1") ? 1 : 2, discTotal: 2 }), { artist: "Queen" });
+      expect(r.identified).toBe(2);
+    });
+  });
+
   describe("what it costs", () => {
-    it("reads only the first, the middle and the last file of a folder", async () => {
+    it("reads every file of a folder, up to the cap", async () => {
+      const r = await run([folderOf("odd", 30)], { odd: tagsOf("Queen II") });
+      expect(r.asked).toHaveLength(30);
+      expect(TAG_FILES_PER_FOLDER).toBe(40);
+    });
+
+    it("reads no more than the cap of a bigger folder, spread over it with its first and last file among them", async () => {
       const r = await run([folderOf("odd", 100)], { odd: tagsOf("Queen II") });
-      expect(r.asked).toEqual(["001", "051", "100"].map((n) => `/dl/Queen - Discography/odd/${n} - Song.flac`));
       expect(r.asked).toHaveLength(TAG_FILES_PER_FOLDER);
+      expect(r.asked).toContain("/dl/Queen - Discography/odd/001 - Song.flac");
+      expect(r.asked).toContain("/dl/Queen - Discography/odd/100 - Song.flac");
     });
 
     it("reads every file of a folder of two", async () => {
@@ -356,12 +480,18 @@ describe("naming a folder from the tags of its files", () => {
 });
 
 describe("the pieces of the reading", () => {
-  it("picks the first, middle and last file by name", () => {
+  it("takes every file by name up to the cap, and spreads the cap evenly over a bigger folder", () => {
     expect(sampleFiles(["b", "a"])).toEqual(["a", "b"]);
     expect(sampleFiles(["c", "a", "b"])).toEqual(["a", "b", "c"]);
-    expect(sampleFiles(["1", "2", "3", "4", "5", "6", "7", "8", "9"])).toEqual(["1", "5", "9"]);
-    expect(sampleFiles(["1", "2", "3", "4"])).toEqual(["1", "3", "4"]);
+    expect(sampleFiles(["1", "2", "3", "4", "5", "6", "7", "8", "9"])).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+    expect(sampleFiles(["1", "2", "3", "4", "5", "6", "7", "8", "9"], 3)).toEqual(["1", "5", "9"]);
+    expect(sampleFiles(["1", "2", "3", "4"], 3)).toEqual(["1", "3", "4"]);
     expect(sampleFiles([])).toEqual([]);
+    const many = Array.from({ length: 100 }, (_, i) => String(i + 1).padStart(3, "0"));
+    const picked = sampleFiles(many);
+    expect(picked).toHaveLength(TAG_FILES_PER_FOLDER);
+    expect(picked[0]).toBe("001");
+    expect(picked[picked.length - 1]).toBe("100");
   });
 
   it("takes the album artist before the track artist, and the year out of a date", () => {
@@ -379,6 +509,50 @@ describe("the pieces of the reading", () => {
 
   it("says why a folder is not an album when nothing was read", () => {
     expect(identifyFolderByTags([], "Queen", ALBUMS)).toMatchObject({ kind: "unmatched" });
+  });
+
+  it("keeps the track number and total when the file has them, and reads as before when it has none", () => {
+    const base = { artist: "Queen", albumArtist: null, author: null, album: "Queen II", title: null };
+    expect(fileAlbumTagsFrom({ ...base, track: 3, trackTotal: 12 })).toMatchObject({ track: 3, trackTotal: 12 });
+    expect(fileAlbumTagsFrom({ ...base, track: null, trackTotal: null })).toEqual({ album: "Queen II", artist: "Queen", year: null, disc: null, discTotal: null });
+  });
+});
+
+describe("tag text in a reason (L3)", () => {
+  // A tag is whatever the release's uploader wrote; a reason is stored on the queue row and sent in notifications.
+  it("clips a tag to 80 characters, takes control characters and line breaks out, and spells '@' out", () => {
+    expect(quotedTag("Queen II")).toBe("Queen II");
+    expect(quotedTag("x".repeat(500)).length).toBeLessThanOrEqual(80);
+    expect(quotedTag("x".repeat(500)).endsWith("...")).toBe(true);
+    expect(quotedTag("line one\r\nline two\x00\x07\ttabbed")).toBe("line one line two tabbed");
+    expect(quotedTag("@everyone @here <@12345>")).toBe("(at)everyone (at)here <(at)12345>");
+    expect(quotedTag("éè Björk")).toBe("éè Björk");
+  });
+
+  it("keeps a megabyte album, artist or year-less tag out of the reason of a folder", async () => {
+    const huge = `@everyone\n${"A".repeat(1_000_000)}`;
+    const album = identifyFolderByTags([{ ...tagsOf(huge) }, { ...tagsOf("Queen II") }], "Queen", ALBUMS);
+    expect(album).toMatchObject({ kind: "ambiguous" });
+    const unknown = identifyFolderByTags([tagsOf(huge)], "Queen", ALBUMS);
+    const artist = identifyFolderByTags([tagsOf("Queen II", { artist: huge })], "Queen", ALBUMS);
+    const compilation = identifyFolderByTags([tagsOf("Queen II", { artist: `Various Artists` })], "Queen", ALBUMS);
+    for (const verdict of [album, unknown, artist]) {
+      if (verdict.kind === "album") throw new Error("should not be an album");
+      expect(verdict.reason.length).toBeLessThan(400);
+      expect(verdict.reason).not.toContain("@");
+      expect(verdict.reason).not.toContain("\n");
+    }
+    expect(compilation).toMatchObject({ kind: "unmatched" });
+  });
+
+  it("reaches the stored reason of a folder short, whatever the tags held", async () => {
+    const folder = folderOf("misc", 3);
+    const huge = `@here ${"B".repeat(1_000_000)}`;
+    const result = await matchFoldersByTags([folder], ALBUMS, matchAlbumFolders([folder], "Queen", ALBUMS), async () => tagsOf(huge), { artist: "Queen" });
+    const match = result.matches.get(folder.path)!;
+    if (match.kind === "album") throw new Error("should not be an album");
+    expect(match.reason.length).toBeLessThan(500);
+    expect(match.reason).not.toContain("@");
   });
 });
 
@@ -586,6 +760,49 @@ describe("importing a discography whose folder names say nothing", () => {
     const opera = await albumRow(albums.opera);
     expect(opera.has_file).toBe(1);
     expect(fs.readdirSync(opera.file_path).sort()).toEqual(["A Night at the Opera CD1", "A Night at the Opera CD2"]);
+  });
+
+  it("files a folder of more files than the tag step reads only when the album has about that many tracks (M5)", async () => {
+    const { artistId, albums } = await queen();
+    const names = Array.from({ length: 45 }, (_, i) => `${String(i + 1).padStart(2, "0")} - Song.flac`);
+    writeTracks(RELEASE, "misc rips", names);
+    tagsByFolder["misc rips"] = tags("Queen II");
+    // Queen II is listed with 20 tracks: 45 files are more than that one album.
+    for (let n = 1; n <= 20; n++) await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, ?, ?)").run(albums.queen2, n, `Song ${n}`);
+    const queueId = await queueDiscography(artistId, [albums.queen2]);
+
+    const err = await importer.importQueueItem(queueId).catch((e) => e);
+
+    expect(err).toBeInstanceOf(importer.ImportSkippedError);
+    expect(err.message).toContain("more than the one album");
+    expect((await albumRow(albums.queen2)).has_file).toBe(0);
+    expect(fs.readdirSync(path.join(downloadsDir, RELEASE, "misc rips"))).toHaveLength(45);
+
+    // With the 45 tracks the library lists, it is the album.
+    for (let n = 21; n <= 45; n++) await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, ?, ?)").run(albums.queen2, n, `Song ${n}`);
+    await importer.importQueueItem(queueId);
+    expect((await albumRow(albums.queen2)).has_file).toBe(1);
+    expect(fs.readdirSync((await albumRow(albums.queen2)).file_path)).toHaveLength(45);
+  });
+
+  it("does not place disc folders together when an earlier disc is short of a track its own tags count (L11)", async () => {
+    const { artistId, albums } = await queen();
+    // The rip of disc 1 lacks its third track: counted from the files, disc 2's "01" would land on that track's title.
+    writeTracks(RELEASE, "A Night at the Opera CD1", ["01 - Death on Two Legs.flac", "02 - Lazing on a Sunday Afternoon.flac"]);
+    writeTracks(RELEASE, "A Night at the Opera CD2", ["01 - Bohemian Rhapsody.flac"]);
+    tagsByFolder["A Night at the Opera CD1"] = tags("A Night at the Opera", { disc: 1, discTotal: 2, trackTotal: 3 });
+    tagsByFolder["A Night at the Opera CD2"] = tags("A Night at the Opera", { disc: 2, discTotal: 2, trackTotal: 1 });
+    for (const [n, title] of [[1, "Death on Two Legs"], [2, "Lazing on a Sunday Afternoon"], [3, "I'm in Love with My Car"], [4, "Bohemian Rhapsody"]] as const) {
+      await db.prepare("INSERT INTO tracks (sub_item_id, track_number, title) VALUES (?, ?, ?)").run(albums.opera, n, title);
+    }
+    const queueId = await queueDiscography(artistId, [albums.opera]);
+
+    const err = await importer.importQueueItem(queueId).catch((e) => e);
+
+    expect(err).toBeInstanceOf(importer.ImportSkippedError);
+    expect(err.message).toContain("has 2 files and its tags say it has 3 tracks");
+    expect((await albumRow(albums.opera)).has_file).toBe(0);
+    expect(fs.existsSync(path.join(downloadsDir, RELEASE, "A Night at the Opera CD2", "01 - Bohemian Rhapsody.flac"))).toBe(true);
   });
 
   it("leaves disc folders whose tags do not agree, as before", async () => {

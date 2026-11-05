@@ -379,8 +379,8 @@ describe("importing a collection of books", () => {
     await importer.importQueueItem(first);
 
     expect((await bookRow(books.mort)).has_file).toBe(1);
-    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
-    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+    // A book is left: the torrent stays in its client with its data (removing it, even without the data, would orphan the rest).
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
     expect(fs.existsSync(left)).toBe(true);
 
     removeQueueItemDownload.mockClear();
@@ -433,7 +433,8 @@ describe("importing a collection of books", () => {
     expect((await bookRow(books.sourcery)).has_file).toBe(0);
     for (const file of near) expect(fs.existsSync(file)).toBe(true);
     // The one book it did not hold is searched on its own; the release is not held against the others it filled.
-    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+    // Files of it are left, so the download stays in its client.
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
     expect(Number(((await db.prepare("SELECT COUNT(*) AS c FROM blocklist").get()) as any).c)).toBe(0);
   });
 

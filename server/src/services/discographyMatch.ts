@@ -14,6 +14,8 @@ export interface MatchableAlbum {
   /** Whether the grab was for this album. Matched all the same, so a folder of an album that is already in
    * the library is not mistaken for a wanted album of the same name. */
   target: boolean;
+  /** How many tracks the library lists for it (the tag step weighs a folder of many files against it); absent or 0 when none are known. */
+  trackCount?: number | null;
 }
 
 export interface AlbumFolder {

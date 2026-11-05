@@ -41,6 +41,17 @@ describe.skipIf(!hasFfmpeg)("reading album tags with the real ffprobe", () => {
     expect(await readFileAlbumTags(file)).toEqual({ album: "Queen II", artist: "Queen", year: 1974, disc: 1, discTotal: 2 });
   });
 
+  it("reads a track's number and the track total of its disc, as 'n/m' or as a separate tag (L11)", async () => {
+    const flac = makeAudio("track.flac", { album: "Queen II", album_artist: "Queen", tracknumber: "3", tracktotal: "11" });
+    expect(await readFileAlbumTags(flac)).toMatchObject({ track: 3, trackTotal: 11 });
+    const mp3 = makeAudio("track.mp3", { album: "Queen II", album_artist: "Queen", track: "4/12" });
+    expect(await readFileAlbumTags(mp3)).toMatchObject({ track: 4, trackTotal: 12 });
+    const bare = makeAudio("notrack.flac", { album: "Queen II", album_artist: "Queen" });
+    const read = await readFileAlbumTags(bare);
+    expect(read?.track).toBeUndefined();
+    expect(read?.trackTotal).toBeUndefined();
+  });
+
   it("reads an M4A file's tags", async () => {
     const file = makeAudio("one.m4a", { album: "Sheer Heart Attack", album_artist: "Queen", date: "1974-11-08", disc: "1/1" });
     expect(await readFileAlbumTags(file)).toMatchObject({ album: "Sheer Heart Attack", artist: "Queen", year: 1974, disc: 1, discTotal: 1 });

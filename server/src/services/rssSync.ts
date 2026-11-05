@@ -113,10 +113,12 @@ interface Wanted {
   episodes: Map<number, any[]>;
   /** The artists, authors, series and the like with a missing monitored sub-item (an album, book, issue), by id. */
   collections: Map<number, { item: MediaItem; subs: any[] }>;
+  /** Every monitored artist, with albums missing or not: a discography names one artist, and a complete namesake is still a second one. */
+  artists: MediaItem[];
   types: Set<MediaType>;
 }
 
-const emptyWanted = (): Wanted => ({ singles: [], shows: [], episodes: new Map(), collections: new Map(), types: new Set() });
+const emptyWanted = (): Wanted => ({ singles: [], shows: [], episodes: new Map(), collections: new Map(), artists: [], types: new Set() });
 
 /**
  * What the library wants. With `only`, just those items' share of it: a pushed release can name nothing else, and the rest of a
@@ -174,6 +176,7 @@ async function loadWanted(upgrades: boolean, only?: ReadonlySet<number>): Promis
   const collections = ((await db.prepare(`SELECT * FROM media_items WHERE monitored = 1${itemFilter}`).all(...(ids ?? []))) as any[])
     .map(mediaItemFromRow)
     .filter((item) => !usesQualityTiers(item.type) && getMediaTypeConfig(item.type).shape === "collection" && !["video", "podcast"].includes(item.type)) as MediaItem[];
+  wanted.artists = collections.filter((item) => item.type === "artist");
   // One query for every collection's missing sub-items (a plain album before an edition of it, so a release names the plain one).
   if (collections.length > 0) {
     const rows = (await db
@@ -352,9 +355,12 @@ async function matchReleases(releases: SearchResult[], wanted: Wanted): Promise<
         unmatch(release, "discography grabs are switched off (Settings > Media Management)");
         continue;
       }
-      const artists = [...wanted.collections.values()].map((c) => c.item).filter((item) => item.type === "artist" && releaseNamesArtist(release.title, item.title));
-      if (artists.length === 1) add({ kind: "discography", key: `discography:${artists[0].id}`, item: artists[0], releases: [release] });
-      else unmatch(release, artists.length > 1 ? `${nameOf(parsed)} could be more than one artist with missing albums` : `no artist with missing albums is named ${nameOf(parsed)}`);
+      // Every monitored artist counts, as it does for an announce: "Pink" complete and a namesake with albums missing are two artists.
+      const artists = wanted.artists.filter((item) => releaseNamesArtist(release.title, item.title));
+      const entry = artists.length === 1 ? wanted.collections.get(artists[0].id) : undefined;
+      if (entry) add({ kind: "discography", key: `discography:${entry.item.id}`, item: entry.item, releases: [release] });
+      else if (artists.length === 1) unmatch(release, `"${artists[0].title}" has no missing album`, artists[0].id);
+      else unmatch(release, artists.length > 1 ? `${nameOf(parsed)} could be more than one artist` : `no monitored artist is named ${nameOf(parsed)}`);
       continue;
     }
 
@@ -664,8 +670,10 @@ async function decideGroup(group: Group, env: DecideEnv, trace: DecideTrace): Pr
         ? ({ table: "episodes", id: group.ep.id } as const)
         : group.kind === "sub"
         ? ({ table: "sub_items", id: group.sub.id } as const)
-        : group.kind === "single"
-        ? ({ table: "media_items", id: item.id } as const)
+        : group.kind === "single" || group.kind === "discography"
+        ? // A discography is kept against its artist: the pending store holds one leaf per release, and pendingReleases.ts judges a
+          // release of an artist that is a discography as one, against the albums wanted when its delay has ended.
+          ({ table: "media_items", id: item.id } as const)
         : null;
     const held = await isHeldByDelay(results, cutoff, delayProfile, choose, leaf ? (release) => recordPending(leaf.table, leaf.id, item.id, release) : undefined);
     trace.reason = held ? "held back by the delay profile until it is old enough" : "none of its releases passed the profile";
@@ -890,5 +898,6 @@ function restrictWanted(wanted: Wanted, types: Set<string>): void {
   wanted.shows = wanted.shows.filter((i) => types.has(i.type));
   for (const id of [...wanted.episodes.keys()]) if (!wanted.shows.some((s) => s.id === id)) wanted.episodes.delete(id);
   for (const [id, entry] of [...wanted.collections]) if (!types.has(entry.item.type)) wanted.collections.delete(id);
+  wanted.artists = wanted.artists.filter((i) => types.has(i.type));
   wanted.types = new Set([...wanted.types].filter((t) => types.has(t)));
 }
