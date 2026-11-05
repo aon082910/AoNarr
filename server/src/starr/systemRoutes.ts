@@ -1,4 +1,5 @@
 import os from "node:os";
+import path from "node:path";
 import { db } from "../db/index.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { downloadClientFromRow, qualityProfileFromRow } from "../db/mappers.js";
@@ -6,13 +7,15 @@ import { getBuildInfo } from "../services/buildInfo.js";
 import { getHealthReport } from "../services/healthReport.js";
 import { getSetting } from "../services/settingsStore.js";
 import { withAppUrlBase } from "../services/urlBase.js";
-import { statfsAsync } from "../services/fsAsync.js";
+import { readdirAsync, statAsync, statfsAsync } from "../services/fsAsync.js";
 import { callNative } from "./native.js";
 import { typeFilter } from "./apps.js";
 import type { StarrRoutes } from "./router.js";
-import { loadQualityCatalog, numericId, orderedForProfile, qualityNameOf } from "./shapes.js";
+import { flag, loadQualityCatalog, numericId, orderedForProfile, qualityNameOf } from "./shapes.js";
 
 const STATFS_TIMEOUT_MS = 5000;
+const FILESYSTEM_TIMEOUT_MS = 10_000;
+const FILESYSTEM_MAX_ENTRIES = 2000;
 
 /** Free and total bytes of a path; nulls when the mount does not answer. */
 async function spaceOf(path: string): Promise<{ freeSpace: number | null; totalSpace: number | null }> {
@@ -22,7 +25,7 @@ async function spaceOf(path: string): Promise<{ freeSpace: number | null; totalS
   return { freeSpace: stat.bavail * stat.bsize, totalSpace: stat.blocks * stat.bsize };
 }
 
-const LANGUAGES = [
+export const LANGUAGES = [
   { id: -1, name: "Any" },
   { id: 0, name: "Unknown" },
   { id: 1, name: "English" },
@@ -185,6 +188,29 @@ export function registerSystemRoutes(r: StarrRoutes): void {
       out.push({ path: folder.path, label: folder.name ?? "", freeSpace: space.freeSpace, totalSpace: space.totalSpace });
     }
     return out;
+  });
+
+  // Bazarr's path-mapping and folder pickers, and Starr's own, list folders through this; without it they show nothing to pick.
+  r.get("/filesystem", "Folders, and files on request, under a path", async (req) => {
+    const requested = String(req.query.path ?? "").trim() || "/";
+    const withFiles = flag(req.query.includeFiles);
+    const bare = flag(req.query.allowFoldersWithoutTrailingSlashes);
+    // A folder that is missing or cannot be read lists as empty, as it does in Starr.
+    const entries = (await readdirAsync(requested, FILESYSTEM_TIMEOUT_MS).catch(() => [])).filter((e) => !e.name.startsWith(".")).sort((a, b) => a.name.localeCompare(b.name));
+    const directories = entries
+      .filter((e) => e.isDirectory())
+      .slice(0, FILESYSTEM_MAX_ENTRIES)
+      .map((e) => ({ type: "folder", name: e.name, path: bare ? path.join(requested, e.name) : path.join(requested, e.name) + path.sep, size: 0 }));
+    const files = [];
+    if (withFiles) {
+      for (const e of entries.filter((entry) => entry.isFile()).slice(0, FILESYSTEM_MAX_ENTRIES)) {
+        const full = path.join(requested, e.name);
+        const stat = await statAsync(full, FILESYSTEM_TIMEOUT_MS).catch(() => null);
+        files.push({ type: "file", name: e.name, path: full, size: stat?.size ?? 0, lastModified: stat?.mtime.toISOString() });
+      }
+    }
+    const parent = path.dirname(requested);
+    return { parent: parent === requested ? null : parent, directories, files };
   });
 
   const rootFolder = async (row: any) => {
