@@ -147,6 +147,16 @@ describe("Jellyseerr's request for a show known only by its TVDB id", () => {
     expect(monitored.map((e) => [Number(e.season_number), Number(e.monitored)])).toEqual([[0, 0], [1, 1], [1, 1], [2, 1], [3, 0]]);
   });
 
+  it("keeps the Monitor New Items choice Seerr sends with the add", async () => {
+    const lookup = (await get("/sonarr/api/v3/series/lookup?term=tvdb:81189")).body[0];
+    const profileId = Number(((await db.prepare("SELECT id FROM quality_profiles ORDER BY id").get()) as { id: number }).id);
+    const body = { tvdbId: 81189, title: "Breaking Bad", qualityProfileId: profileId, languageProfileId: 1, seasons: lookup.seasons, tags: [], seasonFolder: true, monitored: true, rootFolderPath: "/tv", seriesType: "standard", addOptions: { ignoreEpisodesWithFiles: true, searchForMissingEpisodes: false } };
+    const res = await send("post", "/sonarr/api/v3/series", { ...body, monitorNewItems: "none" });
+    expect(res.status).toBe(201);
+    expect(res.body.monitorNewItems).toBe("none");
+    expect(((await db.prepare("SELECT monitor_new_items AS m FROM media_items WHERE id = ?").get(res.body.id)) as { m: string }).m).toBe("none");
+  });
+
   it("does not read an episode list for each hit of a title search", async () => {
     const { body } = await get("/sonarr/api/v3/series/lookup?term=breaking%20bad");
     expect(body).toHaveLength(1);

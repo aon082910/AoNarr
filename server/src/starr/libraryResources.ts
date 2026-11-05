@@ -224,6 +224,7 @@ export function seriesResource(ctx: LibraryContext, row: any, seasons: SeasonSta
     titleSlug: slugOf(row.title, row.id),
     languageProfileId: 1,
     seasonFolder: true,
+    monitorNewItems: row.monitor_new_items === "none" ? "none" : "all",
     useSceneNumbering: false,
     runtime: row.runtime_minutes ?? 0,
     tvdbId: numeric(ids.tvdb),

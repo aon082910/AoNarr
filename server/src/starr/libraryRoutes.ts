@@ -244,6 +244,8 @@ async function addTitle(req: any, app: StarrApp): Promise<any> {
     seriesType: app.key === "sonarr" && typeof b.seriesType === "string" ? b.seriesType : undefined,
     minimumAvailability: app.key === "radarr" && typeof b.minimumAvailability === "string" ? b.minimumAvailability : undefined,
     monitorStrategy: app.key === "sonarr" ? monitor : undefined,
+    // Sonarr v4's "monitor new seasons" choice: Seerr sends it with every add, and it overrides the root folder's default.
+    monitorNewItems: app.key === "sonarr" && typeof b.monitorNewItems === "string" && ["all", "none", "new"].includes(b.monitorNewItems) ? b.monitorNewItems : undefined,
     tagIds: idList(b.tags),
     confirmDuplicate: true,
   });
