@@ -1007,11 +1007,11 @@ export async function syncImportList(list: ImportListRow): Promise<{ added: numb
       );
     }
     // What the list holds now is what the next sync compares with, and what other lists' clean-ups protect.
-    if (ctx.seen.size > 0) {
-      await recordListEntries(list.id, ctx.seen);
-      // Auto tagging rules that name this list: titles it holds now (also ones that were in the library already).
-      await evaluateRulesAfterListSync(list.id, ctx.seen);
-    }
+    if (ctx.seen.size > 0) await recordListEntries(list.id, ctx.seen);
+    // Auto tagging rules that name this list: titles it holds now (also ones that were in the library already). Also after an
+    // empty answer, which holds nothing: a rule that takes its tag back when a title leaves the list must hear that the list was
+    // emptied (the stored entries are left alone, as for the clean-up above, which an empty answer does not trigger either).
+    await evaluateRulesAfterListSync(list.id, ctx.seen);
     const warning = [ctx.rootFolders.skippedSummary(), ...cleanWarnings].filter(Boolean).join("; ") || null;
     await db
       .prepare(`UPDATE import_lists SET last_synced_at = ${nowExpr(db)}, last_added_count = ?, last_error = ? WHERE id = ?`)

@@ -23,6 +23,12 @@ import { finishBackgroundJob, incrementBackgroundJobDone, startBackgroundJob } f
  * Evaluation runs when a title is added (addDefaults.ts and the two add routes), after a metadata refresh (genres and
  * ids may have changed), after an import list sync, and for a whole library on demand (the rule's Apply button, or the
  * weekly "Auto Tagging" job). It never throws into the code that added or refreshed the title.
+ *
+ * Two things that follow from the above and are on purpose: a title added by list L keeps matching "list L" for good (its
+ * source_list_id), so a rule on a list never takes its tag off a title that list added, only off one the list merely held;
+ * and merging two duplicate titles copies the loser's tags to the keeper as plain tags while the loser's claims go with its row
+ * (duplicateCheck.ts), which errs on the side of keeping a tag: the keeper's auto tags are then no longer taken back
+ * automatically, until a rule gives them again.
  */
 
 export type AutoTagMatch = "any" | "all";
@@ -186,9 +192,12 @@ async function checkedValues(input: AutoTagRuleInput, existing: AutoTagRule | nu
 /** Enabled rules, read again after this long or after any write to a rule (a restore restarts the process anyway). */
 const RULES_CACHE_MS = 10_000;
 let rulesCache: { at: number; rules: AutoTagRule[] } | null = null;
+/** Counts the invalidations: a load that began before one may have read the rules from before the write, and must not keep them. */
+let rulesVersion = 0;
 
 /** Forgets the cached rules: every write below calls it, and a test that edits the table directly must too. */
 export function invalidateAutoTagRules(): void {
+  rulesVersion++;
   rulesCache = null;
 }
 
@@ -204,9 +213,17 @@ export async function getAutoTagRule(id: number): Promise<AutoTagRule | null> {
 
 async function enabledRules(): Promise<AutoTagRule[]> {
   if (rulesCache && Date.now() - rulesCache.at < RULES_CACHE_MS) return rulesCache.rules;
-  const rules = (await listAutoTagRules()).filter((r) => r.enabled);
-  rulesCache = { at: Date.now(), rules };
-  return rules;
+  for (let attempt = 0; ; attempt++) {
+    const version = rulesVersion;
+    const rules = (await listAutoTagRules()).filter((r) => r.enabled);
+    if (version === rulesVersion) {
+      rulesCache = { at: Date.now(), rules };
+      return rules;
+    }
+    // A rule was written while this was being read: what came back may be the rules from before the write, and caching it
+    // would serve them for up to ten seconds. Read again; a rule that keeps changing gets an answer that is not kept.
+    if (attempt >= 2) return rules;
+  }
 }
 
 /** A second request that took the name between the check and the write: the same answer as the check gives. */
@@ -333,11 +350,19 @@ function placeholders(n: number): string {
   return Array.from({ length: n }, () => "?").join(", ");
 }
 
-/** For each title, which of `listIds` added it or hold it now. One indexed query per few hundred titles. */
-async function listMembership(items: ItemRow[], listIds: number[]): Promise<Map<number, Set<number>>> {
+/**
+ * For each title, which of `listIds` added it or hold it now. One indexed query per few hundred titles. A list in `emptyLists`
+ * holds nothing now whatever its stored entries say (its last sync came back empty): only the titles it added still belong to it.
+ */
+async function listMembership(items: ItemRow[], listIds: number[], emptyLists: ReadonlySet<number>): Promise<Map<number, Set<number>>> {
   const out = new Map<number, Set<number>>();
   if (listIds.length === 0) return out;
   const wanted = new Set(listIds);
+  const entryListIds = listIds.filter((id) => !emptyLists.has(id));
+  if (entryListIds.length === 0) {
+    for (const item of items) if (item.source_list_id != null && wanted.has(Number(item.source_list_id))) out.set(item.id, new Set([Number(item.source_list_id)]));
+    return out;
+  }
   const itemsByKey = new Map<string, number[]>();
   for (const item of items) {
     if (item.source_list_id != null && wanted.has(Number(item.source_list_id))) out.set(item.id, new Set([Number(item.source_list_id)]));
@@ -347,8 +372,8 @@ async function listMembership(items: ItemRow[], listIds: number[]): Promise<Map<
   for (let i = 0; i < keys.length; i += QUERY_CHUNK * 2) {
     const chunk = keys.slice(i, i + QUERY_CHUNK * 2);
     const rows = (await db
-      .prepare(`SELECT list_id, entry_key FROM import_list_entries WHERE list_id IN (${placeholders(listIds.length)}) AND entry_key IN (${placeholders(chunk.length)})`)
-      .all(...listIds, ...chunk)) as { list_id: number; entry_key: string }[];
+      .prepare(`SELECT list_id, entry_key FROM import_list_entries WHERE list_id IN (${placeholders(entryListIds.length)}) AND entry_key IN (${placeholders(chunk.length)})`)
+      .all(...entryListIds, ...chunk)) as { list_id: number; entry_key: string }[];
     for (const row of rows) {
       for (const itemId of itemsByKey.get(row.entry_key) ?? []) {
         const set = out.get(itemId) ?? new Set<number>();
@@ -454,12 +479,23 @@ async function applyOps(itemId: number, ops: TagOp[]): Promise<{ added: number; 
   for (const op of ops) {
     try {
       if (op.kind === "add") {
-        const inserted = await db.prepare("INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING").run(itemId, op.tagId);
-        if (Number(inserted.changes) > 0) {
-          // The claim is written second: a failure between the two leaves a plain tag, never a claim without a tag.
-          await db.prepare("INSERT INTO media_item_auto_tags (media_item_id, tag_id, rule_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING").run(itemId, op.tagId, op.ruleId);
-          added++;
+        // The claim is written first and the tag second. A tag the admin sets by hand between the two takes the claim away
+        // (releaseAutoOwnership) and makes our tag insert a no-op, which gives the claim back below: written the other way
+        // round, the hand-set tag would be in place before the claim, so it would end up claimed and a later
+        // remove_when_unmatched could take away a tag the admin set. A claim with no tag is void anyway (planItem releases
+        // it on the next run), so a failure between the two statements heals itself.
+        const claimed = await db.prepare("INSERT INTO media_item_auto_tags (media_item_id, tag_id, rule_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING").run(itemId, op.tagId, op.ruleId);
+        let created = false;
+        try {
+          const inserted = await db.prepare("INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING").run(itemId, op.tagId);
+          created = Number(inserted.changes) > 0;
+        } finally {
+          // The tag was there already (set by hand a moment ago, or by another run) or could not be written: the claim is not ours.
+          if (!created && Number(claimed.changes) > 0) {
+            await db.prepare("DELETE FROM media_item_auto_tags WHERE media_item_id = ? AND tag_id = ? AND rule_id = ?").run(itemId, op.tagId, op.ruleId).catch(() => undefined);
+          }
         }
+        if (created) added++;
       } else if (op.kind === "share") {
         await db.prepare("INSERT INTO media_item_auto_tags (media_item_id, tag_id, rule_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING").run(itemId, op.tagId, op.ruleId);
       } else if (op.kind === "release") {
@@ -538,6 +574,8 @@ export interface AutoTagRunOptions {
   /** Only these titles; otherwise every title in the library, in id order. */
   itemIds?: number[];
   onProgress?: (scanned: number) => void;
+  /** Import lists whose latest sync came back empty: they hold nothing now, although their stored entries still list what they held before. */
+  emptyLists?: number[];
 }
 
 async function tagNames(): Promise<Map<number, string>> {
@@ -559,9 +597,10 @@ export async function runAutoTag(options: AutoTagRunOptions): Promise<AutoTagRun
   const rules = options.rules.map((r) => ({ ...r, tagIds: r.tagIds.filter((id) => names.has(id)) }));
   const listIds = [...new Set(rules.flatMap((r) => r.listIds))];
   const yieldNow = createYielder(10);
+  const emptyLists = new Set(options.emptyLists ?? []);
 
   const handle = async (rows: ItemRow[]): Promise<void> => {
-    const [membership, states] = await Promise.all([listMembership(rows, listIds), loadStates(rows.map((r) => r.id))]);
+    const [membership, states] = await Promise.all([listMembership(rows, listIds, emptyLists), loadStates(rows.map((r) => r.id))]);
     for (const row of rows) {
       const facts: ItemFacts = { type: row.type, genres: genresOf(row.genres), lists: membership.get(row.id) ?? new Set() };
       const state = states.get(row.id)!;
@@ -651,7 +690,13 @@ export async function evaluateRulesForItem(item: number | bigint | { id: number 
 
 /**
  * After an import list synced: the titles it holds right now (also those it did not add, because they were in the library
- * already) and those a rule that names this list tagged earlier (they may have dropped off the list) are evaluated.
+ * already) and those a rule that names this list tagged earlier are evaluated, so a title that has dropped off the list loses
+ * a tag a `remove_when_unmatched` rule gave it for being on it. A title the list itself added is the exception and keeps
+ * matching the list for good (see listMembership), so its tag stays.
+ *
+ * `held` empty means the sync came back with nothing (the list was emptied, or the provider has none of it): the list then
+ * holds nothing, and what the rules tagged because of it is judged against that. Its stored entries are not touched (an empty
+ * answer is not trusted enough to clean titles up or to replace them), so the next sync that brings entries tags the titles again.
  * Nothing to do when no enabled rule names the list.
  */
 export async function evaluateRulesAfterListSync(listId: number, held: Set<string>): Promise<void> {
@@ -672,7 +717,7 @@ export async function evaluateRulesAfterListSync(listId: number, held: Set<strin
       .all(...forList.map((r) => r.id))) as { media_item_id: number }[];
     for (const row of tagged) candidates.add(Number(row.media_item_id));
     if (candidates.size === 0) return;
-    const result = await runAutoTag({ rules, itemIds: [...candidates] });
+    const result = await runAutoTag({ rules, itemIds: [...candidates], emptyLists: held.size === 0 ? [listId] : undefined });
     if (result.tagsAdded > 0 || result.tagsRemoved > 0) {
       log.info(`[autoTag] after the sync of list ${listId}: ${result.tagsAdded} tag(s) added, ${result.tagsRemoved} removed`);
     }
