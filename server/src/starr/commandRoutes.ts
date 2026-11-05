@@ -85,6 +85,9 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
 
   const rssSync: Action = async (app) => void (await callNative(app, "POST", "/api/jobs/rssSync/run"));
   const downloadedScan: Action = async (app) => void (await callNative(app, "POST", "/api/jobs/queuePoll/run"));
+  // Overseerr and Jellyseerr send this before every read of the queue (their download tracker, each minute), and give up on
+  // the read when it is refused. The poll is the same one the scheduler runs; one already running answers 202 and is enough.
+  const refreshMonitoredDownloads: Action = async (app) => void (await callNative(app, "POST", "/api/jobs/queuePoll/run"));
   const refresh = (key: string, plural: string): Action => async (app, body) => {
     const ids = await ownedIds(starr, [...idList(body[key]), ...idList(body[plural])]);
     if (ids.length === 0 && (body[key] !== undefined || body[plural] !== undefined)) throw new HttpError(404, "NotFound");
@@ -108,6 +111,7 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
       return {
         RssSync: rssSync,
         DownloadedEpisodesScan: downloadedScan,
+        RefreshMonitoredDownloads: refreshMonitoredDownloads,
         RefreshSeries: refresh("seriesId", "seriesIds"),
         RescanSeries: rescan("seriesId", "seriesIds"),
         SeriesSearch: searchTitles("seriesId", "seriesIds"),
@@ -131,6 +135,7 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
       return {
         RssSync: rssSync,
         DownloadedMoviesScan: downloadedScan,
+        RefreshMonitoredDownloads: refreshMonitoredDownloads,
         RefreshMovie: refresh("movieId", "movieIds"),
         RescanMovie: rescan("movieId", "movieIds"),
         MoviesSearch: searchTitles("movieId", "movieIds"),
@@ -141,6 +146,7 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
       return {
         RssSync: rssSync,
         DownloadedAlbumsScan: downloadedScan,
+        RefreshMonitoredDownloads: refreshMonitoredDownloads,
         RefreshArtist: refresh("artistId", "artistIds"),
         RescanFolders: rescan("artistId", "artistIds"),
         ArtistSearch: searchTitles("artistId", "artistIds"),
@@ -157,6 +163,7 @@ function actionsOf(starr: StarrApp): Record<string, Action> {
       return {
         RssSync: rssSync,
         DownloadedBooksScan: downloadedScan,
+        RefreshMonitoredDownloads: refreshMonitoredDownloads,
         RefreshAuthor: refresh("authorId", "authorIds"),
         RescanFolders: rescan("authorId", "authorIds"),
         AuthorSearch: searchTitles("authorId", "authorIds"),
