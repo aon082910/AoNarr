@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
@@ -16,6 +17,32 @@ function mappingFromRow(row: any) {
     localPath: row.local_path,
     createdAt: row.created_at,
   };
+}
+
+const isWithin = (child: string, parent: string) => {
+  const rel = path.relative(parent, child);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+};
+
+/**
+ * Why this folder cannot be the local side of a mapping, or null. A scan of a path that goes through a mapping may look anywhere
+ * in the mapping's local folder, so the folder has to be the download client's own and not one that holds more: the root of a
+ * disk, or a folder that is (or contains) a library root folder would let a command reach the library's neighbours.
+ */
+async function localPathProblem(localPath: string): Promise<string | null> {
+  const resolved = path.resolve(localPath);
+  if (path.parse(resolved).root === resolved) return `The local path "${localPath}" is the root of a disk. Map the folder the download client writes to, not everything.`;
+  const real = await fs.promises.realpath(localPath).catch(() => resolved);
+  const roots = (await db.prepare("SELECT path FROM root_folders").all()) as { path: string | null }[];
+  for (const row of roots) {
+    if (!row.path) continue;
+    const root = path.resolve(row.path);
+    const realRoot = await fs.promises.realpath(row.path).catch(() => root);
+    if ([resolved, real].some((folder) => [root, realRoot].some((r) => isWithin(r, folder)))) {
+      return `The local path "${localPath}" is, or holds, the library root folder "${row.path}". Map the folder the download client writes to, not a folder that also holds the library.`;
+    }
+  }
+  return null;
 }
 
 remotePathMappingsRouter.get(
@@ -53,6 +80,8 @@ remotePathMappingsRouter.post(
     if (!localIsFolder) {
       throw new HttpError(400, `The local path "${localPath}" does not exist inside AoNarr (or is not a folder). Map the download folder into the container first.`);
     }
+    const tooWide = await localPathProblem(localPath);
+    if (tooWide) throw new HttpError(400, tooWide);
     const sameRemote = (await db.prepare("SELECT remote_path FROM remote_path_mappings WHERE download_client_id = ?").all(downloadClientId)) as {
       remote_path: string;
     }[];

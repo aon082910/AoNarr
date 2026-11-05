@@ -385,6 +385,20 @@ describe("POST /release/push: what the body must be", () => {
     expect((await invalid({ seeders: 1.5 }))[0].propertyName).toBe("Seeders");
   });
 
+  it("refuses a size or a count too big to keep: the queue holds a 64-bit size and 32-bit counts (L5)", async () => {
+    await client();
+    await indexer();
+    await movie();
+    expect((await invalid({ size: 1e20 }))[0]).toMatchObject({ propertyName: "Size", errorMessage: expect.stringContaining(String(Number.MAX_SAFE_INTEGER)) });
+    expect((await invalid({ size: 2 ** 53 }))[0].propertyName).toBe("Size");
+    expect((await invalid({ seeders: 2147483648 }))[0]).toMatchObject({ propertyName: "Seeders", errorMessage: expect.stringContaining("2147483647") });
+    expect((await invalid({ leechers: 1e12 }))[0].propertyName).toBe("Leechers");
+    expect(adapter.addDownload).not.toHaveBeenCalled();
+    // The largest the queue keeps is not refused as a body.
+    const edge = await radarr(push({ size: Number.MAX_SAFE_INTEGER, seeders: 2147483647, leechers: 2147483647 }));
+    expect(edge.status).toBe(200);
+  });
+
   it("refuses a body that is not an object", async () => {
     const res = await request(app).post("/radarr/api/v3/release/push").set("X-Api-Key", apiKey).send([push()]);
     expect(res.status).toBe(400);
@@ -450,7 +464,7 @@ describe("POST /release/push: the link never reaches a log or an answer", () => 
     for (const level of ["info", "warn", "error"] as const) vi.spyOn(log, level).mockImplementation((...args: unknown[]) => void logged.push(args.map(String).join(" ")));
     await radarr(push());
     const line = logged.find((l) => l.includes("[push]"));
-    expect(line).toContain("https://tracker.example/dl/42.torrent");
+    expect(line).toContain("https://tracker.example/*.torrent");
     expect(logged.join("\n")).not.toContain(SECRET);
     expect(logged.join("\n")).not.toContain("passkey");
 
@@ -458,6 +472,44 @@ describe("POST /release/push: the link never reaches a log or an answer", () => 
     await radarr(push({ title: "Other.Film.2001.1080p.WEB-DL-GRP", downloadUrl: "magnet:?xt=urn:btih:ffff0000ffff0000ffff0000ffff0000ffff0000&tr=https%3A%2F%2Ft.example%2Fa%3Fpasskey%3D" + SECRET }));
     expect(logged.join("\n")).toContain("magnet:ffff0000ffff0000ffff0000ffff0000ffff0000");
     expect(logged.join("\n")).not.toContain(SECRET);
+  });
+
+  it("writes no path of a link into the log: a tracker can put its passkey in the path (L6)", async () => {
+    await client();
+    await indexer();
+    await movie();
+    const logged: string[] = [];
+    const { log } = await import("../src/services/logger.js");
+    for (const level of ["info", "warn", "error"] as const) vi.spyOn(log, level).mockImplementation((...args: unknown[]) => void logged.push(args.map(String).join(" ")));
+    await radarr(push({ downloadUrl: "https://t.example/download/PASSKEY123/45.torrent?apikey=K" }));
+    const text = logged.join("\n");
+    expect(logged.find((l) => l.includes("[push]"))).toContain("https://t.example/*.torrent");
+    for (const secret of ["PASSKEY123", "/download", "apikey"]) expect(text, secret).not.toContain(secret);
+  });
+
+  it("describes a link by its host and, at most, the kind of file it ends in", async () => {
+    const { describeLink, redactLinks } = await import("../src/services/linkRedaction.js");
+    expect(describeLink("https://t.example/download/PASSKEY123/45.torrent?apikey=K")).toBe("https://t.example/*.torrent");
+    expect(describeLink("http://u:pw@t.example:8080/api?t=search&apikey=K")).toBe("http://t.example:8080/*");
+    expect(describeLink("https://t.example/rss/PASSKEY.abc123")).toBe("https://t.example/*");
+    expect(describeLink("https://t.example/getnzb/abc.NZB")).toBe("https://t.example/*.nzb");
+    expect(describeLink("https://t.example/")).toBe("https://t.example");
+    expect(describeLink("not a link")).toBe("a link");
+    expect(redactLinks("HTTP 404 from https://t.example/dl/PASSKEY123/1.torrent?apikey=K (retry)")).toBe("HTTP 404 from https://t.example/*.torrent (retry)");
+  });
+
+  it("redacts the message of a client that is unavailable, in the log and in what is kept for the answer (L6)", async () => {
+    const { DownloadClientUnavailableError, noteUnavailableClient } = await import("../src/services/scheduler.js");
+    const logged: string[] = [];
+    const { log } = await import("../src/services/logger.js");
+    for (const level of ["info", "warn", "error"] as const) vi.spyOn(log, level).mockImplementation((...args: unknown[]) => void logged.push(args.map(String).join(" ")));
+    const err = new DownloadClientUnavailableError({ id: 7, name: "Seeder" } as any, new Error("HTTP 502 from https://t.example/download/PASSKEY123/45.torrent?apikey=K"));
+    const unavailable = new Map<number, string>();
+    expect(noteUnavailableClient(err, unavailable)).toBe(true);
+    expect(logged.join("\n")).toContain('Download client "Seeder" is unavailable');
+    expect(logged.join("\n")).not.toMatch(/PASSKEY123|apikey/);
+    expect(unavailable.get(7)).toContain("HTTP 502 from https://t.example/*.torrent");
+    expect(unavailable.get(7)).not.toMatch(/PASSKEY123|apikey/);
   });
 });
 

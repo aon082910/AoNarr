@@ -1373,8 +1373,10 @@ function isClientLevelError(client: DownloadClient, downloadUrl: string, err: un
 export function noteUnavailableClient(err: unknown, unavailable: Map<number, string>): boolean {
   if (!(err instanceof DownloadClientUnavailableError)) return false;
   if (!unavailable.has(err.client.id)) {
-    unavailable.set(err.client.id, err.message);
-    log.warn(`[scheduler] ${err.message}; no more grabs go to it this pass`);
+    // The client's own message can quote the release link it was given, and it is kept for the answers that name the failure.
+    const said = redactLinks(err.message);
+    unavailable.set(err.client.id, said);
+    log.warn(`[scheduler] ${said}; no more grabs go to it this pass`);
   }
   return true;
 }

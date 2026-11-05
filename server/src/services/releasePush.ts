@@ -34,6 +34,8 @@ export interface PushedRelease {
 }
 
 const MAX_LINK_LENGTH = 8192;
+/** Seeders and leechers are kept as 32-bit integers. */
+const MAX_COUNT = 2_147_483_647;
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -81,13 +83,20 @@ export async function parseReleasePush(body: unknown): Promise<PushedRelease> {
   if (b.size !== undefined && b.size !== null && b.size !== "") {
     size = Number(b.size);
     if (!Number.isFinite(size) || size < 0) bad("Size", "Size must be a number of bytes, zero or more");
+    // The queue keeps the size as a 64-bit integer: a larger one would pass the quality checks and fail only after the client has the download.
+    else if (size > Number.MAX_SAFE_INTEGER) bad("Size", `Size must be at most ${Number.MAX_SAFE_INTEGER} bytes`);
   }
   const count = (key: "seeders" | "leechers"): number | null => {
     const raw = b[key];
     if (raw === undefined || raw === null || raw === "") return null;
     const n = Number(raw);
+    const name = key === "seeders" ? "Seeders" : "Leechers";
     if (!Number.isInteger(n) || n < 0) {
-      bad(key === "seeders" ? "Seeders" : "Leechers", `${key === "seeders" ? "Seeders" : "Leechers"} must be a whole number, zero or more`);
+      bad(name, `${name} must be a whole number, zero or more`);
+      return null;
+    }
+    if (n > MAX_COUNT) {
+      bad(name, `${name} must be at most ${MAX_COUNT}`);
       return null;
     }
     return n;
