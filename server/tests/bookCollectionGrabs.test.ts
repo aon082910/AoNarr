@@ -738,7 +738,7 @@ describe("picking a collection by hand", () => {
 
     const asked = await request(app).post(`/api/search/${authorId}/grab`).set("X-Api-Key", apiKey).send(body);
     expect(asked.status).toBe(409);
-    expect(asked.text).toContain("series position");
+    expect(asked.text).toContain("a place in one");
 
     const told = await request(app).post(`/api/search/${authorId}/grab`).set("X-Api-Key", apiKey).send({ ...body, overrides: ["collection"] });
     expect(told.status).toBe(201);

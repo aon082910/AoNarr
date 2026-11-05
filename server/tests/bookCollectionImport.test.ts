@@ -410,17 +410,34 @@ describe("importing a collection of books", () => {
     expect(Number(((await db.prepare("SELECT COUNT(*) AS c FROM blocklist").get()) as any).c)).toBe(0);
   });
 
-  it("leaves the row and its books when no file is a wanted book, and blocklists nothing", async () => {
+  it("leaves the row and its books when several files are none of the wanted books, and blocklists nothing", async () => {
     const { authorId, books } = await terry();
-    const file = writeBook(RELEASE, "Neil Gaiman - American Gods.epub");
+    const files = ["Neil Gaiman - American Gods.epub", "Neil Gaiman - Coraline.epub", "Neil Gaiman - Stardust.epub"].map((name) => writeBook(RELEASE, name));
     const queueId = await queueCollection(authorId, [books.mort, books.sourcery]);
 
     await expect(importer.importQueueItem(queueId)).rejects.toThrow(/No book of .* could be imported/);
 
     expect(await queueRow(queueId)).toBeDefined();
     expect(await targetsLeft(queueId)).toEqual([books.mort, books.sourcery].sort((a, b) => a - b));
-    expect(fs.existsSync(file)).toBe(true);
+    for (const file of files) expect(fs.existsSync(file)).toBe(true);
     expect(Number(((await db.prepare("SELECT COUNT(*) AS c FROM blocklist").get()) as any).c)).toBe(0);
+  });
+
+  it("fails a collection that holds one or two books and none of the wanted ones: it was not what it said", async () => {
+    const { authorId, books } = await terry();
+    writeBook(RELEASE, "Terry Pratchett - Discworld Omnibus.epub");
+    const queueId = await queueCollection(authorId, [books.mort, books.sourcery]);
+
+    await expect(importer.importQueueItem(queueId)).rejects.toBeInstanceOf(importer.ReleaseFaultError);
+  });
+
+  it("fails a collection that the client reports as one file", async () => {
+    const { authorId, books } = await terry();
+    const file = writeBook("single", "Terry Pratchett - Discworld Omnibus.epub");
+    const queueId = await queueCollection(authorId, [books.mort, books.sourcery], { downloadPath: file });
+
+    await expect(importer.importQueueItem(queueId)).rejects.toBeInstanceOf(importer.ReleaseFaultError);
+    expect(fs.existsSync(file)).toBe(true);
   });
 
   it("parks the row, and holds the book, when a book's file is found and cannot be placed", async () => {

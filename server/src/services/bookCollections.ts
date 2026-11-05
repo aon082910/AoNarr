@@ -160,6 +160,8 @@ export function analyzeCollectionName(releaseTitle: string, author: string): Col
   const authorCompact = compactName(author);
   if (authorWords.length === 0 && authorCompact === "") return { namesAuthor: false, hint: [] };
   const cleaned = withoutCollectionWords(releaseTitle.replace(/_/g, " "))
+    // A scene release ends in its group: "Terry.Pratchett.Complete.Collection.EPUB-GRP".
+    .replace(/\b(epub3?|mobi|azw3?|pdf|e-?books?|retail)-[A-Za-z0-9]+\s*$/i, "$1")
     .replace(/\[[^\]]*\]|\([^)]*\)|\{[^}]*\}/g, " ")
     .replace(/(?<=[\p{L}\p{N}])\.(?=[\p{L}\p{N}])/gu, " ")
     .replace(/\s+/g, " ")
@@ -212,10 +214,13 @@ export function coverageOf(parsed: NonNullable<ParsedRelease["collection"]>, hin
       return year != null && year >= from && (to === undefined || year <= to);
     });
   }
+  let hintMatched = false;
   if (hint.length > 0) {
     const named = pool.filter((book) => seriesIs(hint, bookSeriesOf(book).name));
-    if (named.length > 0) pool = named;
-    else problem = `It names "${hint.join(" ")}", which none of this author's books is tagged with as its series`;
+    if (named.length > 0) {
+      pool = named;
+      hintMatched = true;
+    } else problem = `It names "${hint.join(" ")}", which none of this author's books is tagged with as its series`;
   } else if (kind === "series") {
     // "Complete Series" of an author whose books are in one series is that series.
     const names = Array.from(new Set(pool.map((book) => bookSeriesOf(book).name).filter((name): name is string => !!name).map((name) => wordsOf(name, NAME_NOISE).join(" "))));
@@ -224,13 +229,17 @@ export function coverageOf(parsed: NonNullable<ParsedRelease["collection"]>, hin
   }
   if (from !== undefined && from < 1000) {
     const placed = pool.filter((book) => bookSeriesOf(book).position != null);
-    if (placed.length === 0) {
-      problem = problem ?? `It numbers the books ${from}${to !== undefined ? `-${to}` : ""}, and none of this author's books has a series position to tell which those are`;
-    } else {
+    if (placed.length > 0) {
       pool = placed.filter((book) => {
         const position = bookSeriesOf(book).position!;
         return position >= from && position <= (to ?? from);
       });
+    } else {
+      // No book has a place in its series: the series the name gives (or, with none given, the books that are in a series at all)
+      // is the scope, and the import tells the books apart by name.
+      const inSeries = hintMatched ? pool : pool.filter((book) => bookSeriesOf(book).name != null);
+      if (inSeries.length > 0) pool = inSeries;
+      else problem = problem ?? `It numbers the books ${from}${to !== undefined ? `-${to}` : ""}, and none of this author's books has a series or a place in one to tell which those are`;
     }
   }
   return { covered: pool, problem };

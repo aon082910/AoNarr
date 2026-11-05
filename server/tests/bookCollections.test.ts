@@ -99,6 +99,9 @@ describe("the author a collection names", () => {
     ["Terry Pratchett - Discworld - Complete Collection (Books 1-41)", "Terry Pratchett", true],
     ["Discworld - Terry Pratchett - Books 1-41", "Terry Pratchett", true],
     ["Terry.Pratchett.Complete.Collection.EPUB", "Terry Pratchett", true],
+    ["Terry.Pratchett.Complete.Collection.EPUB-GRP", "Terry Pratchett", true],
+    ["Stephen.King.Complete.Collection.2019.RETAIL.eBook-GRP", "Stephen King", true],
+    ["[Group] Terry Pratchett - Complete Collection (EPUB, MOBI, PDF)", "Terry Pratchett", true],
     // spellings
     ["J.K. Rowling - Complete Collection", "J.K. Rowling", true],
     ["JK Rowling - Complete Collection", "J.K. Rowling", true],
@@ -183,13 +186,34 @@ describe("what a collection covers", () => {
     expect(coverageOf(parsed, [], several).problem).toMatch(/does not say which/);
   });
 
-  it("cannot place numbers when no book of the author has a series position, and says so", () => {
+  it("cannot place numbers when no book of the author has a series or a position, and says so", () => {
     const books = [book(1, "Mort", "1987-11-12"), book(2, "Sourcery", "1988-05-01"), book(3, "Eric", "1990-05-01")];
-    const parsed = parseReleaseTitle("Terry Pratchett - Discworld Books 1-9").collection!;
+    const parsed = parseReleaseTitle("Terry Pratchett - Books 1-9").collection!;
     const result = coverageOf(parsed, [], books);
-    expect(result.problem).toMatch(/none of this author's books has a series position/);
+    expect(result.problem).toMatch(/none of this author's books has a series or a place in one/);
     // What the name leaves open is returned for a hand pick to decide on.
     expect(result.covered).toHaveLength(3);
+  });
+
+  it("takes the books of the series it names when none of them has a position", () => {
+    const books = [
+      book(1, "Mort", "1987-11-12", { seriesName: "Discworld" }),
+      book(2, "Sourcery", "1988-05-01", { seriesName: "Discworld" }),
+      book(3, "Good Omens", "1990-05-01"),
+    ];
+    const parsed = parseReleaseTitle("Terry Pratchett - Discworld Books 1-9").collection!;
+    const hint = analyzeCollectionName("Terry Pratchett - Discworld Books 1-9", "Terry Pratchett").hint;
+    const result = coverageOf(parsed, hint, books);
+    expect(result.problem).toBeNull();
+    expect(result.covered.map((b) => b.id)).toEqual([1, 2]);
+  });
+
+  it("takes the books that are in a series at all when it names none and none has a position", () => {
+    const books = [book(1, "Mort", "1987-11-12", { seriesName: "Discworld" }), book(2, "Dune", "1965-08-01", { seriesName: "Dune" }), book(3, "Good Omens", "1990-05-01")];
+    const parsed = parseReleaseTitle("Terry Pratchett - Books 1-9").collection!;
+    const result = coverageOf(parsed, [], books);
+    expect(result.problem).toBeNull();
+    expect(result.covered.map((b) => b.id)).toEqual([1, 2]);
   });
 
   it("cannot place a series that none of the books is tagged with", () => {
@@ -230,6 +254,12 @@ describe("judging a collection", () => {
     expect(verdict.ok).toBe(true);
     expect(verdict.wanted).toHaveLength(12);
     expect(verdict.covered).toHaveLength(12);
+  });
+
+  it("takes a scene-style name, group and all", () => {
+    const verdict = judgeCollection("Terry.Pratchett.Complete.Collection.EPUB-GRP", "Terry Pratchett", books, options);
+    expect(verdict.ok).toBe(true);
+    expect(verdict.wanted).toHaveLength(12);
   });
 
   it("is not a collection when the release is not named like one", () => {
@@ -306,7 +336,7 @@ describe("judging a collection", () => {
     const unplaced = [book(1, "Mort", "1987-11-12"), book(2, "Sourcery", "1988-05-01"), book(3, "Eric", "1990-05-01"), book(4, "Nation", "2008-09-01")];
     const verdict = judgeCollection("Terry Pratchett - Books 1-9 [EPUB]", "Terry Pratchett", unplaced, options);
     expect(verdict.ok).toBe(false);
-    expect((verdict as { reason: string }).reason).toMatch(/none of this author's books has a series position/);
+    expect((verdict as { reason: string }).reason).toMatch(/none of this author's books has a series or a place in one/);
     expect(verdict.wanted).toHaveLength(4);
     // With a series named as well, the series is what the library cannot place.
     const named = judgeCollection("Terry Pratchett - Discworld Books 1-9 [EPUB]", "Terry Pratchett", unplaced, options);

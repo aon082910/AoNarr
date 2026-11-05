@@ -3377,6 +3377,11 @@ export async function placeBookCollectionFiles(params: {
     result.notFound = targetSubItemIds.filter((id) => !matchedTargets.has(id) && !hasFileNow.has(id));
   }
   if (result.imported.length === 0 && result.alreadyHad.length === 0) {
+    // One or two books are no collection (an omnibus in a single file, a short-story volume): the release was not what it said, and
+    // fails like any other, so its books are searched one by one. More files that fit no book are a naming the admin can settle.
+    if (!onlyFile && walked.length <= 2 && result.failed.length === 0) {
+      throw new ReleaseFaultError(`"${releaseTitle ?? "The collection"}" holds ${walked.length === 0 ? "no book file" : `only ${walked.length} book file${walked.length === 1 ? "" : "s"}`} and none of them is a book that was wanted`);
+    }
     const reasons = result.skipped.map((s) => s.reason);
     const why = reasons.length === 0 ? "none of its files is a book that was wanted" : `${reasons.slice(0, 3).join("; ")}${reasons.length > 3 ? `; and ${reasons.length - 3} more` : ""}`;
     throw new ImportSkippedError(`No book of "${releaseTitle ?? "the collection"}" could be imported: ${why} — left for a manual import`);
@@ -4279,6 +4284,10 @@ async function importQueueItemWithStrategy(queueItemId: number, manualSourceFile
   } else if (collectionTargets.length > 0) {
     const releaseRoot = collectionRootOf(sourceFile, queueItem.downloadPath, queueItem.title, ctx.category);
     if (!releaseRoot) {
+      // A client that reports one file for it has downloaded an omnibus, not a collection: the release was not what it said.
+      if (!manualSourceFile && queueItem.downloadPath && fs.existsSync(queueItem.downloadPath) && !isDirectory(queueItem.downloadPath)) {
+        throw new ReleaseFaultError(`"${queueItem.title}" downloaded as a single file, not as a collection of books`);
+      }
       throw new ImportSkippedError(`Cannot tell which folder holds the collection "${queueItem.title}" — left for a manual import`);
     }
     const done = await placeBookCollectionFiles({
