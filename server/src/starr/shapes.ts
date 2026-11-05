@@ -120,8 +120,13 @@ export interface PagingRequest {
   sortDirection: "ascending" | "descending";
 }
 
+/** The last page a request may name: a larger offset is not a row the database can count to (SQLite: "datatype mismatch", Postgres: bigint out of range). */
+const MAX_PAGE = 1_000_000;
+
 export function pagingOf(req: Request, defaultSortKey: string | null, defaultDirection: "ascending" | "descending" = "descending"): PagingRequest {
-  const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
+  const asked = Math.floor(Number(req.query.page));
+  // NaN, Infinity and text are "no page given"; a huge number is clamped (an empty page far past the end, as before for 5e9).
+  const page = Number.isFinite(asked) ? Math.min(MAX_PAGE, Math.max(1, asked)) : 1;
   const pageSize = Math.min(1000, Math.max(1, Math.floor(Number(req.query.pageSize) || 10)));
   const direction = String(req.query.sortDirection ?? "").toLowerCase();
   return {

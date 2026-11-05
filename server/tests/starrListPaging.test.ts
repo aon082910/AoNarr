@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { setupTestDb } from "./helpers/testDb.js";
@@ -120,6 +120,24 @@ describe("paging a list", () => {
     expect((await get("/radarr/api/v3/movie?page=1")).body).toMatchObject({ page: 1, pageSize: 10, totalRecords: 7 });
   });
 
+  it("answers 200 for a page number the database cannot count to, and for text", async () => {
+    const first = (await get("/radarr/api/v3/movie?page=1&pageSize=3")).body;
+    // Not a number at all: the first page, as when no page is sent. (1e300 and Infinity raised "datatype mismatch" before.)
+    for (const page of ["Infinity", "-Infinity", "NaN", "-5", "0", "abc", "", "1e300x"]) {
+      const res = await get(`/radarr/api/v3/movie?page=${page}&pageSize=3`);
+      expect(res.status, `page=${page}`).toBe(200);
+      expect(res.body, `page=${page}`).toEqual(first);
+    }
+    // A number that is too large is clamped to the last page a request may name: empty, with the count still right.
+    for (const page of ["1e300", "1e21", "5000000000", "1000001"]) {
+      const res = await get(`/radarr/api/v3/movie?page=${page}&pageSize=1000`);
+      expect(res.status, `page=${page}`).toBe(200);
+      expect(res.body, `page=${page}`).toMatchObject({ page: 1_000_000, pageSize: 1000, totalRecords: 7, records: [] });
+    }
+    // The same helper pages the older routes.
+    for (const route of ["wanted/missing", "wanted/cutoff", "queue", "history"]) expect((await get(`/radarr/api/v3/${route}?page=1e300&pageSize=2`)).status, route).toBe(200);
+  });
+
   it("sorts by a key a Starr client sends, in either direction, with a missing value last", async () => {
     const titles = async (query: string) => ((await get(`/radarr/api/v3/movie?page=1&pageSize=20&${query}`)).body.records as any[]).map((m) => m.title);
     expect(await titles("sortKey=title&sortDirection=descending")).toEqual(["Golf", "Foxtrot", "Echo", "Delta", "Charlie", "Bravo", "Alpha"]);
@@ -187,6 +205,71 @@ describe("paging a list", () => {
     const embedded = (await get("/lidarr/api/v1/album?includeArtist=true&page=1&pageSize=2")).body;
     expect(embedded.totalRecords).toBe(4);
     expect(embedded.records[0].artist.artistName).toBe("Zed");
+  });
+});
+
+describe("the cap of the kept resources", () => {
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    (await import("../src/starr/libraryList.js")).clearListCache();
+  });
+
+  const capWarnings = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls.filter((c) => String(c[0]).includes("kept list resources")).length;
+
+  it("keeps an exact count when an entry is replaced while the cache is over the cap", async () => {
+    const lib = await import("../src/starr/libraryList.js");
+    const rootId = Number(((await db.prepare("SELECT id FROM root_folders").get()) as { id: number }).id);
+    const id = await movie("Replaced", { root_folder_id: rootId });
+    lib.clearListCache(1); // every entry is over the cap, so the next build starts the cache over
+    await get("/radarr/api/v3/movie").expect(200);
+    expect(lib.listCacheStats().cachedSize).toBeGreaterThan(1);
+    await db.prepare("UPDATE media_items SET title = 'Replaced again' WHERE id = ?").run(id);
+    await get("/radarr/api/v3/movie").expect(200);
+    const stats = lib.listCacheStats();
+    expect(stats.entries).toBe(1);
+    expect(stats.cachedSize).toBeGreaterThan(0); // it went negative by one entry per overflow
+    expect(stats.cachedSize).toBe(stats.recounted);
+  });
+
+  it("stays between zero and the cap plus one entry through many overflows, and says so once in ten minutes", async () => {
+    const lib = await import("../src/starr/libraryList.js");
+    const { log } = await import("../src/services/logger.js");
+    const warn = vi.spyOn(log, "warn");
+    const real = Date.now.bind(Date);
+    let skew = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => real() + skew);
+    const rootId = Number(((await db.prepare("SELECT id FROM root_folders").get()) as { id: number }).id);
+    const ids: number[] = [];
+    for (let i = 0; i < 24; i++) ids.push(await movie(`Capped ${i}`, { root_folder_id: rootId, overview: "o".repeat(300) }));
+    const CAP = 8 * 1024;
+    lib.clearListCache(CAP);
+    let biggest = 0;
+    for (let round = 0; round < 6; round++) {
+      // Edit a few rows so that replaced entries meet the overflow too.
+      for (const id of ids.filter((_, i) => (i + round) % 5 === 0)) await db.prepare("UPDATE media_items SET overview = ? WHERE id = ?").run(`edited ${round} ${id}`, id);
+      const res = await get("/radarr/api/v3/movie").expect(200);
+      expect(res.body).toHaveLength(24);
+      const stats = lib.listCacheStats();
+      biggest = Math.max(biggest, Math.round(stats.recounted / Math.max(1, stats.entries)));
+      expect(stats.cachedSize).toBeGreaterThanOrEqual(0);
+      expect(stats.cachedSize).toBe(stats.recounted);
+      expect(stats.cachedSize).toBeLessThanOrEqual(CAP + 4 * biggest);
+    }
+    expect(capWarnings(warn)).toBe(1);
+    skew = 11 * 60 * 1000;
+    await db.prepare("UPDATE media_items SET overview = 'again'").run();
+    await get("/radarr/api/v3/movie").expect(200);
+    expect(capWarnings(warn)).toBe(2);
+  });
+
+  it("counts a fingerprint at two bytes a character, because one character outside Latin-1 makes it so", async () => {
+    const lib = await import("../src/starr/libraryList.js");
+    const rootId = Number(((await db.prepare("SELECT id FROM root_folders").get()) as { id: number }).id);
+    await movie("漢字", { root_folder_id: rootId, overview: "x".repeat(1000) });
+    const res = await get("/radarr/api/v3/movie").expect(200);
+    const jsonBytes = Buffer.byteLength(JSON.stringify(res.body[0]), "utf8");
+    // The overview alone is 1000 characters of the fingerprint.
+    expect(lib.listCacheStats().cachedSize - jsonBytes).toBeGreaterThanOrEqual(2000);
   });
 });
 
