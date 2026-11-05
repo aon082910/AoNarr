@@ -51,6 +51,7 @@ import { normalizeForMatch, pickVerifiedProviderHit, sameTitleIgnoringQualifier,
 import { syncPrimaryTitle } from "./releaseAliases.js";
 import { refreshProviderAliases } from "./aliasBackfill.js";
 import { applyAnilistSeasonToEpisodes } from "./anilistSeasons.js";
+import { evaluateRulesForItem } from "./autoTag.js";
 export { normalizeForMatch, pickVerifiedProviderHit, sameTitleIgnoringQualifier, titlesMatch };
 
 /** What a file's guessed title and year say about a type's existing items: the one it belongs to, the
@@ -2403,6 +2404,9 @@ async function refreshOneItem(
         }
       }
     }
+
+    // Genres, ids and so the lists that hold the title may have changed: auto tagging rules look at it again.
+    await evaluateRulesForItem(item.id);
 
     return { ok: true, childrenAdded };
   } catch {

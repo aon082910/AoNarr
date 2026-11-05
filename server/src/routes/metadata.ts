@@ -35,6 +35,7 @@ import { applySubItemMonitorMode, episodesToMonitor, finishFirstChildren, isMoni
 import { resolveMetadataProfileForAdd } from "../services/metadataProfiles.js";
 import { applyRootFolderDefaults, rootFolderDefaultsOf } from "../services/rootFolderDefaults.js";
 import { addTagsToItem, checkedTagIdsColumn } from "../services/tagScope.js";
+import { evaluateRulesForItem } from "../services/autoTag.js";
 import type { MediaType } from "../types/index.js";
 
 export const metadataRouter = Router();
@@ -233,6 +234,7 @@ metadataRouter.post(
     // The tags the request names, then the root folder's default tags and quality profile for what it left empty.
     if (tagIdsJson) await addTagsToItem(mediaItemId, JSON.parse(tagIdsJson));
     await applyRootFolderDefaults(mediaItemId);
+    await evaluateRulesForItem(mediaItemId);
     notifyAdded(String(b.title), String(b.type), { mediaItemId: Number(mediaItemId) }).catch(() => undefined);
 
     if (getSetting("createEmptyFoldersOnAdd") === "1" && rootFolderId) {

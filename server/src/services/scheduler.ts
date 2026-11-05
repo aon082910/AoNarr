@@ -154,6 +154,7 @@ import { getMediaServerConfig, triggerFullMediaServerScan } from "./mediaServer.
 import { syncWatchStatusFromMediaServer } from "./mediaServerWebhook.js";
 import { catchUpMissedJobs, hydrateJobHistory, isJobsStopped, registerJob, runJobNow, startAllJobs } from "./jobRegistry.js";
 import { runHousekeeping } from "./housekeeping.js";
+import { registerAutoTagJob } from "./autoTag.js";
 import type { DownloadClient, Indexer, MediaItem, QueueItem, SearchResult } from "../types/index.js";
 
 /** Runs `fn` over `items` with at most `concurrency` in flight at once — plain `Promise.all` would
@@ -4886,6 +4887,9 @@ export function startScheduler() {
     defaultSchedule: "12 * * * *",
     run: () => runScheduledBackup(),
   });
+
+  // Auto tagging rules over the whole library: a weekly safety net (the rules also run on every add, refresh and list sync).
+  registerAutoTagJob();
 
   startAllJobs();
   // Last results from job_runs (so the Jobs page survives a restart), then the weekly jobs a restart skipped.

@@ -34,6 +34,7 @@ import { wantedRouter } from "./routes/wanted.js";
 import { importRouter } from "./routes/import.js";
 import { systemRouter } from "./routes/system.js";
 import { tagsRouter } from "./routes/tags.js";
+import { autoTagRulesRouter } from "./routes/autoTagRules.js";
 import { customFormatsRouter } from "./routes/customFormats.js";
 import { releaseProfilesRouter } from "./routes/releaseProfiles.js";
 import { tracksRouter } from "./routes/tracks.js";
@@ -436,6 +437,7 @@ export async function createApp(): Promise<Express> {
   app.use("/api/import", importRouter);
   app.use("/api/system", systemRouter);
   app.use("/api/tags", tagsRouter);
+  app.use("/api/auto-tag-rules", autoTagRulesRouter);
   app.use("/api/custom-formats", customFormatsRouter);
   app.use("/api/release-profiles", releaseProfilesRouter);
   app.use("/api/media", tracksRouter);

@@ -86,6 +86,7 @@ import { checkTitleMove, isTitleMoving, moveTitleToRootFolder, startTitleMoveJob
 import { isNewItemMode } from "../services/monitorModes.js";
 import { applyRootFolderDefaults } from "../services/rootFolderDefaults.js";
 import { addTagsToItem, checkedTagIdsColumn, tagIdsOfItem } from "../services/tagScope.js";
+import { evaluateRulesForItem, releaseAutoOwnership } from "../services/autoTag.js";
 import { mediaFromRow } from "../services/notificationPayloads.js";
 import { kindleSmtpConfig } from "../services/notificationConnections.js";
 import type { MediaType } from "../types/index.js";
@@ -189,6 +190,8 @@ mediaRouter.post(
         ? `INSERT INTO media_item_tags (media_item_id, tag_id) VALUES ${valuesSql} ON CONFLICT DO NOTHING`
         : `INSERT OR IGNORE INTO media_item_tags (media_item_id, tag_id) VALUES ${valuesSql}`;
     const result = await db.prepare(insertSql).run(...mediaItemIds.flatMap((id: number) => [id, tagId]));
+    // A tag set by hand is the admin's from now on, even where an auto tagging rule had added it first.
+    await releaseAutoOwnership(mediaItemIds, tagId);
     res.json({ tagged: result.changes });
   })
 );
@@ -1526,6 +1529,7 @@ mediaRouter.post(
         ? "INSERT INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?) ON CONFLICT DO NOTHING"
         : "INSERT OR IGNORE INTO media_item_tags (media_item_id, tag_id) VALUES (?, ?)";
     await db.prepare(insertSql).run(req.params.id, tagId);
+    await releaseAutoOwnership([req.params.id], tagId);
     res.status(201).json(await getTagsForMediaItem(Number(req.params.id)));
   })
 );
@@ -1538,6 +1542,7 @@ mediaRouter.delete(
       req.params.id,
       req.params.tagId
     );
+    await releaseAutoOwnership([req.params.id], req.params.tagId);
     res.status(204).send();
   })
 );
@@ -1613,6 +1618,7 @@ mediaRouter.post(
     // The tags the request names, then the root folder's default tags and quality profile for what it left empty.
     if (requestedTags) await addTagsToItem(result.lastInsertRowid, JSON.parse(requestedTags));
     await applyRootFolderDefaults(result.lastInsertRowid);
+    await evaluateRulesForItem(result.lastInsertRowid);
     notifyAdded(String(b.title), String(b.type), { mediaItemId: Number(result.lastInsertRowid) }).catch(() => undefined);
     const row = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(result.lastInsertRowid);
     await syncPrimaryTitle(Number(result.lastInsertRowid));
