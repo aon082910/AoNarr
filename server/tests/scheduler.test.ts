@@ -2221,6 +2221,12 @@ describe("startScheduler", () => {
     expect(keys).toContain("housekeeping");
     expect(keys).toContain("newChildrenRefresh");
   });
+
+  it("registers the metadata files job as a heavy job that starts switched off, so an update never writes files by itself (ST20)", () => {
+    startScheduler();
+    const def = (registeredJobs as unknown as Map<string, { heavy?: boolean; defaultOff?: boolean; name: string }>).get("writeMetadataFiles");
+    expect(def).toMatchObject({ name: "Metadata Files", heavy: true, defaultOff: true });
+  });
 });
 
 describe("autoSearchCronSchedule", () => {

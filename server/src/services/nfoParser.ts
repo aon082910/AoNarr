@@ -62,7 +62,8 @@ export async function parseNfo(xml: string): Promise<ParsedNfo> {
   const title = firstText(root.title) ?? firstText(root.name);
   const yearText = firstText(root.year) ?? (firstText(root.premiered) ?? firstText(root.releasedate))?.slice(0, 4);
   const year = yearText ? parseInt(yearText, 10) : null;
-  const overview = firstText(root.plot) ?? firstText(root.outline) ?? firstText(root.biography);
+  // An album's description is its <review> (Kodi's album.nfo), the field AoNarr's own album.nfo puts it in.
+  const overview = firstText(root.plot) ?? firstText(root.outline) ?? firstText(root.biography) ?? firstText(root.review);
 
   let posterUrl: string | null = null;
   if (Array.isArray(root.thumb)) {

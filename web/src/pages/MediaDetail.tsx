@@ -316,6 +316,7 @@ export default function MediaDetail() {
   const [showSearchMatch, setShowSearchMatch] = useState(false);
   const [scanningItem, setScanningItem] = useState(false);
   const [refreshingItem, setRefreshingItem] = useState(false);
+  const [writingFiles, setWritingFiles] = useState(false);
   const [showEditMetadata, setShowEditMetadata] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<HistoryEvent[] | null>(null);
@@ -934,6 +935,23 @@ export default function MediaDetail() {
       setError((err as Error).message);
     } finally {
       setRefreshingItem(false);
+    }
+  }
+
+  /** Writes the NFO and picture files switched on under Settings, Metadata Files, for this title's existing files. */
+  async function writeMetadataFiles() {
+    if (!item) return;
+    setWritingFiles(true);
+    try {
+      const result = await api.post<{ written: number; skipped: number; failed: number; reason?: string }>(`/media/${item.id}/write-metadata-files`, {});
+      const counts = `${result.written} written, ${result.skipped} already there${result.failed > 0 ? `, ${result.failed} failed (see the Logs page)` : ""}`;
+      if (result.failed > 0) notify.error(`Metadata files: ${counts}.`);
+      else if (result.written + result.skipped === 0 && result.reason) notify.info(result.reason);
+      else notify.success(`Metadata files: ${counts}${result.reason ? `. ${result.reason}` : ""}.`);
+    } catch (err) {
+      notify.error((err as Error).message);
+    } finally {
+      setWritingFiles(false);
     }
   }
 
@@ -1738,6 +1756,16 @@ export default function MediaDetail() {
                 onClick={() => downloadFile(`/media/${item.id}/export?format=nfo`, `${item.title}.nfo`)}
                 title="Export .nfo"
               />
+              {!!item.hasFile && (shape === "single" || shape === "episodic" || item.type === "artist") && (
+                <ToolbarButton
+                  icon={<FilmIcon />}
+                  label={writingFiles ? "Writing..." : "Write Files"}
+                  onClick={writeMetadataFiles}
+                  disabled={writingFiles}
+                  spinning={writingFiles}
+                  title="Write metadata files — write the NFO and picture files switched on under Settings, Media Management, Metadata Files, beside this title's files (Kodi, Jellyfin, Emby, Plex). Files that are already there are kept."
+                />
+              )}
               {(metadataProviders[item.type]?.length ?? 0) > 0 && (
                 <ToolbarButton
                   icon={<SearchIcon />}

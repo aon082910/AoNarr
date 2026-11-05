@@ -55,6 +55,7 @@ const EVENT_LABELS: Record<string, string> = {
   media_duplicates_merged: "Merged duplicate media",
   media_duplicates_dismissed: "Dismissed duplicate media",
   media_split: "Split media item",
+  media_metadata_files: "Wrote metadata files",
   user_created_via_invite: "Created user via invite",
   root_folder_moved: "Moved root folder",
   root_folder_removed: "Removed root folder",

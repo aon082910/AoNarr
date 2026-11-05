@@ -4,6 +4,7 @@ import { getMediaTypeConfig } from "./mediaTypes.js";
 import { log } from "./logger.js";
 import { fetchMediaServerArtwork, isMediaServerArtworkRef } from "./mediaServer.js";
 import { fetchScreenscraperArtwork, isScreenscraperArtworkRef } from "./metadata.js";
+import { writeFileAtomicSync } from "./atomicWrite.js";
 
 function escapeXml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -24,6 +25,10 @@ export interface ExportableItem {
  * Comics/Manga/Online Videos/Courses/...) types are all a parent-with-children folder on disk, the
  * same structural shape Kodi's tvshow.nfo describes — "movie" is only right for a single-file item
  * (Movies/ROMs/Adult). */
+function exportableRemoteUrl(url: string | null | undefined): string | null {
+  return url && !url.startsWith("/api/media/local-artwork/") ? url : null;
+}
+
 export function buildNfo(item: ExportableItem): string {
   const shape = getMediaTypeConfig(item.type).shape;
   const root = shape === "episodic" || shape === "collection" ? "tvshow" : "movie";
@@ -35,7 +40,7 @@ export function buildNfo(item: ExportableItem): string {
   // <thumb> — meaningless written back into a real .nfo file (it's an internal path, not
   // something anything outside AoNarr could ever resolve), so it's skipped here rather than
   // round-tripped verbatim.
-  const exportablePosterUrl = item.posterUrl && !item.posterUrl.startsWith("/api/media/local-artwork/") ? item.posterUrl : null;
+  const exportablePosterUrl = exportableRemoteUrl(item.posterUrl);
 
   return [
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
@@ -122,24 +127,44 @@ export function safeFileName(title: string): string {
  * throws) on any filesystem error — a failed sidecar write is a nice-to-have, not something that
  * should fail the metadata edit that triggered it.
  */
-export function writeNfoSidecar(filePath: string, item: ExportableItem, options: { keepRicher?: boolean } = {}): void {
+export type NfoWriteResult = "written" | "exists" | "richer" | "failed";
+
+export interface NfoWriteOptions {
+  /** Leave an NFO another tool wrote (anything beyond what AoNarr writes) alone. */
+  keepRicher?: boolean;
+  /** Write only when there is no NFO yet: the library-wide run and the per-title action fill gaps, they do not refresh. */
+  onlyIfMissing?: boolean;
+}
+
+export function writeNfoSidecar(filePath: string, item: ExportableItem, options: NfoWriteOptions = {}): NfoWriteResult {
   try {
     const dir = path.dirname(filePath);
     const nfoPath = path.join(dir, `${path.basename(filePath, path.extname(filePath))}.nfo`);
+    // A movie.nfo beside the file counts too, since Kodi reads it first.
+    const candidates = [nfoPath, path.join(dir, "movie.nfo")];
+    if (options.onlyIfMissing && candidates.some((candidate) => fs.existsSync(candidate))) return "exists";
     // An import of a better copy must not replace the NFO another tool wrote (cast, genres, ratings): it only
-    // refreshes a sidecar that AoNarr wrote, or none. A movie.nfo beside the file counts too, since Kodi reads it first.
-    if (options.keepRicher && [nfoPath, path.join(dir, "movie.nfo")].some((candidate) => existingNfoIsRicher(candidate))) return;
-    fs.writeFileSync(nfoPath, buildNfo(item));
+    // refreshes a sidecar that AoNarr wrote, or none.
+    if (options.keepRicher && candidates.some((candidate) => existingNfoIsRicher(candidate))) return "richer";
+    writeFileAtomicSync(nfoPath, buildNfo(item));
+    return "written";
   } catch (err) {
     log.warn(`[metadataExport] failed to write NFO sidecar for "${item.title}":`, (err as Error).message);
+    return "failed";
   }
 }
 
-// The only elements AoNarr writes. An existing sidecar made of nothing else is one AoNarr wrote (or one no richer
-// than it), so rewriting it loses nothing.
-const AONARR_NFO_ELEMENTS = new Set([
+// The only elements AoNarr writes, per kind of file. An existing sidecar made of nothing else is one AoNarr wrote (or one no
+// richer than it), so rewriting it loses nothing. Music has its own sets: <genre> or <artist> in a movie NFO is another
+// tool's, in an album NFO it is ours.
+const AONARR_VIDEO_ELEMENTS = new Set([
   "movie", "tvshow", "title", "year", "plot", "thumb", "uniqueid",
   "episodedetails", "showtitle", "season", "episode", "aired",
+]);
+const AONARR_ARTIST_ELEMENTS = new Set(["artist", "name", "musicbrainzartistid", "genre", "biography", "thumb", "uniqueid"]);
+const AONARR_ALBUM_ELEMENTS = new Set([
+  "album", "title", "artist", "musicbrainzreleasegroupid", "year", "releasedate", "genre", "review", "thumb", "uniqueid",
+  "track", "position", "duration",
 ]);
 
 export function isAonarrShapedNfo(content: string): boolean {
@@ -148,8 +173,10 @@ export function isAonarrShapedNfo(content: string): boolean {
     .replace(/<!--[\s\S]*?-->/g, "")
     .trim();
   if (!body) return true;
-  if (!/^<(movie|tvshow|episodedetails)[\s>]/.test(body) || !/<\/(movie|tvshow|episodedetails)>$/.test(body)) return false;
-  return [...body.matchAll(/<\/?([A-Za-z_][\w.:-]*)/g)].every((m) => AONARR_NFO_ELEMENTS.has(m[1].toLowerCase()));
+  const root = /^<(movie|tvshow|episodedetails|artist|album)[\s>]/.exec(body)?.[1];
+  if (!root || !/<\/(movie|tvshow|episodedetails|artist|album)>$/.test(body)) return false;
+  const allowed = root === "artist" ? AONARR_ARTIST_ELEMENTS : root === "album" ? AONARR_ALBUM_ELEMENTS : AONARR_VIDEO_ELEMENTS;
+  return [...body.matchAll(/<\/?([A-Za-z_][\w.:-]*)/g)].every((m) => allowed.has(m[1].toLowerCase()));
 }
 
 /** Whether a file is there and holds more than AoNarr writes: another tool's NFO. An unreadable one counts, to be safe. */
@@ -190,24 +217,144 @@ export function buildEpisodeNfo(episodes: ExportableEpisode[]): string {
 }
 
 /** `<basename>.nfo` for an episode file, unless another tool's NFO is already there. Never throws. */
-export function writeEpisodeNfoSidecar(filePath: string, episodes: ExportableEpisode[]): void {
+export function writeEpisodeNfoSidecar(filePath: string, episodes: ExportableEpisode[], options: Pick<NfoWriteOptions, "onlyIfMissing"> = {}): NfoWriteResult {
   try {
     const nfoPath = path.join(path.dirname(filePath), `${path.basename(filePath, path.extname(filePath))}.nfo`);
-    if (existingNfoIsRicher(nfoPath)) return;
-    fs.writeFileSync(nfoPath, buildEpisodeNfo(episodes));
+    if (options.onlyIfMissing && fs.existsSync(nfoPath)) return "exists";
+    if (existingNfoIsRicher(nfoPath)) return "richer";
+    writeFileAtomicSync(nfoPath, buildEpisodeNfo(episodes));
+    return "written";
   } catch (err) {
     log.warn(`[metadataExport] failed to write the episode NFO for "${filePath}":`, (err as Error).message);
+    return "failed";
   }
 }
 
-/** `tvshow.nfo` in the show's folder, only when none is there (the show's own is written once, not on every import). Never throws. */
-export function writeTvShowNfoIfMissing(folder: string, item: ExportableItem): void {
+/**
+ * `tvshow.nfo` in the show's folder, only when none is there (the show's own is written once, not on every import). With
+ * `overwrite` one AoNarr wrote is refreshed; another tool's is never replaced. Never throws.
+ */
+export function writeTvShowNfoIfMissing(folder: string, item: ExportableItem, options: { overwrite?: boolean } = {}): NfoWriteResult {
   try {
     const nfoPath = path.join(folder, "tvshow.nfo");
-    if (fs.existsSync(nfoPath)) return;
-    fs.writeFileSync(nfoPath, buildNfo(item));
+    if (fs.existsSync(nfoPath)) {
+      if (!options.overwrite) return "exists";
+      if (existingNfoIsRicher(nfoPath)) return "richer";
+    }
+    writeFileAtomicSync(nfoPath, buildNfo(item));
+    return "written";
   } catch (err) {
     log.warn(`[metadataExport] failed to write tvshow.nfo for "${item.title}":`, (err as Error).message);
+    return "failed";
+  }
+}
+
+export interface ExportableArtist {
+  name: string;
+  overview: string | null;
+  genres: string[];
+  externalIds: Record<string, string>;
+  posterUrl: string | null;
+}
+
+export interface ExportableAlbum {
+  title: string;
+  artist: string;
+  releaseDate: string | null;
+  overview: string | null;
+  genres: string[];
+  /** The provider's own id for the album (a MusicBrainz release group, a Deezer album). */
+  externalId: string | null;
+  externalProvider: string | null;
+  posterUrl: string | null;
+  tracks: { position: number; title: string; durationSeconds: number | null }[];
+}
+
+function uniqueIdLines(ids: Record<string, string>, skip: string | null): string[] {
+  return Object.entries(ids)
+    .filter(([provider, id]) => provider !== skip && id)
+    .map(([provider, id]) => `  <uniqueid type="${escapeXml(provider)}">${escapeXml(id)}</uniqueid>`);
+}
+
+/** Kodi's / Jellyfin's `artist.nfo`: the artist folder's own file. The title field of an artist is `<name>`. */
+export function buildArtistNfo(artist: ExportableArtist): string {
+  const ids = artist.externalIds ?? {};
+  const poster = exportableRemoteUrl(artist.posterUrl);
+  return [
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+    `<artist>`,
+    `  <name>${escapeXml(artist.name)}</name>`,
+    ids.musicbrainz ? `  <musicBrainzArtistID>${escapeXml(ids.musicbrainz)}</musicBrainzArtistID>` : null,
+    ...artist.genres.map((genre) => `  <genre>${escapeXml(genre)}</genre>`),
+    artist.overview ? `  <biography>${escapeXml(artist.overview)}</biography>` : null,
+    poster ? `  <thumb aspect="poster">${escapeXml(poster)}</thumb>` : null,
+    ...uniqueIdLines(ids, "musicbrainz"),
+    `</artist>`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function trackDuration(seconds: number | null): string | null {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return null;
+  const whole = Math.round(seconds);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+/** Kodi's / Jellyfin's `album.nfo`: the album folder's own file, with the track list AoNarr already holds. */
+export function buildAlbumNfo(album: ExportableAlbum): string {
+  const date = album.releaseDate && /^\d{4}(-\d{2}(-\d{2})?)?$/.test(album.releaseDate.trim()) ? album.releaseDate.trim() : null;
+  const year = album.releaseDate ? /^\d{4}/.exec(album.releaseDate)?.[0] : null;
+  const poster = exportableRemoteUrl(album.posterUrl);
+  const isMusicBrainz = album.externalProvider === "musicbrainz" && !!album.externalId;
+  const ids = !isMusicBrainz && album.externalId && album.externalProvider ? { [album.externalProvider]: album.externalId } : {};
+  const tracks = album.tracks.map((track) => {
+    const duration = trackDuration(track.durationSeconds);
+    return [
+      `  <track>`,
+      `    <position>${track.position}</position>`,
+      `    <title>${escapeXml(track.title)}</title>`,
+      duration ? `    <duration>${duration}</duration>` : null,
+      `  </track>`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+  return [
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`,
+    `<album>`,
+    `  <title>${escapeXml(album.title)}</title>`,
+    `  <artist>${escapeXml(album.artist)}</artist>`,
+    isMusicBrainz ? `  <musicBrainzReleaseGroupID>${escapeXml(album.externalId as string)}</musicBrainzReleaseGroupID>` : null,
+    year ? `  <year>${year}</year>` : null,
+    date ? `  <releasedate>${escapeXml(date)}</releasedate>` : null,
+    ...album.genres.map((genre) => `  <genre>${escapeXml(genre)}</genre>`),
+    album.overview ? `  <review>${escapeXml(album.overview)}</review>` : null,
+    poster ? `  <thumb aspect="poster">${escapeXml(poster)}</thumb>` : null,
+    ...uniqueIdLines(ids, null),
+    ...tracks,
+    `</album>`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * `artist.nfo` / `album.nfo` in `folder`. Written when there is none; with `overwrite` one AoNarr wrote is refreshed.
+ * Another tool's (anything with more in it than AoNarr writes) is never replaced. Never throws.
+ */
+export function writeMusicNfo(folder: string, kind: "artist" | "album", xml: string, options: { overwrite?: boolean } = {}): NfoWriteResult {
+  try {
+    const nfoPath = path.join(folder, `${kind}.nfo`);
+    if (fs.existsSync(nfoPath)) {
+      if (!options.overwrite) return "exists";
+      if (existingNfoIsRicher(nfoPath)) return "richer";
+    }
+    writeFileAtomicSync(nfoPath, xml);
+    return "written";
+  } catch (err) {
+    log.warn(`[metadataExport] failed to write ${kind}.nfo in "${folder}":`, (err as Error).message);
+    return "failed";
   }
 }
 

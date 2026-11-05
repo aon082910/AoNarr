@@ -105,6 +105,15 @@ const RULES: Readonly<Record<string, Rule>> = {
   episodeTitleRequired: { oneOf: ["always", "bulkSeasonReleases", "never"] },
   rejectDangerousFiles: { oneOf: ["1", "0"] },
   removeFolderOnDelete: { oneOf: ["1", "0"] },
+  // Metadata files (metadataFileOptions.ts); unset follows writeNfoOnImport for the shows, is off for the rest.
+  nfoTvEnabled: { oneOf: ["1", "0"] },
+  nfoMusicEnabled: { oneOf: ["1", "0"] },
+  writeImagesOnImport: { oneOf: ["1", "0"] },
+  imagesPosterFanart: { oneOf: ["1", "0"] },
+  imagesSeasonPosters: { oneOf: ["1", "0"] },
+  imagesEpisodeThumbs: { oneOf: ["1", "0"] },
+  imagesMusicCover: { oneOf: ["1", "0"] },
+  overwriteMetadataFiles: { oneOf: ["1", "0"] },
   deleteEmptyFolders: { oneOf: ["1", "0"] },
   // Display preferences (displayPreferences.ts); an empty value is the browser's own way.
   uiWeekStart: { oneOf: UI_WEEK_STARTS },
