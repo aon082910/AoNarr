@@ -222,6 +222,8 @@ export async function matchFoldersByTags(
   const candidates = folders
     .filter(unsettled)
     .sort((a, b) => Number(!!options.onlyFolder && same(b.path, options.onlyFolder)) - Number(!!options.onlyFolder && same(a.path, options.onlyFolder)) || (a.path < b.path ? -1 : 1));
+  // A manual import whose folder the name already settled has nothing to ask the tags: no file is read for the other folders.
+  if (options.onlyFolder && !candidates.some((folder) => same(folder.path, options.onlyFolder!))) return { matches, identified: 0, probed: 0 };
 
   const identities = new Map<string, FolderIdentity>();
   const refused = new Map<string, { kind: "unmatched" | "ambiguous"; reason: string }>();
@@ -311,6 +313,8 @@ export async function matchFoldersByTags(
  */
 function discsOfGroup(group: ({ folder: TagFolder } & FolderIdentity)[], handPicked: boolean): DiscFolder[] | string {
   if (group.some((g) => g.severalDiscs || g.disc == null)) return "a folder holds several discs or names none";
+  // Placed from the files lying in each folder: a folder that keeps its tracks in subfolders would be placed without them.
+  if (group.some((g) => g.folder.audioFiles.some((file) => path.resolve(path.dirname(file)) !== path.resolve(g.folder.path)))) return "a folder keeps its tracks in subfolders";
   const numbers = group.map((g) => g.disc!).sort((a, b) => a - b);
   if (new Set(numbers).size !== numbers.length) return "two of them are the same disc";
   if (numbers.some((n, i) => n !== i + 1)) return `their discs (${numbers.join(", ")}) do not run from 1 without a gap`;

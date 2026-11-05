@@ -3213,6 +3213,9 @@ export async function placeDiscographyFiles(params: {
     }
     const album = albums.find((a) => a.id === match.albumId)!;
     const anchorFile = [...byFolder.get(folder.path)!].sort()[0];
+    // A discography of dozens of albums is one long task on the import lane: between albums the event loop gets its turn, so the
+    // queue poll, the requests and the timers wait for one album's work at most, not for the whole discography's.
+    await new Promise<void>((resolve) => setImmediate(resolve));
     try {
       const placedAlbum = await placeAlbumFiles({
         itemId,

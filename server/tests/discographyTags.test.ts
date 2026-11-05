@@ -260,6 +260,13 @@ describe("naming a folder from the tags of its files", () => {
       expect(r.matchOf("Disc B")).toEqual({ kind: "album", albumId: 3, target: true, by: "tags" });
     });
 
+    it("are not one album when a folder keeps its tracks in subfolders (they would be left behind)", async () => {
+      const nested: TagFolder = { ...folderOf("A Night at the Opera CD1", 2), audioFiles: ["/dl/Queen - Discography/A Night at the Opera CD1/Part 1/001 - Song.flac", "/dl/Queen - Discography/A Night at the Opera CD1/Part 1/002 - Song.flac"] };
+      const r = await run([nested, folderOf("A Night at the Opera CD2")], { "Part 1": discs({}, {})["A Night at the Opera CD1"], "A Night at the Opera CD2": discs({}, {})["A Night at the Opera CD2"] });
+      expect(r.matchOf("A Night at the Opera CD1")).toMatchObject({ kind: "ambiguous", reason: expect.stringContaining("subfolders") });
+      expect(r.identified).toBe(0);
+    });
+
     it("are not one album when their artists differ", async () => {
       const r = await run([folderOf("A Night at the Opera CD1"), folderOf("A Night at the Opera CD2")], discs({}, { artist: "Someone Else" }));
       expect(r.matchOf("A Night at the Opera CD2")).toMatchObject({ kind: "ambiguous", reason: expect.stringContaining("Someone Else") });
@@ -329,6 +336,13 @@ describe("naming a folder from the tags of its files", () => {
       const r = await run(folders, {});
       expect(r.foldersAsked().size).toBe(3);
       expect(r.identified).toBe(0);
+    });
+
+    it("reads nothing for a manual import of a folder the name already settled", async () => {
+      const r = await run([folderOf("1974 - Queen II"), folderOf("odd folder")], { "odd folder": tagsOf("Sheer Heart Attack") }, { onlyFolder: folderOf("1974 - Queen II").path });
+      expect(r.asked).toEqual([]);
+      expect(r.probed).toBe(0);
+      expect(r.matchOf("odd folder")).toMatchObject({ kind: "unmatched" });
     });
 
     it("reads the admin's folder first, within the cap", async () => {
