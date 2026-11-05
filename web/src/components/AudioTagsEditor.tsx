@@ -131,7 +131,7 @@ export default function AudioTagsEditor({ settings, saveSetting }: { settings: R
           )}
           {Object.keys(last.reasons).length > 0 && (
             <details style={{ marginTop: "0.3rem" }}>
-              <summary>Why files were skipped or failed</summary>
+              <summary>Reasons and notes (skipped, failed, or written without the cover)</summary>
               <ul style={{ margin: "0.3rem 0 0", paddingLeft: "1.2rem" }}>
                 {Object.entries(last.reasons)
                   .sort((a, b) => b[1] - a[1])

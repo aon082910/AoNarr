@@ -5,6 +5,7 @@ import path from "node:path";
 import NodeID3 from "node-id3";
 import { writeTagsWithFfmpeg } from "./audioTagFfmpeg.js";
 import {
+  TAGS_UP_TO_DATE,
   cleanTagText,
   formatLabelOf,
   tagFormatOf,
@@ -130,7 +131,13 @@ function withoutId3v1(buffer: Buffer): Buffer {
   return buffer.length >= 128 && buffer.subarray(buffer.length - 128, buffer.length - 125).toString("latin1") === "TAG" ? buffer.subarray(0, buffer.length - 128) : buffer;
 }
 
+/** An MP3 is read whole, and copied once more to put the tag in front of it: past this it is left alone rather than risk the process's memory. */
+export const MP3_MAX_BYTES = 512 * 1024 * 1024;
+
 async function writeMp3Tags(filePath: string, info: AudioTagInfo, options: WriteAudioTagsOptions, link: fs.Stats): Promise<TagWriteResult> {
+  if (link.size > MP3_MAX_BYTES) {
+    return { outcome: "skipped", reason: `the MP3 is over ${MP3_MAX_BYTES / 1024 ** 2} MB, more than can be held in memory while it is rewritten`, format: "MP3" };
+  }
   const scrub = options.scrub === true;
   const data = await fsp.readFile(filePath);
   let current: any = {};
@@ -141,7 +148,7 @@ async function writeMp3Tags(filePath: string, info: AudioTagInfo, options: Write
   }
   const wanted = id3TagsFor(info);
   const wantsCover = !!options.cover && (!current.image || scrub);
-  if (id3UpToDate(current, wanted, scrub, wantsCover)) return { outcome: "skipped", reason: "the tags are already up to date", format: "MP3" };
+  if (id3UpToDate(current, wanted, scrub, wantsCover)) return { outcome: "skipped", reason: TAGS_UP_TO_DATE, format: "MP3" };
 
   const tags: NodeID3.Tags = { ...wanted };
   if (wantsCover && options.cover) {
@@ -190,6 +197,7 @@ export async function writeAudioTags(filePath: string, info: AudioTagInfo, optio
     if (!link.isFile()) return { outcome: "skipped", reason: "it is not a regular file", format: label };
     const result = entry.format === "mp3" ? await writeMp3Tags(filePath, info, options, link) : await writeTagsWithFfmpeg(filePath, info, options, link);
     if (result.outcome === "failed") log.warn(`[audioTagWriter] failed to write ${label} tags for "${filePath}": ${result.reason}`);
+    else if (result.outcome === "skipped" && result.reason !== TAGS_UP_TO_DATE) log.info(`[audioTagWriter] left "${filePath}" untagged: ${result.reason}`);
     return result;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "skipped", reason: "the file is missing", format: label };

@@ -324,7 +324,7 @@ describe("retagging a title", () => {
     const summary = await audioRetag.retagTitle(itemId, { writer, throttleMs: 0 });
 
     expect(calls).toHaveLength(0);
-    expect(summary.reasons).toEqual({ "it is being moved or renamed right now": 2 });
+    expect(summary.reasons).toEqual({ "it is being moved, renamed or retagged right now": 2 });
     // And the lock it did not take is still the mover's.
     expect(titleMoveLock.isTitleMoving(itemId)).toBe(true);
   });
@@ -578,6 +578,33 @@ describe("the retag routes", () => {
     const books = await root("route-books", "author");
     const { itemId } = await title(books, { type: "author", ext: ".epub" });
     expect((await post(`/api/media/${itemId}/retag`)).status).toBe(400);
+  });
+
+  it("follows an edit of the title, an album or a book's narrator, and a rematch, in sync mode only", async () => {
+    const music = await root("route-edit", "artist");
+    const books = await root("route-edit-books", "audiobook");
+    const artist = await title(music, { names: ["One"] });
+    const book = await title(books, { type: "audiobook", title: "Some Author", names: ["Part"], sub: { title: "The Book" } });
+    const patch = (url: string, body: object) => request(app).patch(url).set("X-Api-Key", apiKey).send(body);
+
+    // Not in "all": nothing follows the edit.
+    setSetting("writeAudioTagsMode", "all");
+    expect((await patch(`/api/media/${artist.itemId}`, { title: "Edited Artist" })).status).toBe(200);
+    expect((await patch(`/api/media/${book.itemId}/subitems/${book.subId}`, { narrator: "Early Reader" })).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(NodeID3.read(artist.files[0]).artist).toBeUndefined();
+    expect(NodeID3.read(book.files[0]).composer).toBeUndefined();
+
+    setSetting("writeAudioTagsMode", "sync");
+    expect((await patch(`/api/media/${artist.itemId}`, { title: "Edited Again" })).status).toBe(200);
+    await waitFor(() => NodeID3.read(artist.files[0]).artist === "Edited Again", "the artist's file to follow the edit");
+    expect((await patch(`/api/media/${book.itemId}/subitems/${book.subId}`, { narrator: "Late Reader", seriesName: "A Series", seriesPosition: 3 })).status).toBe(200);
+    await waitFor(() => NodeID3.read(book.files[0]).composer === "Late Reader", "the book's file to follow the narrator");
+    expect(NodeID3.read(book.files[0]).contentGroup).toBe("A Series");
+
+    const rematch = await request(app).post(`/api/media/${artist.itemId}/subitems/${artist.subId}/rematch`).set("X-Api-Key", apiKey).send({ title: "Rematched Album" });
+    expect(rematch.status).toBe(200);
+    await waitFor(() => NodeID3.read(artist.files[0]).album === "Rematched Album", "the file to follow the rematch");
   });
 
   it("runs the library pass as the registered job, and says so when it is already running", async () => {

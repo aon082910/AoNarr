@@ -2575,6 +2575,12 @@ mediaRouter.post(
   })
 );
 
+/** Write-tags mode "sync": an album or book edit is followed by a retag of its title's files. */
+async function retagParentAfterEdit(mediaItemId: string): Promise<void> {
+  const parent = (await db.prepare("SELECT type FROM media_items WHERE id = ?").get(mediaItemId)) as { type: string } | undefined;
+  if (parent) retagTitleAfterEdit(Number(mediaItemId), parent.type);
+}
+
 mediaRouter.patch(
   "/:id/subitems/:subItemId",
   requireAdmin,
@@ -2626,6 +2632,8 @@ mediaRouter.patch(
       await wakeLeaf("sub_items", Number(req.params.subItemId));
     }
     if (fileCleared) await rollUpParentMissing(req.params.id);
+    // Write-tags mode "sync": an audiobook's narrator and series are in its files' tags.
+    if (b.seriesName !== undefined || b.seriesPosition !== undefined || b.narrator !== undefined) await retagParentAfterEdit(req.params.id);
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
     if (!row) throw new HttpError(404, "Sub-item not found");
     res.json(subItemFromRow(row));
@@ -2697,6 +2705,7 @@ mediaRouter.post(
 
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "subitem_rematched", `"${b.title}"`);
+    await retagParentAfterEdit(req.params.id);
     const row = await db.prepare("SELECT * FROM sub_items WHERE id = ?").get(req.params.subItemId);
     res.json(subItemFromRow(row));
   })

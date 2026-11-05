@@ -150,6 +150,82 @@ describe("writeAudioTags", () => {
     expect(fs.readFileSync(filePath).equals(audio)).toBe(true);
   });
 
+  it("leaves an MP3 too large to hold in memory alone, and says so", async () => {
+    const filePath = path.join(tmpDir, "huge.mp3");
+    fs.writeFileSync(filePath, "");
+    fs.truncateSync(filePath, 600 * 1024 * 1024); // sparse: no disk is used
+
+    const result = await writeAudioTags(filePath, { title: "X", artist: "Y", album: "Z" });
+
+    expect(result).toMatchObject({ outcome: "skipped", format: "MP3" });
+    expect(result.reason).toMatch(/over 512 MB/);
+    expect(fs.statSync(filePath).size).toBe(600 * 1024 * 1024);
+    fs.rmSync(filePath);
+  });
+
+  it("scrubs an MP3's other tags, keeps its picture, and a second pass has nothing to do", async () => {
+    const filePath = path.join(tmpDir, "scrub.mp3");
+    fs.writeFileSync(filePath, Buffer.from("mpeg frames"));
+    const picture = { mime: "image/jpeg", type: { id: 3 }, description: "Front", imageBuffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]) };
+    NodeID3.write({ title: "Old", comment: { language: "eng", text: "remove me" }, copyright: "(c)", image: picture }, filePath);
+
+    const first = await writeAudioTags(filePath, { title: "New", artist: "A", album: "B" }, { scrub: true });
+
+    expect(first.outcome).toBe("written");
+    const tags = NodeID3.read(filePath);
+    expect(tags.title).toBe("New");
+    expect(tags.comment).toBeUndefined();
+    expect(tags.copyright).toBeUndefined();
+    expect((tags.image as { imageBuffer: Buffer }).imageBuffer.equals(picture.imageBuffer)).toBe(true);
+    expect(await writeAudioTags(filePath, { title: "New", artist: "A", album: "B" }, { scrub: true })).toMatchObject({ outcome: "skipped", reason: "the tags are already up to date" });
+  });
+
+  it("puts a cover in an MP3 that has none, but not over the one it has", async () => {
+    const filePath = path.join(tmpDir, "cover.mp3");
+    fs.writeFileSync(filePath, Buffer.from("mpeg frames"));
+    const info = { title: "T", artist: "A", album: "B" };
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(8, 1)]);
+
+    expect(await writeAudioTags(filePath, info, { cover: { data: jpeg, mime: "image/jpeg" } })).toMatchObject({ outcome: "written" });
+    expect((NodeID3.read(filePath).image as { mime: string }).mime).toBe("image/jpeg");
+    const other = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(8, 2)]);
+    expect(await writeAudioTags(filePath, info, { cover: { data: other, mime: "image/png" } })).toMatchObject({ outcome: "skipped" });
+    expect((NodeID3.read(filePath).image as { mime: string }).mime).toBe("image/jpeg");
+  });
+
+  it("writes the album artist, disc, genre, composer, series and MusicBrainz ids an audiobook or album carries", async () => {
+    const filePath = path.join(tmpDir, "full.mp3");
+    fs.writeFileSync(filePath, Buffer.from("mpeg frames"));
+
+    await writeAudioTags(filePath, {
+      title: "T",
+      artist: "A",
+      albumArtist: "AA",
+      album: "B",
+      trackNumber: 2,
+      trackTotal: 9,
+      discNumber: 1,
+      discTotal: 2,
+      year: "2018",
+      genre: "Rock",
+      composer: "Narrator",
+      series: "Series",
+      seriesPart: "4",
+      musicbrainz: { artistId: "artist-1", releaseGroupId: "group-1" },
+    });
+
+    const tags = NodeID3.read(filePath);
+    expect(tags).toMatchObject({ performerInfo: "AA", trackNumber: "2/9", partOfSet: "1/2", year: "2018", genre: "Rock", composer: "Narrator", contentGroup: "Series" });
+    expect(tags.userDefinedText).toEqual(
+      expect.arrayContaining([
+        { description: "SERIES", value: "Series" },
+        { description: "SERIES-PART", value: "4" },
+        { description: "MusicBrainz Artist Id", value: "artist-1" },
+        { description: "MusicBrainz Release Group Id", value: "group-1" },
+      ])
+    );
+  });
+
   it("leaves a hardlinked import and the download it shares data with byte-identical", async () => {
     const download = path.join(tmpDir, "seeding.mp3");
     const library = path.join(tmpDir, "hardlinked.mp3");

@@ -12,6 +12,7 @@ import {
   type AudioTagFormat,
   type AudioTagInfo,
   type CoverImage,
+  TAGS_UP_TO_DATE,
   type TagWriteResult,
   type ToolRunResult,
   type ToolRunner,
@@ -160,7 +161,7 @@ export function parseProbe(json: any): ProbedAudio {
 }
 
 async function probe(filePath: string, run: ToolRunner, signal: AbortSignal | undefined): Promise<ProbedAudio | { error: string }> {
-  const res = await run("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", filePath], { timeoutMs: PROBE_TIMEOUT_MS, signal });
+  const res = await run("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters", "-i", filePath], { timeoutMs: PROBE_TIMEOUT_MS, signal });
   if (res.aborted) return { error: "cancelled" };
   if (res.spawnError) return { error: `ffprobe is not available (${res.spawnError})` };
   if (res.timedOut) return { error: "ffprobe did not answer in time" };
@@ -433,7 +434,7 @@ export async function writeTagsWithFfmpeg(filePath: string, info: AudioTagInfo, 
     const tagsMissing = missingTagPairs(pairs, current).length > 0;
     const extraTags = scrub ? [...current.keys()].filter((key) => !TECHNICAL_KEYS.has(key) && !pairs.some(([k]) => k.toLowerCase() === key)) : [];
     if (!tagsMissing && extraTags.length === 0 && !wantsCover) {
-      return { outcome: "skipped", reason: "the tags are already up to date", format: label };
+      return { outcome: "skipped", reason: TAGS_UP_TO_DATE, format: label };
     }
 
     const sizeBefore = original.size;

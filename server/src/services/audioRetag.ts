@@ -342,7 +342,7 @@ export async function retagTitle(itemId: number, options: RetagOptions = {}): Pr
   if (Number(root.read_only)) return skipAll("its root folder is read-only");
   const unmounted = await rootFolderUnmountedReason({ id: Number(root.id), path: root.path });
   if (unmounted) return skipAll("its root folder looks unmounted");
-  if (!tryLockTitleMove(itemId)) return skipAll("it is being moved or renamed right now");
+  if (!tryLockTitleMove(itemId)) return skipAll("it is being moved, renamed or retagged right now");
 
   try {
     const settings = options.settings ?? getAudioTagSettings();
@@ -425,6 +425,7 @@ export function getLastLibraryRetag(): RetagSummary | null {
 
 export function resetRetagStateForTests(): void {
   lastLibraryRetag = null;
+  retagAgain.clear();
 }
 
 /** Titles of the retaggable types that have a track file. */
@@ -481,6 +482,9 @@ export async function runLibraryRetag(signal: AbortSignal, options: RetagOptions
   return summary;
 }
 
+/** Titles edited while their retag was running: the run may have read the old metadata, so they go again when it ends. */
+const retagAgain = new Set<number>();
+
 export interface TitleRetagStart {
   started: boolean;
   reason?: "already-running";
@@ -520,6 +524,9 @@ export async function startTitleRetag(itemId: number): Promise<TitleRetagStart> 
       log.warn(`[audioRetag] retagging "${row.title}" failed:`, error);
     } finally {
       finishBackgroundJob(jobId, error, text);
+      if (retagAgain.delete(itemId)) {
+        startTitleRetag(itemId).catch((err) => log.warn(`[audioRetag] second retag of "${row.title}" after an edit not started:`, (err as Error).message));
+      }
     }
   })();
   return { started: true, files };
@@ -533,6 +540,10 @@ export function retagTitleAfterEdit(itemId: number, type: string): void {
   try {
     if (!(RETAGGABLE_TYPES as readonly string[]).includes(type) || !modeFollowsEdits(getAudioTagSettings().mode)) return;
   } catch {
+    return;
+  }
+  if (isBackgroundJobRunning("retag", `title-${itemId}`)) {
+    retagAgain.add(itemId);
     return;
   }
   startTitleRetag(itemId).catch((err) => log.warn(`[audioRetag] retag after an edit of title ${itemId} not started:`, (err as Error).message));

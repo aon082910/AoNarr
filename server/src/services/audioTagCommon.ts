@@ -45,6 +45,9 @@ export interface CoverImage {
   mime: "image/jpeg" | "image/png";
 }
 
+/** The reason of a skip that is the normal case of a pass over tagged files (not logged one by one). */
+export const TAGS_UP_TO_DATE = "the tags are already up to date";
+
 export type TagWriteOutcome = "written" | "skipped" | "failed";
 
 export interface TagWriteResult {
