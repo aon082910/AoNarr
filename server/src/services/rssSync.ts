@@ -4,7 +4,7 @@ import { log } from "./logger.js";
 import { config } from "../config.js";
 import { getSetting } from "./settingsStore.js";
 import { getMediaTypeConfig } from "./mediaTypes.js";
-import { usesQualityTiers, qualityRank } from "./quality.js";
+import { usesQualityTiers, qualityRank, rankingOf } from "./quality.js";
 import { mediaItemFromRow } from "../db/mappers.js";
 import { fetchRecentReleases, rssFeedGroups, type RssMarker } from "./indexerClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type ParsedRelease } from "./releaseParser.js";
@@ -505,7 +505,7 @@ async function decideGroup(group: Group, env: DecideEnv, trace: DecideTrace): Pr
     const file = await existingFileRecord(item, episode, null);
     const upgradeProfile = upgradeProfileOf(profile);
     if (!file || !upgradeProfile.upgradeAllowed) return false;
-    if (meetsCutoff(onDisk, cutoff, profile?.qualityGroups) && !formatCutoffNotMet(upgradeProfile, file)) {
+    if (meetsCutoff(onDisk, cutoff, rankingOf(profile)) && !formatCutoffNotMet(upgradeProfile, file)) {
       const mode = propersMode();
       if (!results.some((r) => revisionUpgrade(mode, file.releaseTitle, r.title))) return false;
     }

@@ -1,7 +1,7 @@
 /** better-sqlite3 returns raw column names (snake_case); map rows to the camelCase API types. */
 
 import { decryptValue } from "../services/encryption.js";
-import { parseQualityGroups } from "../services/qualityGroups.js";
+import { parseQualityGroups, parseQualityOrder } from "../services/qualityGroups.js";
 import { parseTagIds } from "../services/tagScope.js";
 
 /** decryptValue() already returns a value unchanged if it isn't in the encrypted format, so this
@@ -197,6 +197,8 @@ export function qualityProfileFromRow(row: any) {
     cutoffFormatScore: Number(row.cutoff_format_score ?? 0),
     minUpgradeFormatScore: row.min_upgrade_format_score == null ? 1 : Number(row.min_upgrade_format_score),
     qualityGroups: parseQualityGroups(row.quality_groups),
+    // The order this profile ranks the ladder in, worst to best; null ranks by the global order.
+    qualityOrder: parseQualityOrder(row.quality_order),
     language: row.language ?? null,
   };
 }

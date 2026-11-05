@@ -37,11 +37,12 @@ export interface TrashProfileFile {
 }
 
 /**
- * Quality names TRaSH uses that AoNarr keeps under another name. AoNarr's ladder has one SD tier for
- * every standard-definition source and one DVD tier for DVD and DVD-R. Raw-HD, BR-DISK and the
- * pre-release qualities (CAM, TELESYNC, ...) have no tier at all.
+ * AoNarr's ladder has TRaSH's quality names (SDTV, WEBDL-480p, DVD-R, Raw-HD, BR-DISK, CAM, ... since the ladder was
+ * extended to Starr's), so a name maps to itself. These are what a standard-definition name stood in for before,
+ * and still does on an install whose admin deleted that tier: one SD tier for every standard-definition source, and
+ * the DVD tier for DVD-R.
  */
-const QUALITY_ALIASES: Record<string, string> = {
+const QUALITY_FALLBACKS: Record<string, string> = {
   SDTV: "SD",
   "WEBRip-480p": "SD",
   "WEBDL-480p": "SD",
@@ -51,8 +52,9 @@ const QUALITY_ALIASES: Record<string, string> = {
 };
 
 function aonarrQuality(name: string, rankByName: Map<string, number>): string | null {
-  const mapped = QUALITY_ALIASES[name] ?? name;
-  return rankByName.has(mapped) ? mapped : null;
+  if (rankByName.has(name)) return name;
+  const fallback = QUALITY_FALLBACKS[name];
+  return fallback && rankByName.has(fallback) ? fallback : null;
 }
 
 export interface TrashProfileScore {

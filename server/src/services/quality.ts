@@ -1,30 +1,27 @@
 import { db } from "../db/index.js";
+import {
+  DEFAULT_QUALITY_ORDER,
+  DVD_IMAGE_QUALITY,
+  EXTENDED_LADDER_TIERS,
+  SD_CLASS_QUALITIES,
+} from "../db/qualityLadder.js";
 import { log } from "./logger.js";
 import { MEDIA_TYPES } from "./mediaTypes.js";
 import { getSetting, setSetting } from "./settingsStore.js";
-import { parseQualityGroups, type QualityGroups } from "./qualityGroups.js";
+import {
+  GLOBAL_RANKING,
+  parseQualityGroups,
+  parseQualityOrder,
+  rankingFromRow,
+  rankingOf,
+  type ProfileRanking,
+  type QualityGroups,
+} from "./qualityGroups.js";
 
-export { parseQualityGroups, type QualityGroups };
+export { GLOBAL_RANKING, parseQualityGroups, parseQualityOrder, rankingFromRow, rankingOf, type ProfileRanking, type QualityGroups };
 
 /** Seed order used to populate the `qualities` table on first boot. Editable afterward via Settings. */
-export const DEFAULT_QUALITY_ORDER = [
-  "SD",
-  "DVD",
-  "HDTV-720p",
-  "WEBRip-720p",
-  "WEBDL-720p",
-  "Bluray-720p",
-  "HDTV-1080p",
-  "WEBRip-1080p",
-  "WEBDL-1080p",
-  "Bluray-1080p",
-  "Remux-1080p",
-  "HDTV-2160p",
-  "WEBRip-2160p",
-  "WEBDL-2160p",
-  "Bluray-2160p",
-  "Remux-2160p",
-] as const;
+export { DEFAULT_QUALITY_ORDER };
 
 export type QualityName = string;
 
@@ -88,6 +85,144 @@ async function addBluray720pTier(): Promise<void> {
 }
 
 /**
+ * One-time extension of the ladder to Starr's: the pre-release copies (WORKPRINT, CAM, TELESYNC, TELECINE, REGIONAL,
+ * DVDSCR) at the very bottom, SDTV, DVD-R, WEBRip/WEBDL-480p and Bluray-480p/576p among the standard-definition
+ * tiers, and BR-DISK and Raw-HD at the top (see db/qualityLadder.ts). The release parser grades these names from
+ * now on; before, a 480p web rip, a 576p disc rip and SDTV all read "SD", and a CAM, a disc image or a raw capture
+ * read "Unknown" or a web tier.
+ *
+ * Each missing tier goes right after its nearest predecessor on the default ladder that this install has (the
+ * first one at the front), so an install whose admin reordered or deleted tiers keeps its own order around the
+ * new ones. The ranks are rewritten 0..n-1 in one transaction, the same way a reorder does it (rank is UNIQUE).
+ *
+ * Profiles keep behaving as they did: one that allows "SD" gains the SD-class tiers beside it (the releases it took
+ * as SD are still taken), one that allows "DVD" gains DVD-R, and a quality group holding SD or DVD takes the new
+ * members into the group. No profile gains a pre-release tier, BR-DISK or Raw-HD: those were refused or mis-graded
+ * before, so the admin opts in. No cutoff is touched, and what files, history and the blocklist recorded keeps its
+ * name. The new SD-class tiers start with the size limits of "SD" (DVD-R those of "DVD"), so a 480p release is held
+ * to the limits it was held to when it read "SD".
+ *
+ * A settings flag makes it run once, so an admin who deletes a new tier keeps it deleted. A failure is logged and
+ * retried at the next start; it never stops the app.
+ */
+export async function ensureExtendedQualityLadder(): Promise<void> {
+  if (getSetting("qualityLadderExtended") === "1") return;
+  try {
+    await extendQualityLadder();
+    setSetting("qualityLadderExtended", "1");
+  } catch (err) {
+    log.error("[quality] could not extend the quality ladder:", (err as Error).message);
+  }
+}
+
+interface LadderRow {
+  id: number;
+  name: string;
+  rank: number;
+  min_size_mb: number | null;
+  max_size_mb: number | null;
+  preferred_size_mb: number | null;
+}
+
+/** The tiers the extension adds that `present` lacks, with the place each takes in the new order. */
+export function planLadderExtension(present: string[]): { order: string[]; added: string[] } {
+  const order = [...present];
+  const added: string[] = [];
+  const defaults: readonly string[] = DEFAULT_QUALITY_ORDER;
+  for (const name of EXTENDED_LADDER_TIERS) {
+    if (order.includes(name)) continue;
+    let at = 0;
+    for (let i = defaults.indexOf(name) - 1; i >= 0; i--) {
+      const before = order.indexOf(defaults[i]);
+      if (before !== -1) {
+        at = before + 1;
+        break;
+      }
+    }
+    order.splice(at, 0, name);
+    added.push(name);
+  }
+  return { order, added };
+}
+
+/** A profile's allowed list with `names` put right after `anchor` (at the end when the anchor is not there). */
+function withAfter(list: string[], anchor: string, names: string[]): string[] {
+  const missing = names.filter((n) => !list.includes(n));
+  if (missing.length === 0) return list;
+  const next = [...list];
+  next.splice(next.indexOf(anchor) + 1, 0, ...missing);
+  return next;
+}
+
+async function extendQualityLadder(): Promise<void> {
+  const rows = (await db
+    .prepare("SELECT id, name, rank, min_size_mb, max_size_mb, preferred_size_mb FROM qualities ORDER BY rank")
+    .all()) as LadderRow[];
+  // An empty table is not an install that was extended: there is nothing to put the new tiers around.
+  if (rows.length === 0) return;
+  const { order, added } = planLadderExtension(rows.map((r) => r.name));
+  if (added.length === 0) return;
+
+  const byName = new Map(rows.map((r) => [r.name, r]));
+  const sdClass = SD_CLASS_QUALITIES.filter((n) => added.includes(n));
+  const dvdImage = added.includes(DVD_IMAGE_QUALITY) ? [DVD_IMAGE_QUALITY] : [];
+  // The size limits an added tier starts with: its predecessor class's, so what was held to them stays held to them.
+  const limitsFrom = (name: string): LadderRow | undefined =>
+    (SD_CLASS_QUALITIES as readonly string[]).includes(name) ? byName.get("SD") : name === DVD_IMAGE_QUALITY ? byName.get("DVD") : undefined;
+
+  await db.transaction(async () => {
+    // rank is UNIQUE: park every row on a negative rank, then give each its place in the new order.
+    for (let i = 0; i < rows.length; i++) {
+      await db.prepare("UPDATE qualities SET rank = ? WHERE id = ?").run(-(i + 1), rows[i].id);
+    }
+    for (let rank = 0; rank < order.length; rank++) {
+      const existing = byName.get(order[rank]);
+      if (existing) {
+        await db.prepare("UPDATE qualities SET rank = ? WHERE id = ?").run(rank, existing.id);
+      } else {
+        const from = limitsFrom(order[rank]);
+        await db
+          .prepare("INSERT INTO qualities (name, rank, min_size_mb, max_size_mb, preferred_size_mb) VALUES (?, ?, ?, ?, ?)")
+          .run(order[rank], rank, from?.min_size_mb ?? null, from?.max_size_mb ?? null, from?.preferred_size_mb ?? null);
+      }
+    }
+
+    const profiles = (await db.prepare("SELECT id, allowed_qualities, quality_groups FROM quality_profiles").all()) as {
+      id: number;
+      allowed_qualities: string | null;
+      quality_groups: string | null;
+    }[];
+    for (const profile of profiles) {
+      let allowed: unknown;
+      try {
+        allowed = JSON.parse(profile.allowed_qualities ?? "[]");
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(allowed) || allowed.some((q) => typeof q !== "string")) continue;
+      let nextAllowed = allowed as string[];
+      if (nextAllowed.includes("SD")) nextAllowed = withAfter(nextAllowed, "SD", sdClass);
+      if (nextAllowed.includes("DVD")) nextAllowed = withAfter(nextAllowed, "DVD", dvdImage);
+
+      // A group that holds SD (or DVD) takes the new members of that class, when the profile now allows them.
+      const groups = parseQualityGroups(profile.quality_groups);
+      const nextGroups = groups.map((group) => {
+        const gained = [...(group.includes("SD") ? sdClass : []), ...(group.includes("DVD") ? dvdImage : [])].filter((n) => nextAllowed.includes(n) && !group.includes(n));
+        return gained.length > 0 ? [...group, ...gained] : group;
+      });
+
+      const allowedChanged = nextAllowed !== allowed;
+      const groupsChanged = nextGroups.some((g, i) => g.length !== groups[i].length);
+      if (!allowedChanged && !groupsChanged) continue;
+      await db
+        .prepare("UPDATE quality_profiles SET allowed_qualities = ?, quality_groups = ? WHERE id = ?")
+        .run(JSON.stringify(nextAllowed), JSON.stringify(parseQualityGroups(nextGroups)), profile.id);
+    }
+  });
+  log.info(`[quality] extended the quality ladder with ${added.join(", ")}`);
+}
+
+/**
  * Startup repair for quality profiles whose cutoff is not a quality on the ladder (a renamed or deleted tier, a
  * typo, a value stored before a rename). Such a cutoff reads as "never reached", which makes every monitored file
  * under the profile an upgrade candidate. The cutoff is set to the profile's best allowed quality (the highest
@@ -99,12 +234,13 @@ async function addBluray720pTier(): Promise<void> {
 export async function repairUnrankedCutoffs(): Promise<number> {
   const ladder = new Map(((await db.prepare("SELECT name, rank FROM qualities").all()) as { name: string; rank: number }[]).map((r) => [r.name, Number(r.rank)]));
   if (ladder.size === 0) return 0;
-  const rows = (await db.prepare("SELECT id, name, cutoff, allowed_qualities, quality_groups FROM quality_profiles").all()) as {
+  const rows = (await db.prepare("SELECT id, name, cutoff, allowed_qualities, quality_groups, quality_order FROM quality_profiles").all()) as {
     id: number;
     name: string;
     cutoff: string | null;
     allowed_qualities: string | null;
     quality_groups: string | null;
+    quality_order: string | null;
   }[];
   let repaired = 0;
   for (const row of rows) {
@@ -121,10 +257,17 @@ export async function repairUnrankedCutoffs(): Promise<number> {
     for (const group of parseQualityGroups(row.quality_groups)) {
       if (group.some((q) => allowed.includes(q))) for (const q of group) candidates.add(q);
     }
+    // "Best" as the profile ranks the ladder, so a profile that puts WEB-DL above Blu-ray is repaired to its WEB-DL.
+    const order = rankingFromRow({ quality_order: row.quality_order }).order;
+    const orderBase = Math.max(...ladder.values()) + 1;
+    const profileRank = (q: string): number => {
+      const at = order ? order.indexOf(q) : -1;
+      return at >= 0 ? orderBase + at : (ladder.get(q) as number);
+    };
     let best: string | null = null;
     for (const q of candidates) {
-      const rank = ladder.get(q);
-      if (rank !== undefined && (best === null || rank > (ladder.get(best) as number))) best = q;
+      if (!ladder.has(q)) continue;
+      if (best === null || profileRank(q) > profileRank(best)) best = q;
     }
     if (best === null) continue;
     await db.prepare("UPDATE quality_profiles SET cutoff = ? WHERE id = ?").run(best, row.id);
@@ -154,6 +297,8 @@ interface SizeBounds {
 let rankCache = new Map<string, number>();
 let sizeBoundsCache = new Map<string, SizeBounds>();
 let preferredSizeCache = new Map<string, number | null>();
+/** Above every rank on the ladder: where a profile's own order starts (see orderedRank). */
+let profileRankBase = 0;
 
 async function loadRanks(): Promise<Map<string, number>> {
   const rows = (await db.prepare("SELECT name, rank FROM qualities ORDER BY rank").all()) as {
@@ -184,6 +329,7 @@ async function loadPreferredSizes(): Promise<Map<string, number | null>> {
  * cache populated before anything else runs rather than "eventually, in the background." */
 export async function loadQualityCaches(): Promise<void> {
   [rankCache, sizeBoundsCache, preferredSizeCache] = await Promise.all([loadRanks(), loadSizeBounds(), loadPreferredSizes()]);
+  profileRankBase = Math.max(-1, ...Array.from(rankCache.values(), Number)) + 1;
 }
 
 /** Call after any write to the `qualities` table so subsequent rank/size lookups see the change.
@@ -214,17 +360,43 @@ function sizeUnits(sizeBytes: number, runtimeMinutes?: number | null): number {
   return runtimeMinutes != null && runtimeMinutes > 0 ? mb / runtimeMinutes : mb;
 }
 
+/** A quality's place on the global ladder (-1 when it is not on it). A profile reads its own: see groupedRank. */
 export function qualityRank(name: string | null): number {
   if (!name) return -1;
   return rankCache.get(name) ?? -1;
 }
 
-/** A quality's rank in a profile: that of the best quality in its group, else its own. */
-export function groupedRank(name: string | null, groups?: QualityGroups | null): number {
+/**
+ * How the helpers below are handed a profile's ranking. The type is a ProfileRanking; a bare list of groups (what
+ * the helpers took before a profile could have an order) is still read as one with no order, which keeps the
+ * callers and tests written for that shape working.
+ */
+function asRanking(ranking: ProfileRanking | QualityGroups | null | undefined): ProfileRanking {
+  if (!ranking) return GLOBAL_RANKING;
+  return Array.isArray(ranking) ? { groups: ranking, order: null } : ranking;
+}
+
+/**
+ * A quality's rank in a profile's order, before any grouping: its global rank for a profile with no order of its own;
+ * for one with an order, the places in that order sit above every global rank, so a quality missing from the list ranks
+ * below every listed one, in global order among the unlisted. -1 for a quality that is not on the ladder, whatever the
+ * order says.
+ */
+export function orderedRank(name: string | null, ranking?: ProfileRanking | null): number {
   const own = qualityRank(name);
-  if (!name || own < 0 || !groups || groups.length === 0) return own;
-  const group = groups.find((g) => g.includes(name));
-  return group ? Math.max(...group.map((n) => qualityRank(n))) : own;
+  const order = asRanking(ranking).order;
+  if (own < 0 || !order) return own;
+  const at = order.indexOf(name as string);
+  return at < 0 ? own : profileRankBase + at;
+}
+
+/** A quality's rank in a profile: that of the best quality in its group, else its own, in the profile's order. */
+export function groupedRank(name: string | null, ranking?: ProfileRanking | null): number {
+  const r = asRanking(ranking);
+  const own = orderedRank(name, r);
+  if (!name || own < 0 || r.groups.length === 0) return own;
+  const group = r.groups.find((g) => g.includes(name));
+  return group ? Math.max(...group.map((n) => orderedRank(n, r))) : own;
 }
 
 /**
@@ -233,29 +405,51 @@ export function groupedRank(name: string | null, groups?: QualityGroups | null):
  * upgrades go on, instead of the file reading as "at the cutoff" because every rank is above -1. No cutoff
  * set means nothing is under it, and a file of unknown quality is not known to be under any.
  */
-export function isUnderCutoff(quality: string | null, cutoff: string | null | undefined, groups?: QualityGroups | null): boolean {
-  const rank = groupedRank(quality, groups);
+export function isUnderCutoff(quality: string | null, cutoff: string | null | undefined, ranking?: ProfileRanking | null): boolean {
+  const rank = groupedRank(quality, ranking);
   if (rank < 0 || !cutoff) return false;
-  const cutoffRank = groupedRank(cutoff, groups);
+  const cutoffRank = groupedRank(cutoff, ranking);
   return cutoffRank < 0 || rank < cutoffRank;
 }
 
 /** Whether the profile's cutoff is a quality on the ladder (an empty cutoff is not set, so not one). */
-export function cutoffIsRanked(cutoff: string | null | undefined, groups?: QualityGroups | null): boolean {
-  return !!cutoff && groupedRank(cutoff, groups) >= 0;
+export function cutoffIsRanked(cutoff: string | null | undefined, ranking?: ProfileRanking | null): boolean {
+  return !!cutoff && groupedRank(cutoff, ranking) >= 0;
 }
 
-/** The profile rank of whichever quality has `rank` (callers hand over ranks, not names). */
-export function groupRankOfRank(rank: number, groups?: QualityGroups | null): number {
-  if (rank < 0 || !groups || groups.length === 0) return rank;
-  for (const [name, r] of rankCache) if (r === rank) return groupedRank(name, groups);
+/**
+ * The profile rank of whichever quality has the global `rank` (callers that only hold a rank, such as the rank of
+ * what is on disk, hand over that). A rank that is already a profile rank maps to itself, so converting twice is harmless.
+ */
+export function groupRankOfRank(rank: number, ranking?: ProfileRanking | null): number {
+  const r = asRanking(ranking);
+  if (rank < 0 || (r.groups.length === 0 && !r.order)) return rank;
+  for (const [name, own] of rankCache) if (own === rank) return groupedRank(name, r);
   return rank;
 }
 
 /** Whether two qualities are the same tier in a profile. */
-export function sameQualityGroup(a: string | null, b: string | null, groups?: QualityGroups | null): boolean {
+export function sameQualityGroup(a: string | null, b: string | null, ranking?: ProfileRanking | null): boolean {
   if (a === b) return true;
-  return !!a && !!b && !!groups && groups.some((g) => g.includes(a) && g.includes(b));
+  const groups = asRanking(ranking).groups;
+  return !!a && !!b && groups.some((g) => g.includes(a) && g.includes(b));
+}
+
+/**
+ * Which of two qualities a profile prefers: positive when `a` is better, negative when `b` is, 0 when they
+ * are the same tier (or both unknown). The sort every "best first" list uses.
+ */
+export function compareQualities(a: string | null, b: string | null, ranking?: ProfileRanking | null): number {
+  return groupedRank(a, ranking) - groupedRank(b, ranking);
+}
+
+/** The ranking of the profile with this id: its groups and its order (the global ranking for no profile). */
+export async function rankingForProfile(profileId: number | null | undefined): Promise<ProfileRanking> {
+  if (!profileId) return GLOBAL_RANKING;
+  const row = (await db.prepare("SELECT quality_groups, quality_order FROM quality_profiles WHERE id = ?").get(profileId)) as
+    | { quality_groups: string | null; quality_order: string | null }
+    | undefined;
+  return rankingFromRow(row);
 }
 
 /**
@@ -306,19 +500,19 @@ export function pickBestAllowedQuality(
   allowedQualities: string[],
   cutoff: string,
   capAtCutoff = true,
-  groups?: QualityGroups | null
+  ranking?: ProfileRanking | null
 ): string | null {
-  const cutoffRank = groupedRank(cutoff, groups);
+  const cutoffRank = groupedRank(cutoff, ranking);
   const allowedSet = new Set(allowedQualities);
 
   const eligible = candidateQualities
     .filter((q) => allowedSet.has(q))
-    .sort((a, b) => groupedRank(b, groups) - groupedRank(a, groups));
+    .sort((a, b) => groupedRank(b, ranking) - groupedRank(a, ranking));
 
   if (eligible.length === 0) return null;
 
   // A profile that does not cap at the cutoff takes the best allowed quality on offer, as Sonarr/Radarr do.
   if (!capAtCutoff) return eligible[0];
-  const atOrBelowCutoff = eligible.filter((q) => groupedRank(q, groups) <= cutoffRank);
+  const atOrBelowCutoff = eligible.filter((q) => groupedRank(q, ranking) <= cutoffRank);
   return atOrBelowCutoff[0] ?? eligible[0];
 }

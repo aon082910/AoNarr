@@ -3,7 +3,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { qualityFromRow } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
-import { invalidateQualityRankCache, parseQualityGroups } from "../services/quality.js";
+import { invalidateQualityRankCache, parseQualityGroups, parseQualityOrder } from "../services/quality.js";
 
 export const qualitiesRouter = Router();
 qualitiesRouter.use(requireAdmin);
@@ -121,7 +121,8 @@ qualitiesRouter.delete(
 
       for (const profile of profiles) {
         const allowed: string[] = JSON.parse(profile.allowed_qualities);
-        if (!allowed.includes(quality.name) && profile.cutoff !== quality.name && !parseQualityGroups(profile.quality_groups).some((g) => g.includes(quality.name))) continue;
+        const order = parseQualityOrder(profile.quality_order);
+        if (!allowed.includes(quality.name) && profile.cutoff !== quality.name && !parseQualityGroups(profile.quality_groups).some((g) => g.includes(quality.name)) && !order?.includes(quality.name)) continue;
 
         let newAllowed = allowed.filter((name: string) => name !== quality.name);
         const emptied = newAllowed.length === 0;
@@ -134,9 +135,11 @@ qualitiesRouter.delete(
 
         // A group left with one quality is dissolved.
         const newGroups = parseQualityGroups(parseQualityGroups(profile.quality_groups).map((g) => g.filter((name) => name !== quality.name)));
+        // The profile's own order loses the tier too; an order left empty is the default order again.
+        const newOrder = order ? order.filter((name) => name !== quality.name) : [];
         await db
-          .prepare("UPDATE quality_profiles SET allowed_qualities = ?, cutoff = ?, quality_groups = ? WHERE id = ?")
-          .run(JSON.stringify(newAllowed), newCutoff, JSON.stringify(newGroups), profile.id);
+          .prepare("UPDATE quality_profiles SET allowed_qualities = ?, cutoff = ?, quality_groups = ?, quality_order = ? WHERE id = ?")
+          .run(JSON.stringify(newAllowed), newCutoff, JSON.stringify(newGroups), newOrder.length > 0 ? JSON.stringify(newOrder) : null, profile.id);
       }
     });
 

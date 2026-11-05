@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS quality_profiles (
   upgrade_allowed INTEGER NOT NULL DEFAULT 1, -- 0: a file already on disk is never replaced by a better release
   cutoff_format_score INTEGER NOT NULL DEFAULT 0, -- above 0: a file scoring less keeps being upgraded even at the quality cutoff (custom formats)
   min_upgrade_format_score INTEGER NOT NULL DEFAULT 1, -- the least a same-quality release must add to the file's format score to replace it
-  quality_groups TEXT NOT NULL DEFAULT '[]' -- JSON list of lists of quality names the profile treats as one tier
+  quality_groups TEXT NOT NULL DEFAULT '[]', -- JSON list of lists of quality names the profile treats as one tier
+  quality_order TEXT -- JSON list of quality names, worst -> best, this profile ranks by; NULL = the global ladder order
 );
 
 -- Lidarr/Readarr-style metadata profile: which of an artist's release groups, or an author's works,

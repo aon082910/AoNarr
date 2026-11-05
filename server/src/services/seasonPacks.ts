@@ -1,6 +1,6 @@
 import { db } from "../db/index.js";
 import { getSetting } from "./settingsStore.js";
-import { groupedRank, type QualityGroups } from "./quality.js";
+import { groupedRank, rankingOf, type ProfileRanking } from "./quality.js";
 import { airedFrontierOf, episodeNotAired } from "./searchPlan.js";
 import type { ParsedRelease } from "./releaseParser.js";
 import type { MediaItem } from "../types/index.js";
@@ -92,10 +92,10 @@ export function episodesCoveredBy(parsed: Pick<ParsedRelease, "episodeRange">, s
 
 /** Whether a file of `quality` is one a pack of `packQuality` would be an upgrade for: below the
  * profile's cutoff (any quality is, with no cutoff set) and below the pack. */
-function upgradableBy(quality: string | null, packQuality: string, cutoff: string, groups?: QualityGroups): boolean {
-  const rank = groupedRank(quality, groups);
-  const cutoffRank = groupedRank(cutoff, groups);
-  return rank >= 0 && (cutoffRank < 0 || rank < cutoffRank) && rank < groupedRank(packQuality, groups);
+function upgradableBy(quality: string | null, packQuality: string, cutoff: string, ranking?: ProfileRanking | null): boolean {
+  const rank = groupedRank(quality, ranking);
+  const cutoffRank = groupedRank(cutoff, ranking);
+  return rank >= 0 && (cutoffRank < 0 || rank < cutoffRank) && rank < groupedRank(packQuality, ranking);
 }
 
 export function judgeSeasonPack(args: {
@@ -106,8 +106,8 @@ export function judgeSeasonPack(args: {
   item: Pick<MediaItem, "type" | "seriesType">;
   packQuality: string;
   cutoff: string;
-  /** Qualities the profile treats as one tier. */
-  qualityGroups?: QualityGroups;
+  /** How the profile ranks the ladder (its groups and its order). */
+  ranking?: ProfileRanking | null;
   settings?: PackSettings;
   today?: string;
   /**
@@ -131,10 +131,10 @@ export function judgeSeasonPack(args: {
     const file = { quality: e.quality, releaseTitle: e.releaseTitle ?? null, formatScore: e.formatScore ?? null };
     if (args.couldUpgrade) return cutoffNotMet(args.couldUpgrade, file);
     // A file of unknown quality is not one a pack is known to improve (a single release over it is judged alone).
-    if (upgrade && groupedRank(e.quality, upgrade.profile.qualityGroups) >= 0) {
+    if (upgrade && groupedRank(e.quality, rankingOf(upgrade.profile)) >= 0) {
       return judgeUpgrade(upgrade.profile, upgrade.mode, file, { quality: args.packQuality, title: upgrade.packTitle, score: upgrade.packScore }) === "yes";
     }
-    return upgradableBy(e.quality, args.packQuality, args.cutoff, args.qualityGroups);
+    return upgradableBy(e.quality, args.packQuality, args.cutoff, args.ranking);
   };
   const wanted = covered.filter((e) => !e.hasFile || upgradedByPack(e)).length;
   // Whatever the guards say, a pack that fills or upgrades nothing is a download for nothing.

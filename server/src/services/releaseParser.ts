@@ -415,6 +415,8 @@ const SOURCE_DVD = /\bdvd(rip)?\b/i;
 // Sources that are SD when no resolution is given: TV/satellite captures and BD/BR rips. Bare "WEB"
 // only counts followed by a codec ("Show.S01E01.WEB.h264-GRP"), since it's also a title word.
 const SD_SOURCE = /\b(sdtv|pdtv|tvrip|dsr|dsrip|satrip|dvb|dvbrip|bdrip|brrip)\b|\bweb[ ._-]+(?:[hx][ .]?26[45]|hevc|avc|xvid|divx)\b/i;
+// The TV captures among them: the ladder's SDTV tier (a BDRip with no resolution, or a bare "WEB h264", stays SD).
+const SDTV_SOURCE = /\b(sdtv|pdtv|tvrip|dsr|dsrip|satrip|dvb|dvbrip)\b/i;
 // Movie-only, lowest-quality theatrical-capture sources, in Radarr's own Source vocabulary. The
 // strong spellings name a capture whatever else the title says, so they are read before any real
 // source; a bare "cam", "TS" or "TC" is also an ordinary word or tag, so those count only when no
@@ -445,7 +447,8 @@ const DISC_DVD_IMAGE = /(?:\d?x?M?DVD-?[R59])(?:[ ._]|$)/i;
 
 const QUALITY_MODIFIER_REGIONAL = /\b(regional|r5)\b/i;
 const QUALITY_MODIFIER_SCREENER = /\b(screener|scr|dvdscr|bdscr)\b/i;
-const QUALITY_MODIFIER_RAWHD = /\brawhd\b/i;
+// Raw-HD in every spelling a release writes it ("RAW-HD", "RawHD", "Raw HD").
+const QUALITY_MODIFIER_RAWHD = /\braw[-_. ]?hd\b/i;
 const QUALITY_MODIFIER_BRDISK = /\b(brdisk|bdmv|bd25|bd50)\b/i;
 // Subtitles burned into the picture. Radarr's HardcodedSubsRegex: any "...SUB(S)" word but the soft
 // ones (softsubs, multisubs, horriblesubs), "HC" and "SUBBED".
@@ -816,28 +819,50 @@ function detectFlags(title: string): ReleaseFlag[] {
   return FLAG_PATTERNS.filter(([, pattern]) => pattern.test(title)).map(([flag]) => flag);
 }
 
-function detectQuality(title: string, rawDisc: boolean): QualityName | "Unknown" {
-  // A disc image is no encode of any tier, whatever resolution or source it names.
-  if (rawDisc) return "Unknown";
-  // Only the resolutions the quality ladder actually has tiers for — 480p/576p are exposed on
-  // `resolution` for custom-format conditions, but "WEBDL-480p" isn't a quality: a 576i DVD rip
-  // grades as plain "DVD", and any other sub-720p video release as the "SD" tier.
+/**
+ * The ladder tier of a sub-HD encode. The tiers Starr has for standard definition are used where the name says
+ * enough (a 480p/576p disc rip, a web rip or a TV capture); "SD" stays the grade of a standard-definition release
+ * whose source cannot be told ("Show.480p.x264", a BDRip with no resolution, a bare "WEB h264").
+ */
+function standardDefinitionQuality(title: string, source: string | null, resolution: string | null): QualityName {
+  if (source === "Bluray") return resolution === "480p" ? "Bluray-480p" : resolution === "576p" ? "Bluray-576p" : "SD";
+  if (source === "WEBDL") return "WEBDL-480p";
+  if (source === "WEBRip") return "WEBRip-480p";
+  if (source === "HDTV" || SDTV_SOURCE.test(title)) return "SDTV";
+  return "SD";
+}
+
+function detectQuality(title: string, rawDisc: boolean, modifier: ParsedRelease["qualityModifier"]): QualityName | "Unknown" {
+  // A disc image is no encode of any tier, whatever resolution or source it names: a DVD image is DVD-R and any
+  // other (a Blu-ray structure) is BR-DISK. Neither is a tier a profile allows by default, and the raw-disc
+  // rejection keeps them out unless the admin switches it off.
+  if (rawDisc) return DISC_DVD_IMAGE.test(title) ? "DVD-R" : "BR-DISK";
+  // 720p and up have a tier for every source; a 480p/576p release is graded by its source below (a 576i DVD
+  // rip is plain "DVD"), and one whose source cannot be told as "SD".
   const resolution = detectResolution(title);
   const suffix = resolution === "2160p" || resolution === "1080p" || resolution === "720p" ? resolution : null;
   const source = detectSource(title);
   // A theatrical capture is never a real WEB/Bluray tier, whatever resolution it claims — falling
   // through to the WEBDL default below graded "Movie.1080p.HDCAM" as WEBDL-1080p, which any
-  // profile allowing that tier would happily auto-grab. A screener is the same: a pre-release copy.
-  if (source === "Cam" || source === "Telesync" || source === "Telecine" || source === "Workprint") return "Unknown";
-  if (SOURCE_SCREENER.test(title) && (source === null || source === "DVD")) return "Unknown";
+  // profile allowing that tier would happily auto-grab. Each is its own pre-release tier: a profile that
+  // wants one as a last resort can say so, and every other refuses it.
+  if (source === "Cam") return "CAM";
+  if (source === "Telesync") return "TELESYNC";
+  if (source === "Telecine") return "TELECINE";
+  if (source === "Workprint") return "WORKPRINT";
+  // A screener is the same: a pre-release copy. So is a DVD of a regional (R5) release.
+  if (SOURCE_SCREENER.test(title) && (source === null || source === "DVD")) return "DVDSCR";
+  if (modifier === "regional" && (source === null || source === "DVD")) return "REGIONAL";
+  // A raw HD capture is its own tier, not the WEB-DL its resolution alone would make of it.
+  if (modifier === "rawhd") return "Raw-HD";
   if (!suffix) {
     if (source === "DVD") return "DVD";
-    // Only a sub-HD encode is the ladder's "SD" tier: resolution-less scene naming
+    // Only a sub-HD encode is a standard-definition tier: resolution-less scene naming
     // ("Show.S01E01.HDTV.x264-LOL"), a 480p/576p encode, or an SD capture/rip. A resolution-less
     // remux, disc image or plain "BluRay" ("Movie.COMPLETE.BLURAY") is a full-size HD release —
     // graded SD, any profile allowing SD would grab it, and a 720p release would "upgrade" it.
     if (source === "Remux" || detectQualityModifier(title) === "brdisk") return "Unknown";
-    if (resolution || source === "HDTV" || source === "WEBDL" || source === "WEBRip" || SD_SOURCE.test(title)) return "SD";
+    if (resolution || source === "HDTV" || source === "WEBDL" || source === "WEBRip" || SD_SOURCE.test(title)) return standardDefinitionQuality(title, source, resolution);
     return "Unknown";
   }
 
@@ -1254,7 +1279,7 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
     episodeNumbers,
     isFullSeason,
     year,
-    quality: detectQuality(title, rawDisc),
+    quality: detectQuality(title, rawDisc, qualityModifier),
     source: detectSource(title),
     resolution: detectResolution(title),
     flags: detectFlags(title),

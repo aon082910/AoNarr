@@ -137,6 +137,7 @@ export const SETTING_KEY_LIST: readonly string[] = [
   "proxyBypassLocal",
   "pushoverApiToken",
   "pushoverUserKey",
+  "qualityLadderExtended",
   "quietHoursEnabled",
   "quietHoursEnd",
   "quietHoursStart",

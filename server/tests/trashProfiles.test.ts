@@ -3,6 +3,7 @@ import request from "supertest";
 import type { Express } from "express";
 import { setupTestDb } from "./helpers/testDb.js";
 import { translateTrashProfile, type TrashProfileFile } from "../src/services/trashProfiles.js";
+import { DEFAULT_QUALITY_ORDER } from "../src/db/qualityLadder.js";
 
 let app: Express;
 let apiKey: string;
@@ -102,7 +103,33 @@ describe("translateTrashProfile (ST15)", () => {
     expect(t.unmappedQualities.sort()).toEqual(["BR-DISK", "Raw-HD"]);
   });
 
-  it("folds the standard-definition names into AoNarr's SD and DVD tiers", () => {
+  it("maps the tiers the extended ladder has to themselves: SDTV, the 480p/576p rips, DVD-R, Raw-HD, BR-DISK, CAM", () => {
+    const full = new Map(DEFAULT_QUALITY_ORDER.map((n, i) => [n, i] as [string, number]));
+    const t = translateTrashProfile(
+      {
+        ...hdBlurayWeb,
+        cutoff: "WEB 480p",
+        items: [
+          { name: "DVD-R", allowed: true },
+          { name: "SDTV", allowed: true },
+          { name: "WEB 480p", allowed: true, items: ["WEBRip-480p", "WEBDL-480p"] },
+          { name: "Bluray-576p", allowed: true },
+          { name: "Raw-HD", allowed: true },
+          { name: "BR-DISK", allowed: true },
+          { name: "CAM", allowed: true },
+        ],
+      },
+      full,
+      formats
+    );
+
+    expect(t.allowedQualities.sort()).toEqual(["BR-DISK", "Bluray-576p", "CAM", "DVD-R", "Raw-HD", "SDTV", "WEBDL-480p", "WEBRip-480p"]);
+    expect(t.unmappedQualities).toEqual([]);
+    expect(t.qualityGroups).toEqual([["WEBRip-480p", "WEBDL-480p"]]);
+    expect(t.cutoff).toBe("WEBRip-480p");
+  });
+
+  it("folds the standard-definition names into SD and DVD when the ladder lacks those tiers (an admin deleted them)", () => {
     const t = translateTrashProfile(
       {
         ...hdBlurayWeb,
@@ -239,13 +266,25 @@ describe("POST /api/custom-formats/trash-profiles/import", () => {
   });
 
   it("refuses a profile none of whose qualities AoNarr has", async () => {
+    // (CAM and TELESYNC are tiers of the ladder now: the names here are ones it has no tier for.)
+    mockTrashRepo({ "odd.json": { name: "Only Odd", cutoff: "Odd-Tier", items: [{ name: "Odd-Tier", allowed: true }, { name: "Other-Tier", allowed: true }] } });
+
+    const res = await authed(request(app).post("/api/custom-formats/trash-profiles/import")).send({ app: "radarr", file: "odd.json" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("None of this profile's qualities");
+    expect(await db.prepare("SELECT 1 FROM quality_profiles WHERE name = 'Only Odd'").get()).toBeFalsy();
+  });
+
+  it("imports a profile that allows the pre-release tiers, now that the ladder has them", async () => {
     mockTrashRepo({ "cams.json": { name: "Only CAM", cutoff: "CAM", items: [{ name: "CAM", allowed: true }, { name: "TELESYNC", allowed: true }] } });
 
     const res = await authed(request(app).post("/api/custom-formats/trash-profiles/import")).send({ app: "radarr", file: "cams.json" });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain("None of this profile's qualities");
-    expect(await db.prepare("SELECT 1 FROM quality_profiles WHERE name = 'Only CAM'").get()).toBeFalsy();
+    expect(res.status).toBe(201);
+    const row = (await db.prepare("SELECT allowed_qualities, cutoff FROM quality_profiles WHERE name = 'Only CAM'").get()) as { allowed_qualities: string; cutoff: string };
+    expect(JSON.parse(row.allowed_qualities).sort()).toEqual(["CAM", "TELESYNC"]);
+    expect(row.cutoff).toBe("CAM");
   });
 
   it("answers 502 when GitHub does not answer", async () => {

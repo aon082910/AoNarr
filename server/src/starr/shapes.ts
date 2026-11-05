@@ -17,17 +17,18 @@ export interface QualityModel {
   revision: { version: number; real: number; isRepack: boolean };
 }
 
-/** "WEBDL-1080p" is source web at 1080; "Bluray-2160p", "HDTV-720p", "DVD" and the music and book names read the same way. */
+/** "WEBDL-1080p" is source web at 1080; "Bluray-2160p", "HDTV-720p", "DVD" and the music and book names read the same way. The pre-release tiers are sources of their own (DVDSCR and REGIONAL are DVDs). */
 function sourceAndResolution(name: string): { source: string; resolution: number } {
   const resolution = Number(/(\d{3,4})p/i.exec(name)?.[1] ?? 0);
   const lower = name.toLowerCase();
   let source = "unknown";
   if (lower.startsWith("webdl")) source = "web";
   else if (lower.startsWith("webrip")) source = "webRip";
-  else if (lower.startsWith("bluray") || lower.startsWith("remux")) source = "bluray";
+  else if (lower.startsWith("bluray") || lower.startsWith("remux") || lower === "br-disk") source = "bluray";
   else if (lower.startsWith("hdtv") || lower.startsWith("sdtv")) source = "television";
   else if (lower.startsWith("raw")) source = "televisionRaw";
-  else if (lower.startsWith("dvd")) source = "dvd";
+  else if (lower.startsWith("dvd") || lower === "regional") source = "dvd";
+  else if (lower === "cam" || lower === "telesync" || lower === "telecine" || lower === "workprint") source = lower;
   return { source, resolution };
 }
 
@@ -35,6 +36,14 @@ export interface QualityCatalog {
   byName: Map<string, { id: number; name: string; rank: number }>;
   /** Every quality, worst first. */
   ordered: { id: number; name: string; rank: number }[];
+}
+
+/** The catalog in the order a profile ranks it, worst first: the qualities it does not list (in global order), then those it does. */
+export function orderedForProfile(catalog: QualityCatalog, order: string[] | null): QualityCatalog["ordered"] {
+  if (!order || order.length === 0) return catalog.ordered;
+  const listed = order.map((name) => catalog.byName.get(name)).filter((q): q is NonNullable<typeof q> => !!q);
+  const listedNames = new Set(listed.map((q) => q.name));
+  return [...catalog.ordered.filter((q) => !listedNames.has(q.name)), ...listed];
 }
 
 export async function loadQualityCatalog(): Promise<QualityCatalog> {

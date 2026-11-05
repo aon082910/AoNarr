@@ -14,7 +14,7 @@ import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode, type S
 import { sceneIndexFor } from "../services/sceneNumbering.js";
 import { indexerInfoOf, scoreRelease } from "../services/customFormatScoring.js";
 import { log } from "../services/logger.js";
-import { groupedRank, knownReleaseSize, qualityRank, sizeWithinQualityBounds, usesQualityTiers } from "../services/quality.js";
+import { GLOBAL_RANKING, groupedRank, knownReleaseSize, orderedRank, qualityRank, rankingOf, sizeWithinQualityBounds, usesQualityTiers, type ProfileRanking } from "../services/quality.js";
 import { releaseRuntimeMinutes, runtimeContextFor } from "../services/releaseRuntime.js";
 import { compareUsenetAge, comparePeers, protocolGroup, protocolPreferenceKey } from "../services/releaseRanking.js";
 import { getBlocklistedTitles, isBlocklisted } from "../services/blocklist.js";
@@ -144,7 +144,7 @@ export interface AnnotatedSearchResult extends SearchResult {
   episodesCovered: number | null;
   /** For an artist's discography: how many of the artist's albums it covers, and how many of those are missing. */
   discography: { albumsCovered: number; albumsMissing: number } | null;
-  /** The quality's place on the ladder, for sorting by quality (-1 when it is not on it). */
+  /** The quality's place on the ladder in the item's profile's order, for sorting by quality (-1 when it is not on it). */
   qualityRank: number;
   /** freeleech, halfleech, doubleupload and the indexer's own tags. */
   flags: string[];
@@ -336,7 +336,7 @@ searchRouter.get(
     let allowedQualities: string[] = [];
     let cutoff = "";
     let minFormatScore = 0;
-    let qualityGroups: string[][] = [];
+    let ranking: ProfileRanking = GLOBAL_RANKING;
     let wantedLanguage: string | null = null;
     if (item.qualityProfileId) {
       const profileRow = await db.prepare("SELECT * FROM quality_profiles WHERE id = ?").get(item.qualityProfileId);
@@ -345,7 +345,7 @@ searchRouter.get(
         allowedQualities = profile.allowedQualities;
         cutoff = profile.cutoff;
         minFormatScore = profile.minFormatScore ?? 0;
-        qualityGroups = profile.qualityGroups ?? [];
+        ranking = rankingOf(profile);
         wantedLanguage = profile.language ?? null;
       }
     }
@@ -520,7 +520,7 @@ searchRouter.get(
           item: packContext.item,
           packQuality: parsed.quality,
           cutoff,
-          qualityGroups,
+          ranking,
           settings: packRules,
           upgrade: {
             profile: packUpgradeProfile,
@@ -546,7 +546,7 @@ searchRouter.get(
       facts.identity = verdict && !verdict.ok && identityEnforced ? verdict.detail : null;
       facts.quality = tiered && allowedQualities.length > 0 && !allowedQualities.includes(parsed.quality) ? `Quality "${parsed.quality}" isn't allowed by this quality profile` : null;
       if (upgradeVerdict === "no") facts.notAnUpgrade = "It isn't an upgrade over the file already on disk";
-      else if (!existingForUpgrade && onDisk !== undefined && groupedRank(parsed.quality, qualityGroups) <= groupedRank(onDisk, qualityGroups)) {
+      else if (!existingForUpgrade && onDisk !== undefined && groupedRank(parsed.quality, ranking) <= groupedRank(onDisk, ranking)) {
         facts.notAnUpgrade = `Quality "${parsed.quality}" isn't an upgrade over what's already on disk`;
       }
       facts.size = sizeAllowed ? null : "Its size doesn't fit this quality's configured size range";
@@ -593,7 +593,7 @@ searchRouter.get(
         episodesCovered:
           packContext && packEpisodes && parsed.isFullSeason ? episodesCoveredBy(parsed, parsed.seasonNumber ?? packContext.season, packEpisodes).length : null,
         discography: discographyInfo ? { albumsCovered: discographyInfo.covered.length, albumsMissing: discographyInfo.missing.length } : null,
-        qualityRank: tiered ? qualityRank(parsed.quality) : -1,
+        qualityRank: tiered ? orderedRank(parsed.quality, ranking) : -1,
         flags: indexerFlagsOf(r),
         serverRank: 0,
       };
@@ -618,7 +618,7 @@ searchRouter.get(
         Number(a.rejected) - Number(b.rejected) ||
         Number(a.blocklisted) - Number(b.blocklisted) ||
         Number(b.wouldAutoGrab) - Number(a.wouldAutoGrab) ||
-        (tiered ? qualityRank(b.parsedQuality) - qualityRank(a.parsedQuality) : 0) ||
+        (tiered ? orderedRank(b.parsedQuality, ranking) - orderedRank(a.parsedQuality, ranking) : 0) ||
         b.formatScore - a.formatScore ||
         b.matchTier - a.matchTier ||
         protocolPreferenceKey(preferredProtocol, b.protocol) - protocolPreferenceKey(preferredProtocol, a.protocol) ||
