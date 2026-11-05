@@ -16,7 +16,7 @@
 
 export interface BackgroundJobProgress {
   id: string;
-  kind: "scan" | "matchProviders" | "refresh" | "organize" | "move";
+  kind: "scan" | "matchProviders" | "refresh" | "organize" | "move" | "retag";
   type: string;
   label: string;
   total: number;
@@ -25,6 +25,8 @@ export interface BackgroundJobProgress {
   startedAt: number;
   finishedAt: number | null;
   error: string | null;
+  /** What the run did, in a sentence, for the completion message (a retag's counts per outcome). */
+  summary: string | null;
 }
 
 const jobs = new Map<string, BackgroundJobProgress>();
@@ -44,7 +46,7 @@ function jobId(kind: BackgroundJobProgress["kind"], type: string): string {
 export function startBackgroundJob(kind: BackgroundJobProgress["kind"], type: string, label: string, total = 0): string {
   const id = jobId(kind, type);
   if (jobs.get(id)?.running) throw new Error(`A ${kind} job for "${type}" is already running`);
-  jobs.set(id, { id, kind, type, label, total, done: 0, running: true, startedAt: Date.now(), finishedAt: null, error: null });
+  jobs.set(id, { id, kind, type, label, total, done: 0, running: true, startedAt: Date.now(), finishedAt: null, error: null, summary: null });
   return id;
 }
 
@@ -63,12 +65,13 @@ export function incrementBackgroundJobDone(kind: BackgroundJobProgress["kind"], 
   if (job) job.done += by;
 }
 
-export function finishBackgroundJob(id: string, error?: string): void {
+export function finishBackgroundJob(id: string, error?: string, summary?: string): void {
   const job = jobs.get(id);
   if (!job) return;
   job.running = false;
   job.finishedAt = Date.now();
   job.error = error ?? null;
+  job.summary = summary ?? null;
 }
 
 export function isBackgroundJobRunning(kind: BackgroundJobProgress["kind"], type: string): boolean {

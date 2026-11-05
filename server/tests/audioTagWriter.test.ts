@@ -31,19 +31,33 @@ describe("writeAudioTags", () => {
     expect(tags.year).toBe("2021");
   });
 
-  it("leaves a non-mp3 file completely untouched", async () => {
-    const filePath = path.join(tmpDir, "track.flac");
+  it("leaves a file of a format that cannot be tagged completely untouched, and says so", async () => {
+    const filePath = path.join(tmpDir, "track.wav");
+    fs.writeFileSync(filePath, "original wav bytes, not touched");
+
+    const result = await writeAudioTags(filePath, { title: "Should Not Apply", artist: "Nobody", album: "Nothing" });
+
+    expect(result).toMatchObject({ outcome: "skipped", format: "WAV" });
+    expect(fs.readFileSync(filePath, "utf-8")).toBe("original wav bytes, not touched");
+  });
+
+  it("leaves a FLAC file that is not audio untouched and leaves no temp file behind", async () => {
+    const dir = fs.mkdtempSync(path.join(tmpDir, "notflac-"));
+    const filePath = path.join(dir, "track.flac");
     fs.writeFileSync(filePath, "original flac bytes, not touched");
 
-    await writeAudioTags(filePath, { title: "Should Not Apply", artist: "Nobody", album: "Nothing" });
+    // Whether ffmpeg is installed here or not, the answer is the same: not written, nothing changed.
+    const result = await writeAudioTags(filePath, { title: "Should Not Apply", artist: "Nobody", album: "Nothing" });
 
+    expect(result.outcome).toBe("failed");
     expect(fs.readFileSync(filePath, "utf-8")).toBe("original flac bytes, not touched");
+    expect(fs.readdirSync(dir)).toEqual(["track.flac"]);
   });
 
   it("never throws when the target mp3 file doesn't exist", async () => {
     const filePath = path.join(tmpDir, "does-not-exist.mp3");
 
-    await expect(writeAudioTags(filePath, { title: "X", artist: "Y", album: "Z" })).resolves.not.toThrow();
+    await expect(writeAudioTags(filePath, { title: "X", artist: "Y", album: "Z" })).resolves.toMatchObject({ outcome: "skipped" });
   });
 
   it("omits trackNumber/year when they aren't provided, without erroring", async () => {
@@ -130,7 +144,7 @@ describe("writeAudioTags", () => {
     fs.writeFileSync(filePath, audio);
     vi.spyOn(fsp, "rename").mockRejectedValue(new Error("EXDEV: cross-device link not permitted"));
 
-    await expect(writeAudioTags(filePath, { title: "X", artist: "Y", album: "Z" })).resolves.toBeUndefined();
+    await expect(writeAudioTags(filePath, { title: "X", artist: "Y", album: "Z" })).resolves.toMatchObject({ outcome: "failed" });
 
     expect(fs.readdirSync(dir)).toEqual(["track.mp3"]);
     expect(fs.readFileSync(filePath).equals(audio)).toBe(true);

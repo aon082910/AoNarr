@@ -5,7 +5,7 @@ import { useMediaTypes } from "../hooks/useMediaTypes.js";
 
 export interface BackgroundJobProgress {
   id: string;
-  kind: "scan" | "matchProviders" | "refresh" | "organize" | "move" | "mediaAnalysis";
+  kind: "scan" | "matchProviders" | "refresh" | "organize" | "move" | "retag" | "mediaAnalysis";
   type: string;
   label: string;
   total: number;
@@ -14,6 +14,8 @@ export interface BackgroundJobProgress {
   startedAt: number;
   finishedAt: number | null;
   error: string | null;
+  /** What the run did, in a sentence (a retag's counts), when the server has one. */
+  summary?: string | null;
 }
 
 /** GET /media-analysis/progress's own shape (server/src/services/mediaAnalysis.ts's
@@ -123,7 +125,7 @@ export function BackgroundJobsProvider({ children }: { children: ReactNode }) {
           const key = `${job.id}:${job.startedAt}`;
           if (job.finishedAt !== null && !knownIdsRef.current.has(key)) {
             if (job.error) notify.error(`${job.label} failed: ${job.error}`);
-            else notify.success(`${job.label} finished${job.total > 0 ? ` — ${job.done} of ${job.total}` : ""}.`);
+            else notify.success(`${job.label} finished${job.total > 0 ? ` — ${job.done} of ${job.total}` : ""}.${job.summary ? ` ${job.summary}` : ""}`, job.summary ? 10000 : undefined);
           }
           knownIdsRef.current.add(key);
         }
