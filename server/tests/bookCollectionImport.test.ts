@@ -793,8 +793,8 @@ describe("what is left of the download decides whether the client may delete it"
     await importer.importQueueItem(queueId);
 
     expect((await bookRow(books.mort)).has_file).toBe(1);
-    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
-    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+    // Files are left in the download (round 30h review): the torrent stays in the client with its data, it is not removed.
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
     expect(fs.existsSync(copy)).toBe(true);
     expect(fs.existsSync(only)).toBe(true);
   });
@@ -823,8 +823,8 @@ describe("what is left of the download decides whether the client may delete it"
 
     await importer.importQueueItem(queueId, mort);
 
-    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
-    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+    // Files are left in the download (round 30h review): the torrent stays in the client with its data, it is not removed.
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
   });
 });
 
@@ -913,8 +913,8 @@ describe("importing everything matched in the folder of the file picked", () => 
     expect((await bookRow(books.colour)).has_file).toBe(0);
     expect(await queueRow(queueId)).toBeUndefined();
     expect(fs.existsSync(nation)).toBe(true);
-    expect(removeQueueItemDownload).toHaveBeenCalledTimes(1);
-    expect(removeQueueItemDownload.mock.calls[0][1]).toBe(false);
+    // Files are left in the download (round 30h review): the torrent stays in the client with its data, it is not removed.
+    expect(removeQueueItemDownload).not.toHaveBeenCalled();
     expect(notifyImported).toHaveBeenCalledTimes(1);
     expect(notifyImported.mock.calls[0][0]).toBe("Terry Pratchett - Collection: 4 books");
     expect(notifyImported.mock.calls[0][1]).toBe("imported 3 of 4 books, 1 left: The Colour of Magic");
