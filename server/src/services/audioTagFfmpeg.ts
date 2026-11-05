@@ -11,7 +11,6 @@ import {
   tempPathNextTo,
   type AudioTagFormat,
   type AudioTagInfo,
-  type CoverImage,
   TAGS_UP_TO_DATE,
   type TagWriteResult,
   type ToolRunResult,
@@ -499,5 +498,3 @@ export async function writeTagsWithFfmpeg(filePath: string, info: AudioTagInfo, 
     for (const copy of coverCopies) await fsp.rm(copy, { force: true }).catch(() => {});
   }
 }
-
-export type { CoverImage };
