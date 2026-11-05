@@ -4,11 +4,19 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import NodeID3 from "node-id3";
 import { writeTagsWithFfmpeg } from "./audioTagFfmpeg.js";
+import { lockAudioFile, unlockAudioFile } from "./audioFileLock.js";
 import {
+  FileChangedError,
+  LEGACY_MP3_ONLY,
   TAGS_UP_TO_DATE,
+  TAG_FILE_BUSY,
+  TAG_NO_SPACE,
+  assertFileUnchanged,
   cleanTagText,
   formatLabelOf,
+  freeSpaceProblem,
   tagFormatOf,
+  withTagSlot,
   type AudioTagInfo,
   type CoverImage,
   type TagWriteResult,
@@ -22,7 +30,9 @@ export type { AudioTagInfo, CoverImage, TagWriteResult, WriteAudioTagsOptions } 
  * (where permitted) owner. Asynchronous because an audiobook MP3 can run to hundreds of MB, and a
  * synchronous write that size would stall every request and poll in the server. The copy is flushed
  * to disk before the rename: otherwise a power loss can leave the rename on disk but not the data,
- * replacing the only copy of the audio with an empty or truncated file. */
+ * replacing the only copy of the audio with an empty or truncated file. The bytes were read a while
+ * ago: if the file at the path is no longer the one they came from (replaced by an import, changed by
+ * another program), the copy is dropped, not renamed over the newer file. */
 async function replaceWith(filePath: string, data: Buffer, original: fs.Stats): Promise<void> {
   const tmpPath = path.join(path.dirname(filePath), `.aonarr-tmp-${crypto.randomBytes(6).toString("hex")}`);
   try {
@@ -36,6 +46,7 @@ async function replaceWith(filePath: string, data: Buffer, original: fs.Stats): 
     await fsp.chmod(tmpPath, original.mode & 0o7777);
     // Not permitted when running unprivileged; the file then keeps this process's own owner.
     await fsp.chown(tmpPath, original.uid, original.gid).catch(() => {});
+    await assertFileUnchanged(filePath, original);
     await fsp.rename(tmpPath, filePath);
   } catch (err) {
     await fsp.rm(tmpPath, { force: true }).catch(() => {});
@@ -95,6 +106,24 @@ export function id3TagsFor(info: AudioTagInfo): NodeID3.Tags {
   return tags;
 }
 
+/**
+ * What the old on/off switch wrote: title, artist, album, track number (as the plain number) and year. Nothing else, so no other
+ * frame of the file is touched.
+ */
+export function legacyId3TagsFor(info: AudioTagInfo): NodeID3.Tags {
+  const tags: NodeID3.Tags = {};
+  const text = (value: unknown) => cleanTagText(value) ?? undefined;
+  tags.title = text(info.title);
+  tags.artist = text(info.artist);
+  tags.album = text(info.album);
+  const track = positive(info.trackNumber);
+  if (track) tags.trackNumber = String(track);
+  const year = /^\d{4}/.exec(String(info.year ?? ""))?.[0];
+  if (year) tags.year = year;
+  for (const key of Object.keys(tags) as (keyof NodeID3.Tags)[]) if (tags[key] === undefined) delete tags[key];
+  return tags;
+}
+
 /** Frames this writer sets; any other text frame on a file is somebody else's tag. */
 const MANAGED_FRAMES = new Set(["TIT2", "TPE1", "TALB", "TPE2", "TRCK", "TPOS", "TYER", "TCON", "TCOM", "TIT1", "TXXX", "APIC"]);
 
@@ -138,7 +167,9 @@ async function writeMp3Tags(filePath: string, info: AudioTagInfo, options: Write
   if (link.size > MP3_MAX_BYTES) {
     return { outcome: "skipped", reason: `the MP3 is over ${MP3_MAX_BYTES / 1024 ** 2} MB, more than can be held in memory while it is rewritten`, format: "MP3" };
   }
-  const scrub = options.scrub === true;
+  // The old switch writes its five fields and leaves everything else (other frames, the picture) as it is.
+  const legacy = options.legacy === true;
+  const scrub = !legacy && options.scrub === true;
   const data = await fsp.readFile(filePath);
   let current: any = {};
   try {
@@ -146,13 +177,20 @@ async function writeMp3Tags(filePath: string, info: AudioTagInfo, options: Write
   } catch {
     // not a readable ID3 tag: the write below starts a new one
   }
-  const wanted = id3TagsFor(info);
-  const wantsCover = !!options.cover && (!current.image || scrub);
+  const wanted = legacy ? legacyId3TagsFor(info) : id3TagsFor(info);
+  const cover = legacy ? null : options.cover;
+  const wantsCover = !!cover && (!current.image || scrub);
   if (id3UpToDate(current, wanted, scrub, wantsCover)) return { outcome: "skipped", reason: TAGS_UP_TO_DATE, format: "MP3" };
+  // The tagged copy is written beside the file and is as big as it.
+  const space = await freeSpaceProblem(path.dirname(filePath), link.size, options.statfs);
+  if (space) {
+    log.warn(`[audioTagWriter] "${filePath}" left untagged: ${Math.round(space.free / 1024 ** 2)} MB free beside it, ${Math.round(space.needed / 1024 ** 2)} MB needed for the tagged copy`);
+    return { outcome: "skipped", reason: TAG_NO_SPACE, format: "MP3" };
+  }
 
   const tags: NodeID3.Tags = { ...wanted };
-  if (wantsCover && options.cover) {
-    tags.image = { mime: options.cover.mime, type: { id: 3 }, description: "Cover", imageBuffer: options.cover.data };
+  if (wantsCover && cover) {
+    tags.image = { mime: cover.mime, type: { id: 3 }, description: "Cover", imageBuffer: cover.data };
   } else if (scrub && current.image) {
     // Scrubbing removes the text tags; the picture stays unless a new cover takes its place.
     tags.image = current.image;
@@ -185,23 +223,40 @@ export async function writeAudioTags(filePath: string, info: AudioTagInfo, optio
   const entry = tagFormatOf(filePath);
   const label = formatLabelOf(filePath);
   if (!entry) return { outcome: "skipped", reason: `${label} files cannot be tagged`, format: label };
+  // The old on/off switch tagged MP3 files and nothing else.
+  if (options.legacy && entry.format !== "mp3") return { outcome: "skipped", reason: LEGACY_MP3_ONLY, format: label };
+  // One writer per file: an import that replaces the file, or another tag write, would be undone by a copy made from the old bytes.
+  if (!(await lockAudioFile(filePath, options.lockWaitMs ?? 0))) {
+    log.info(`[audioTagWriter] left "${filePath}" untagged: ${TAG_FILE_BUSY}`);
+    return { outcome: "skipped", reason: TAG_FILE_BUSY, format: label };
+  }
   try {
-    // A symlinked or hardlinked import shares its data with the download client's copy: tagging in
-    // place would corrupt a seeding torrent, and replacing the file would break the link and
-    // silently double the disk it takes up.
-    const link = await fsp.lstat(filePath);
-    if (link.isSymbolicLink() || link.nlink > 1) {
-      log.info(`[audioTagWriter] left "${filePath}" untagged: it shares its data with the download it was imported from`);
-      return { outcome: "skipped", reason: "it shares its data with the download it was imported from (a hardlink or symlink)", format: label };
-    }
-    if (!link.isFile()) return { outcome: "skipped", reason: "it is not a regular file", format: label };
-    const result = entry.format === "mp3" ? await writeMp3Tags(filePath, info, options, link) : await writeTagsWithFfmpeg(filePath, info, options, link);
-    if (result.outcome === "failed") log.warn(`[audioTagWriter] failed to write ${label} tags for "${filePath}": ${result.reason}`);
-    else if (result.outcome === "skipped" && result.reason !== TAGS_UP_TO_DATE) log.info(`[audioTagWriter] left "${filePath}" untagged: ${result.reason}`);
-    return result;
+    // Waits its turn behind the other files being written (see withTagSlot); the file is looked at only once it is this one's turn.
+    return await withTagSlot(options.signal, async (): Promise<TagWriteResult> => {
+      // A symlinked or hardlinked import shares its data with the download client's copy: tagging in
+      // place would corrupt a seeding torrent, and replacing the file would break the link and
+      // silently double the disk it takes up.
+      const link = await fsp.lstat(filePath);
+      if (link.isSymbolicLink() || link.nlink > 1) {
+        log.info(`[audioTagWriter] left "${filePath}" untagged: it shares its data with the download it was imported from`);
+        return { outcome: "skipped", reason: "it shares its data with the download it was imported from (a hardlink or symlink)", format: label };
+      }
+      if (!link.isFile()) return { outcome: "skipped", reason: "it is not a regular file", format: label };
+      const result = entry.format === "mp3" ? await writeMp3Tags(filePath, info, options, link) : await writeTagsWithFfmpeg(filePath, info, options, link);
+      if (result.outcome === "failed") log.warn(`[audioTagWriter] failed to write ${label} tags for "${filePath}": ${result.reason}`);
+      else if (result.outcome === "skipped" && result.reason !== TAGS_UP_TO_DATE) log.info(`[audioTagWriter] left "${filePath}" untagged: ${result.reason}`);
+      return result;
+    });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return { outcome: "skipped", reason: "the file is missing", format: label };
+    if (err instanceof FileChangedError) {
+      log.info(`[audioTagWriter] left "${filePath}" untagged: ${err.message}`);
+      return { outcome: "skipped", reason: err.message, format: label };
+    }
+    if ((err as Error).name === "AbortError") return { outcome: "skipped", reason: "cancelled", format: label };
     log.warn(`[audioTagWriter] failed to write ${label} tags for "${filePath}":`, (err as Error).message);
     return { outcome: "failed", reason: (err as Error).message, format: label };
+  } finally {
+    unlockAudioFile(filePath);
   }
 }

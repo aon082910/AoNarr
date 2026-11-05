@@ -98,7 +98,7 @@ async function readCapped(res: Response, controller: AbortController): Promise<B
   return Buffer.concat(chunks);
 }
 
-async function fetchImageBytes(startUrl: string, signal: AbortSignal | undefined): Promise<Buffer> {
+export async function fetchImageBytes(startUrl: string, signal?: AbortSignal, fetchImpl: typeof fetch = fetch): Promise<Buffer> {
   // A plain timer and a manual relay of the caller's abort: AbortSignal.any() with a timeout inside drops the deadline on Node 20.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`no answer in ${ARTWORK_TIMEOUT_MS / 1000}s`)), ARTWORK_TIMEOUT_MS);
@@ -111,7 +111,7 @@ async function fetchImageBytes(startUrl: string, signal: AbortSignal | undefined
       const problem = urlProblem(url);
       if (problem) throw new Error(`refused: ${problem}`);
       // Redirects are followed by hand so that each hop is checked like the first.
-      const res = await fetch(url, { signal: controller.signal, redirect: "manual" });
+      const res = await fetchImpl(url, { signal: controller.signal, redirect: "manual" });
       if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
         await res.body?.cancel().catch(() => {});
         url = new URL(res.headers.get("location") as string, url).href;

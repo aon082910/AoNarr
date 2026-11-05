@@ -1,11 +1,17 @@
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type fs from "node:fs";
 import {
+  FileChangedError,
+  TAG_NO_SPACE,
+  TAG_WRITE_CONCURRENCY,
+  assertFileUnchanged,
   cleanTagText,
   commitTempFile,
+  freeSpaceProblem,
   syncFile,
   tagFormatOf,
   tempPathNextTo,
@@ -31,12 +37,14 @@ import { log } from "./logger.js";
  * embedded cue sheet is skipped. Atoms ffprobe does not show cannot be told apart from absent ones: see the README.
  */
 
-/** At most this many ffmpeg tag writes run at once in the whole process (an import and a library retag share it). */
-export const FFMPEG_TAG_CONCURRENCY = 2;
+/** At most this many tag writes run at once in the whole process (an import and a library retag share them): see withTagSlot. */
+export const FFMPEG_TAG_CONCURRENCY = TAG_WRITE_CONCURRENCY;
 const MIN_TIMEOUT_MS = 60_000;
 /** The slowest disk this is expected to work against, which sets how long a write of a given size may take. */
 const FLOOR_BYTES_PER_SECOND = 2 * 1024 * 1024;
 const PROBE_TIMEOUT_MS = 60_000;
+/** How long a killed tool gets to report that it is gone before the run is given up on. */
+export const KILL_GRACE_MS = 5_000;
 const DURATION_TOLERANCE_SECONDS = 1;
 const MAX_CAPTURE_BYTES = 20 * 1024 * 1024;
 
@@ -47,7 +55,7 @@ export function timeoutForSize(sizeBytes: number): number {
 // ---- running the tools ----------------------------------------------------------------------------------------------
 
 export const defaultToolRunner: ToolRunner = (tool, args, { timeoutMs, signal }) =>
-  new Promise<ToolRunResult>((resolve) => {
+  new Promise<ToolRunResult>((resolve, reject) => {
     const result = (extra: Partial<ToolRunResult>): ToolRunResult => ({ code: null, stdout: "", stderr: "", timedOut: false, aborted: false, ...extra });
     if (signal?.aborted) return resolve(result({ aborted: true }));
     let child;
@@ -61,11 +69,16 @@ export const defaultToolRunner: ToolRunner = (tool, args, { timeoutMs, signal })
     let timedOut = false;
     let aborted = false;
     let settled = false;
-    const finish = (value: ToolRunResult) => {
-      if (settled) return;
+    let giveUp: NodeJS.Timeout | undefined;
+    const settle = () => {
       settled = true;
       clearTimeout(timer);
+      clearTimeout(giveUp);
       signal?.removeEventListener("abort", onAbort);
+    };
+    const finish = (value: ToolRunResult) => {
+      if (settled) return;
+      settle();
       resolve(value);
     };
     const stop = () => {
@@ -74,6 +87,13 @@ export const defaultToolRunner: ToolRunner = (tool, args, { timeoutMs, signal })
       } catch {
         // already gone
       }
+      // A process stuck in uninterruptible I/O (a share that went away) does not die and never closes: without this the run, and
+      // the slot the caller holds, would be waiting for it for good.
+      giveUp ??= setTimeout(() => {
+        if (settled) return;
+        settle();
+        reject(new Error(`${tool} did not stop ${KILL_GRACE_MS / 1000} s after it was killed (process ${child.pid ?? "unknown"}): giving up on it`));
+      }, KILL_GRACE_MS);
     };
     const timer = setTimeout(() => {
       timedOut = true;
@@ -94,24 +114,6 @@ export const defaultToolRunner: ToolRunner = (tool, args, { timeoutMs, signal })
     child.on("error", (err) => finish(result({ spawnError: err.message, stderr })));
     child.on("close", (code) => finish(result({ code, stdout, stderr, timedOut, aborted })));
   });
-
-let running = 0;
-const waiters: (() => void)[] = [];
-
-async function withFfmpegSlot<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
-  while (running >= FFMPEG_TAG_CONCURRENCY) {
-    if (signal?.aborted) throw new DOMException("aborted", "AbortError");
-    await new Promise<void>((resolve) => waiters.push(resolve));
-  }
-  if (signal?.aborted) throw new DOMException("aborted", "AbortError");
-  running++;
-  try {
-    return await work();
-  } finally {
-    running--;
-    waiters.shift()?.();
-  }
-}
 
 // ---- probing --------------------------------------------------------------------------------------------------------
 
@@ -380,14 +382,33 @@ export function verifyTaggedOutput(
 
 // ---- the write ------------------------------------------------------------------------------------------------------
 
-class SkipFile extends Error {}
-
 function skipped(format: string, reason: string): TagWriteResult {
   return { outcome: "skipped", reason, format };
 }
 
 function failed(format: string, reason: string): TagWriteResult {
   return { outcome: "failed", reason, format };
+}
+
+/** Said once, when ffmpeg could not take the cover (the tags still go in). */
+export const COVER_NOT_EMBEDDED = "cover not embedded: ffmpeg could not embed it";
+
+/** Files a cover could not be embedded in, kept for the life of the process so a pass does not try the same doomed remux again. */
+const MAX_REMEMBERED_EMBED_FAILURES = 5000;
+const embedFailures = new Set<string>();
+
+/** The file as it is now (path, mtime, size) and the picture offered: a file that changed, or another cover, is tried afresh. */
+function embedFailureKey(filePath: string, stat: { mtimeMs: number; size: number }, cover: { data: Buffer }): string {
+  return `${filePath}\u0000${stat.mtimeMs}\u0000${stat.size}\u0000${crypto.createHash("sha1").update(cover.data).digest("hex")}`;
+}
+
+function rememberEmbedFailure(key: string): void {
+  if (embedFailures.size >= MAX_REMEMBERED_EMBED_FAILURES) embedFailures.delete(embedFailures.values().next().value as string);
+  embedFailures.add(key);
+}
+
+export function resetEmbedFailuresForTests(): void {
+  embedFailures.clear();
 }
 
 /**
@@ -427,16 +448,27 @@ export async function writeTagsWithFfmpeg(filePath: string, info: AudioTagInfo, 
 
     const pairs = ffmpegTagPairs(entry.format, info);
     const current = commentTags(source, entry.format);
-    // A cover goes in a file that has none (or, scrubbing, in place of what it has); one with a picture of its own keeps it.
-    const wantsCover = !!options.cover && formatEmbedsCover(entry.format) && (source.pictures === 0 || scrub);
-    const coverSkipped = options.cover && !formatEmbedsCover(entry.format) ? "the cover is left out: ffmpeg cannot put a picture in this format" : undefined;
     const tagsMissing = missingTagPairs(pairs, current).length > 0;
     const extraTags = scrub ? [...current.keys()].filter((key) => !TECHNICAL_KEYS.has(key) && !pairs.some(([k]) => k.toLowerCase() === key)) : [];
-    if (!tagsMissing && extraTags.length === 0 && !wantsCover) {
+    const tagsNeedWrite = tagsMissing || extraTags.length > 0;
+    const coverFits = !!options.cover && formatEmbedsCover(entry.format);
+    const coverSkipped = options.cover && !formatEmbedsCover(entry.format) ? "the cover is left out: ffmpeg cannot put a picture in this format" : undefined;
+    const failureKey = options.cover && coverFits ? embedFailureKey(filePath, original, options.cover) : null;
+    // A cover goes in a file that has none. Scrubbing, it also takes the place of the picture the file has, but only when the tags are
+    // being rewritten anyway: a file that is up to date is not remuxed for its picture alone (that would copy the whole library on
+    // every pass). A file this cover already failed to go into is not tried again.
+    const wantsCover = coverFits && !(failureKey && embedFailures.has(failureKey)) && (source.pictures === 0 || (scrub && tagsNeedWrite));
+    if (!tagsNeedWrite && !wantsCover) {
       return { outcome: "skipped", reason: TAGS_UP_TO_DATE, format: label };
     }
 
     const sizeBefore = original.size;
+    // The tagged copy is as big as the file.
+    const space = await freeSpaceProblem(path.dirname(filePath), sizeBefore, options.statfs);
+    if (space) {
+      log.warn(`[audioTagWriter] "${filePath}" left untagged: ${Math.round(space.free / 1024 ** 2)} MB free beside it, ${Math.round(space.needed / 1024 ** 2)} MB needed for the tagged copy`);
+      return skipped(label, TAG_NO_SPACE);
+    }
     const timeoutMs = timeoutForSize(sizeBefore);
 
     let embedded = false;
@@ -457,16 +489,24 @@ export async function writeTagsWithFfmpeg(filePath: string, info: AudioTagInfo, 
         coverFile,
         brand: source.majorBrand,
       };
-      const res = await withFfmpegSlot(signal, () => run("ffmpeg", buildFfmpegArgs(plan), { timeoutMs, signal }));
+      const res = await run("ffmpeg", buildFfmpegArgs(plan), { timeoutMs, signal });
       if (res.code === 0 && !res.spawnError && !res.timedOut && !res.aborted) embedded = coverFile !== null;
       return res;
     };
 
     let res = await attempt(wantsCover);
+    let embedFailed = false;
     if (wantsCover && res.code !== 0 && !res.aborted && !res.timedOut && !res.spawnError) {
       // A cover that ffmpeg cannot take (an odd image) must not cost the tags.
-      log.warn(`[audioTagWriter] ffmpeg could not embed the cover into "${filePath}" (${lastLine(res.stderr)}): writing the tags without it`);
+      embedFailed = true;
       await fsp.rm(tmpPath, { force: true }).catch(() => {});
+      if (!tagsNeedWrite) {
+        // Only the picture was wanted and it cannot go in: the file is left exactly as it is, and the next pass does not try again.
+        log.warn(`[audioTagWriter] ffmpeg could not embed the cover into "${filePath}" (${lastLine(res.stderr)}): left as it is`);
+        if (failureKey) rememberEmbedFailure(failureKey);
+        return skipped(label, COVER_NOT_EMBEDDED);
+      }
+      log.warn(`[audioTagWriter] ffmpeg could not embed the cover into "${filePath}" (${lastLine(res.stderr)}): writing the tags without it`);
       res = await attempt(false);
     }
     if (res.aborted) return skipped(label, "cancelled");
@@ -482,15 +522,17 @@ export async function writeTagsWithFfmpeg(filePath: string, info: AudioTagInfo, 
     if (problem) return failed(label, `the tagged copy was not used: ${problem}`);
 
     await syncFile(tmpPath);
-    // Another program (the download client, a media manager, the user) may have changed the file while ffmpeg read it.
-    const now = await fsp.stat(filePath).catch(() => null);
-    if (!now || now.size !== original.size || now.mtimeMs !== original.mtimeMs || now.ino !== original.ino) {
-      throw new SkipFile("the file changed while it was being tagged");
-    }
+    // Another program (the download client, a media manager, an import, the user) may have changed the file while ffmpeg read it.
+    await assertFileUnchanged(filePath, original);
     await commitTempFile(tmpPath, filePath, original);
-    return { outcome: "written", format: label, ...(coverSkipped ? { reason: coverSkipped } : wantsCover && !embedded ? { reason: "the cover is left out: ffmpeg could not embed it" } : {}) };
+    if (embedFailed && options.cover && coverFits) {
+      // Remembered under the file as it is now, which is what the next pass will see.
+      const after = await fsp.stat(filePath).catch(() => null);
+      if (after) rememberEmbedFailure(embedFailureKey(filePath, after, options.cover));
+    }
+    return { outcome: "written", format: label, ...(coverSkipped ? { reason: coverSkipped } : wantsCover && !embedded ? { reason: COVER_NOT_EMBEDDED } : {}) };
   } catch (err) {
-    if (err instanceof SkipFile) return skipped(label, err.message);
+    if (err instanceof FileChangedError) return skipped(label, err.message);
     if ((err as Error).name === "AbortError") return skipped(label, "cancelled");
     return failed(label, (err as Error).message);
   } finally {

@@ -14,7 +14,8 @@ import { nfoEnabledFor } from "./metadataFileOptions.js";
 import { writeImportedAlbumFiles, writeImportedEpisodeFiles, writeImportedMovieFiles } from "./metadataFiles.js";
 import { writeAudioTags } from "./audioTagWriter.js";
 import { audioTagInfoFor, getAudioTagSettings, resolveCover } from "./audioRetag.js";
-import { modeTagsOnImport, type CoverImage } from "./audioTagCommon.js";
+import { modeTagsOnImport, type CoverImage, type WriteAudioTagsOptions } from "./audioTagCommon.js";
+import { IMPORT_TAG_LIMITS, lockAudioFiles, runWithin } from "./audioFileLock.js";
 import { notifyQueueChanged } from "./realtime.js";
 import { isDiscographyTitle, parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityKey, identityModeFor, releaseIdentifiesTarget, type IdentityTarget } from "./releaseIdentity.js";
@@ -2918,40 +2919,59 @@ export async function placeAlbumFiles(params: {
   const replacedPaths: (string | null)[] = [];
   const placedPaths: string[] = [];
   let albumCover: Promise<CoverImage | null> | undefined;
-  for (const p of toPlace) {
-    const { src, track, dest } = p;
-    if (replaceExisting.has(destKey(dest))) await placeOverRecycledFile(src, dest, item);
-    else await placeAtDestination(src, dest, item, albumOwnPaths);
-    for (const key of claimKeysOf(p)) batchClaims?.add(key);
-    placedPaths.push(src, dest);
-    if (path.resolve(src) === path.resolve(anchorFile)) anchorDest = dest;
-    movedCount++;
-    totalMovedBytes += await fsp.stat(dest).then((s) => s.size).catch(() => 0);
+  // A retag of a file this album replaces would put the old audio back over the new file when it finishes: all of the album's
+  // files are waited for before anything moves (a refusal leaves the album in the download, as every other check here does), and
+  // each is handed to its tag write once it is in place.
+  const heldDests = await lockAudioFiles(
+    toPlace.map((p) => p.dest),
+    IMPORT_TAG_LIMITS.lockWaitMs
+  );
+  if (!heldDests) {
+    throw new ImportSkippedError(`A tag write of "${subRow.title}" is still running on one of its files — not replacing it now, try again in a moment`);
+  }
+  try {
+    for (const p of toPlace) {
+      const { src, track, dest } = p;
+      if (replaceExisting.has(destKey(dest))) await placeOverRecycledFile(src, dest, item);
+      else await placeAtDestination(src, dest, item, albumOwnPaths);
+      for (const key of claimKeysOf(p)) batchClaims?.add(key);
+      placedPaths.push(src, dest);
+      if (path.resolve(src) === path.resolve(anchorFile)) anchorDest = dest;
+      movedCount++;
+      totalMovedBytes += await fsp.stat(dest).then((s) => s.size).catch(() => 0);
 
-    if (track) {
-      if (track.has_file) replacedPaths.push(track.file_path);
-      await db.prepare("UPDATE tracks SET has_file = 1, file_path = ? WHERE id = ?").run(dest, track.id);
-    }
+      if (track) {
+        if (track.has_file) replacedPaths.push(track.file_path);
+        await db.prepare("UPDATE tracks SET has_file = 1, file_path = ? WHERE id = ?").run(dest, track.id);
+      }
 
-    // Lidarr's "write tags" (none, new, all, sync): every mode but none tags what an import places. A tag that cannot be
-    // written never fails the import (the writer never throws; the reason is in the log).
-    if (track) {
-      const tagSettings = getAudioTagSettings();
-      if (modeTagsOnImport(tagSettings.mode)) {
-        // One cover lookup per album, not per track.
-        // The download's own folder is looked in too (it holds the cover, the library folder does not yet); a folder shared with
-        // other downloads is not, as its cover is not necessarily this album's.
-        albumCover ??= tagSettings.embedCover
-          ? resolveCover(path.dirname(dest), subRow.poster_url ?? null, undefined, sharedSourceDir ? [] : [albumSourceDir]).catch(() => null)
-          : Promise.resolve(null);
-        const result = await writeAudioTags(
-          dest,
-          audioTagInfoFor({ item, sub: subRow, track, trackTotal: Math.max(tracks.length, ...tracks.map((t) => Number(t.track_number) || 0)) }),
-          { scrub: tagSettings.scrub, cover: await albumCover }
-        );
-        if (result?.outcome === "failed") log.warn(`[import] ${dest} was imported without its tags: ${result.reason}`);
+      // The file is in place; its tag write takes the lock itself from here on (and keeps it until it has really finished).
+      heldDests.release(dest);
+      // Lidarr's "write tags" (none, new, all, sync): every mode but none tags what an import places. A tag that cannot be
+      // written never fails the import (the writer never throws; the reason is in the log), and never holds it up for more than
+      // IMPORT_TAG_LIMITS.fileTimeoutMs per file.
+      if (track) {
+        const tagSettings = getAudioTagSettings();
+        if (modeTagsOnImport(tagSettings.mode)) {
+          // The old on/off switch (no mode chosen) writes five fields to MP3 files and nothing else: no cover, no scrubbing.
+          // One cover lookup per album, not per track.
+          // The download's own folder is looked in too (it holds the cover, the library folder does not yet); a folder shared with
+          // other downloads is not, as its cover is not necessarily this album's.
+          albumCover ??= tagSettings.embedCover && !tagSettings.legacy
+            ? resolveCover(path.dirname(dest), subRow.poster_url ?? null, undefined, sharedSourceDir ? [] : [albumSourceDir]).catch(() => null)
+            : Promise.resolve(null);
+          const tagInfo = audioTagInfoFor({ item, sub: subRow, track, trackTotal: Math.max(tracks.length, ...tracks.map((t) => Number(t.track_number) || 0)) });
+          const result = await runWithin(IMPORT_TAG_LIMITS.fileTimeoutMs, async (signal) => {
+            const options: WriteAudioTagsOptions = tagSettings.legacy ? { legacy: true } : { scrub: tagSettings.scrub, cover: await albumCover };
+            return writeAudioTags(dest, tagInfo, { ...options, signal, lockWaitMs: IMPORT_TAG_LIMITS.lockWaitMs });
+          });
+          if (result === null) log.warn(`[import] ${dest} was imported without waiting for its tags: writing them took longer than ${IMPORT_TAG_LIMITS.fileTimeoutMs / 1000} s`);
+          else if (result?.outcome === "failed") log.warn(`[import] ${dest} was imported without its tags: ${result.reason}`);
+        }
       }
     }
+  } finally {
+    heldDests.releaseAll();
   }
 
   // A single-file book found loose in the root folder has that file, not a folder, as its file_path.
