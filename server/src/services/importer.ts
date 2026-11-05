@@ -65,7 +65,8 @@ import { FS_CALL_TIMEOUT_MS, guardedFsCall, statAsync, statfsAsync } from "./fsA
 import { rootFolderUnmountedReason } from "./rootFolderCheck.js";
 import { isTitleMoving } from "./titleMoveLock.js";
 import { discographyAlbumsOf, queueTargetIds } from "./discography.js";
-import { matchAlbumFolders } from "./discographyMatch.js";
+import { matchAlbumFolders, type DiscFolder } from "./discographyMatch.js";
+import { matchFoldersByTags, readFileAlbumTags } from "./discographyTags.js";
 import { addToBlocklist } from "./blocklist.js";
 import { wakeLeaf } from "./searchBackoff.js";
 import type { MediaType } from "../types/index.js";
@@ -2558,6 +2559,11 @@ async function withinTimeout(work: Promise<unknown>, ms: number, label: string):
   }
 }
 
+/** A folder named for one disc of an album ("Album CD1", "Album [Disc 2]") as the album's own name, for a folder of all its discs. */
+function withoutTrailingDisc(folderName: string): string {
+  return folderName.replace(/[\s._-]*[[(]?\s*(?:cd|dis[ck])[\s._-]*\d+\s*[\])]?\s*$/i, "").trim() || folderName;
+}
+
 /**
  * For "collection" libraries where a child's download normally contains many files rather than
  * one (currently just Music: an album download has one file per track) — moves every sibling
@@ -2589,8 +2595,13 @@ export async function placeAlbumFiles(params: {
   /** The caller tells of the import itself (a discography sends one notification for all its albums): the album's history row is
    * written, its own "imported" notification is not sent. */
   quiet?: boolean;
+  /** The album's discs lie in folders of their own beside each other ("Album CD1", "Album CD2": the tags show them to be one
+   * album; the anchor is in one of them). All of them are placed as the album, each disc's tracks counted after the discs before it. */
+  discFolders?: DiscFolder[];
 }): Promise<{ destFolder: string; fileCount: number; leftInPlace: number; anchorDest: string | null; sourceFolder: string | null }> {
   const { itemId, subItemId, anchorFile, quality, releaseTitle, downloadPath, category, onlyAnchor = false, batchClaims, refuseDowngrade, ownFolder = false, quiet = false } = params;
+  const discFolders = params.discFolders && params.discFolders.length > 1 ? params.discFolders : null;
+  const discFolderDirs = new Set((discFolders ?? []).map((d) => path.resolve(d.path)));
 
   const mediaRow = await db.prepare("SELECT * FROM media_items WHERE id = ?").get(itemId);
   if (!mediaRow) throw new Error(`Media item ${itemId} not found`);
@@ -2646,7 +2657,7 @@ export async function placeAlbumFiles(params: {
   const albumFolderName =
     getNamingEnabled(item.type) || sharedSourceDir
       ? templatedSegments[templatedSegments.length - 1]
-      : safePathSegment(path.basename(albumSourceDir));
+      : safePathSegment(discFolders ? withoutTrailingDisc(path.basename(albumSourceDir)) : path.basename(albumSourceDir));
   let destFolder = path.join(rootFolder.path, ...parentFolderSegments, albumFolderName);
   // One artist's same-titled albums (self-titled records, several "Greatest Hits") render one
   // folder, where the later import renamed its tracks over the earlier album's same-named ones.
@@ -2701,6 +2712,17 @@ export async function placeAlbumFiles(params: {
         : [];
     siblings = [anchorFile, ...named];
     leftInPlace = others.length - named.length;
+  } else if (discFolders) {
+    // The discs lie in folders of their own, whatever those are called: every disc's files, and a disc's track numbers
+    // counted after the files of the discs before it (the track list numbers an album straight through).
+    siblings = [];
+    let before = 0;
+    for (const disc of [...discFolders].sort((a, b) => a.disc - b.disc)) {
+      const discFiles = collectAudioFiles(disc.path);
+      for (const file of discFiles) trackNumberOffsetForFile.set(file, before);
+      siblings.push(...discFiles);
+      before += discFiles.length;
+    }
   } else if (albumSourceDir === sourceDir) {
     siblings = collectAudioFiles(sourceDir);
   } else {
@@ -2836,7 +2858,7 @@ export async function placeAlbumFiles(params: {
     if (group.length < 2) continue;
     for (const p of group) {
       const discDir = path.dirname(p.src);
-      if (path.resolve(discDir) !== path.resolve(albumSourceDir) && DISC_SUBFOLDER_RE.test(path.basename(discDir))) {
+      if (discFolderDirs.has(path.resolve(discDir)) || (path.resolve(discDir) !== path.resolve(albumSourceDir) && DISC_SUBFOLDER_RE.test(path.basename(discDir)))) {
         p.dest = path.join(destFolder, safePathSegment(path.basename(discDir)), path.basename(p.dest));
       }
     }
@@ -3112,6 +3134,8 @@ export interface DiscographyImport {
   skipped: { folder: string; reason: string }[];
   /** Whether audio of the download is still where it was (a folder not imported, a file left behind). */
   leftBehind: boolean;
+  /** Folders whose name did not say which album they hold and whose files' tags did. */
+  identifiedByTags: number;
 }
 
 /**
@@ -3167,7 +3191,17 @@ export async function placeDiscographyFiles(params: {
     target: targetSubItemIds.includes(album.id) && (!album.hasFile || !!onlyFolder),
   }));
   const hasFileNow = new Set(albumRows.filter((album) => album.hasFile).map((album) => album.id));
-  const matches = matchAlbumFolders(folders, item.title, albums);
+  const nameMatches = matchAlbumFolders(folders, item.title, albums);
+  // A folder whose name says nothing gets a second look at the tags of a few of its files (never one the name already matched).
+  // Best effort: without ffprobe, or when the files cannot be read, the folders stay as their names left them.
+  const tagStep = await matchFoldersByTags(
+    folders.map((folder) => ({ ...folder, audioFiles: byFolder.get(folder.path)! })),
+    albums,
+    nameMatches,
+    readFileAlbumTags,
+    { artist: item.title, releaseDir, onlyFolder }
+  ).catch(() => null);
+  const matches = tagStep?.matches ?? nameMatches;
 
   const result: DiscographyImport = {
     imported: [],
@@ -3176,10 +3210,18 @@ export async function placeDiscographyFiles(params: {
     alreadyHad: onlyFolder ? [] : targetSubItemIds.filter((id) => hasFileNow.has(id)),
     skipped: [],
     leftBehind: false,
+    identifiedByTags: tagStep?.identified ?? 0,
   };
   const placed = new Set<number>();
   for (const folder of folders) {
     const match = matches.get(folder.path)!;
+    // The discs of one album that lie in folders of their own (the tags show them to be one album) go in together, from one
+    // of those folders: the first disc's, or the one the admin picked.
+    const discs = match.kind === "album" ? match.discs : undefined;
+    if (discs) {
+      const carrier = (onlyFolder && discs.find((d) => path.resolve(d.path) === path.resolve(onlyFolder))?.path) || discs[0].path;
+      if (path.resolve(folder.path) !== path.resolve(carrier)) continue;
+    }
     if (onlyFolder && path.resolve(folder.path) !== path.resolve(onlyFolder)) {
       result.leftBehind = true;
       continue;
@@ -3196,6 +3238,9 @@ export async function placeDiscographyFiles(params: {
     }
     const album = albums.find((a) => a.id === match.albumId)!;
     const anchorFile = [...byFolder.get(folder.path)!].sort()[0];
+    // A discography of dozens of albums is one long task on the import lane: between albums the event loop gets its turn, so the
+    // queue poll, the requests and the timers wait for one album's work at most, not for the whole discography's.
+    await new Promise<void>((resolve) => setImmediate(resolve));
     try {
       const placedAlbum = await placeAlbumFiles({
         itemId,
@@ -3210,6 +3255,7 @@ export async function placeDiscographyFiles(params: {
         ownFolder: true,
         // The discography is told of once for all its albums (notifyDiscographyImported), not once per album.
         quiet: true,
+        ...(discs ? { discFolders: discs } : {}),
       });
       result.imported.push({ subItemId: album.id, title: album.title, destFolder: placedAlbum.destFolder, fileCount: placedAlbum.fileCount });
       placed.add(album.id);
@@ -3230,7 +3276,7 @@ export async function placeDiscographyFiles(params: {
     const why = result.skipped.map((s) => s.reason).join("; ") || "none of its folders is an album that was wanted";
     throw new ImportSkippedError(`No album of "${releaseTitle ?? "the discography"}" could be imported: ${why}`);
   }
-  log.info(`[importer] imported ${result.imported.length} album(s) of "${releaseTitle ?? "a discography"}" for "${item.title}"; ${result.skipped.length} folder(s) skipped, ${result.notFound.length} album(s) not in it`);
+  log.info(`[importer] imported ${result.imported.length} album(s) of "${releaseTitle ?? "a discography"}" for "${item.title}"; ${result.skipped.length} folder(s) skipped, ${result.notFound.length} album(s) not in it, ${result.identifiedByTags} folder(s) identified by their tags`);
   return result;
 }
 

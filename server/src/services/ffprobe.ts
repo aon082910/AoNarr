@@ -111,24 +111,25 @@ function extractSubtitleStreams(streams: any[]): SubtitleStreamInfo[] {
  * masking a genuinely corrupt file (which fails identically both times). */
 const RETRYABLE_FFPROBE_PATTERNS = [/moov atom not found/i, /invalid data found/i, /could not find codec parameters/i];
 
-async function runFfprobe(filePath: string): Promise<{ stdout: string }> {
+async function runFfprobe(filePath: string, timeoutMs = 30_000): Promise<{ stdout: string }> {
   return execFileAsync("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", filePath], {
-    timeout: 30_000,
+    timeout: timeoutMs,
     maxBuffer: 10 * 1024 * 1024,
   });
 }
 
-async function probeJson(filePath: string): Promise<any> {
+/** `timeoutMs` set: a probe that has its own short deadline (a best-effort look at a file's tags) is not retried. */
+async function probeJson(filePath: string, timeoutMs?: number): Promise<any> {
   // "-v error" (not "quiet") — quiet suppresses ffprobe's own explanation of *why* it failed
   // along with the routine info it's actually meant to silence, so a real failure came back with
   // empty stderr and nothing to log beyond "the command failed." error-level still says nothing
   // for a file that probes fine, but keeps the actual reason for one that doesn't.
   let result;
   try {
-    result = await runFfprobe(filePath);
+    result = await runFfprobe(filePath, timeoutMs);
   } catch (err) {
     const stderr = (err as NodeJS.ErrnoException & { stderr?: string }).stderr ?? "";
-    if (RETRYABLE_FFPROBE_PATTERNS.some((p) => p.test(stderr))) {
+    if (timeoutMs === undefined && RETRYABLE_FFPROBE_PATTERNS.some((p) => p.test(stderr))) {
       await new Promise((r) => setTimeout(r, 2000));
       result = await runFfprobe(filePath);
     } else {
@@ -189,14 +190,33 @@ export interface AudioFileTags {
   author: string | null;
   album: string | null;
   title: string | null;
+  /** The release date as the file writes it ("1974-03-08", "1974"): the original date when it has one, else its date or year tag. */
+  date?: string | null;
+  /** The disc this track is on and how many discs the release has ("1/2", "2 of 2", or a separate total tag). */
+  disc?: number | null;
+  discTotal?: number | null;
+}
+
+function wholeNumber(text: string | null | undefined): number | null {
+  const m = /^\s*(\d{1,3})\s*$/.exec(text ?? "");
+  return m && Number(m[1]) > 0 ? Number(m[1]) : null;
+}
+
+/** "2" and "2/3" are disc 2; "2/3" and a separate total tag say there are 3 discs. */
+function discNumbers(value: string | null, total: string | null): { disc: number | null; discTotal: number | null } {
+  const pair = /^\s*(\d{1,3})\s*(?:\/|of)\s*(\d{1,3})\s*$/i.exec(value ?? "");
+  if (pair) return { disc: wholeNumber(pair[1]), discTotal: wholeNumber(pair[2]) ?? wholeNumber(total) };
+  return { disc: wholeNumber(value), discTotal: wholeNumber(total) };
 }
 
 /** An audio file's own tags (ID3/MP4/Vorbis) — container-level tags first, then the first audio
  * stream's (where Ogg keeps its Vorbis comments). Tag-name case varies by muxer ("ARTIST" vs
- * "artist"), so names are compared lowercased. Returns null (never throws), like probeMediaInfo. */
-export async function probeAudioTags(filePath: string): Promise<AudioFileTags | null> {
+ * "artist"), so names are compared lowercased. Returns null (never throws), like probeMediaInfo.
+ * `timeoutMs`: a look that gives up after that long and is not tried twice; `quiet`: a failure is not logged
+ * (the caller reads many files and says once that it could not). */
+export async function probeAudioTags(filePath: string, options: { timeoutMs?: number; quiet?: boolean } = {}): Promise<AudioFileTags | null> {
   try {
-    const data = await probeJson(filePath);
+    const data = await probeJson(filePath, options.timeoutMs);
     const tags = new Map<string, string>();
     const audioStream = (data.streams ?? []).find((s: any) => s.codec_type === "audio");
     for (const source of [data.format?.tags, audioStream?.tags]) {
@@ -206,9 +226,20 @@ export async function probeAudioTags(filePath: string): Promise<AudioFileTags | 
       }
     }
     const tag = (name: string) => tags.get(name) ?? null;
-    return { artist: tag("artist"), albumArtist: tag("album_artist"), author: tag("author"), album: tag("album"), title: tag("title") };
+    const first = (...names: string[]) => names.map(tag).find((value) => value !== null) ?? null;
+    const discs = discNumbers(first("disc", "discnumber"), first("disctotal", "totaldiscs"));
+    return {
+      artist: tag("artist"),
+      albumArtist: tag("album_artist"),
+      author: tag("author"),
+      album: tag("album"),
+      title: tag("title"),
+      // An album is dated by its first release (what the library holds), so a reissue's original date comes before its own.
+      date: first("originaldate", "originalyear", "date", "year"),
+      ...discs,
+    };
   } catch (err) {
-    logProbeFailure(filePath, err);
+    if (!options.quiet) logProbeFailure(filePath, err);
     return null;
   }
 }
