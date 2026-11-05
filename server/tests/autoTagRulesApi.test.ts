@@ -118,6 +118,19 @@ describe("creating a rule", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/already exists/);
   });
+
+  it("two requests for one new name at once: one is created, the other is told the name is taken (never a 500)", async () => {
+    const t = await tag("race");
+    const [a, b] = await Promise.all([createRule({ name: "Same", genres: ["A"], tagIds: [t] }), createRule({ name: "Same", genres: ["B"], tagIds: [t] })]);
+    expect([a.status, b.status].sort()).toEqual([201, 409]);
+  });
+
+  it("refuses a list of more ids than anyone has", async () => {
+    const t = await tag("many");
+    const res = await createRule({ name: "Too many", genres: ["A"], tagIds: Array.from({ length: 501 }, (_, i) => t + i) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/at most 500/);
+  });
 });
 
 describe("permissions", () => {

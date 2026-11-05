@@ -99,6 +99,7 @@ type RuleValues = Omit<AutoTagRule, "id" | "createdAt" | "updatedAt">;
 const MAX_NAME_LENGTH = 100;
 const MAX_GENRE_LENGTH = 80;
 const MAX_GENRES = 200;
+const MAX_IDS = 500;
 
 function listInput(value: unknown, field: string): unknown[] {
   if (value === undefined || value === null) return [];
@@ -109,6 +110,7 @@ function listInput(value: unknown, field: string): unknown[] {
 function idListInput(value: unknown, field: string): number[] {
   const out = listInput(value, field).map(Number);
   if (out.some((n) => !Number.isInteger(n) || n <= 0)) throw new AutoTagInputError(`${field} must be a list of ids`);
+  if (out.length > MAX_IDS) throw new AutoTagInputError(`${field} can name at most ${MAX_IDS} ids`);
   return [...new Set(out)];
 }
 
@@ -207,14 +209,27 @@ async function enabledRules(): Promise<AutoTagRule[]> {
   return rules;
 }
 
+/** A second request that took the name between the check and the write: the same answer as the check gives. */
+function nameTaken(err: unknown, name: string): AutoTagInputError | null {
+  const e = err as { code?: string; message?: string };
+  return e?.code === "23505" || /UNIQUE constraint failed: auto_tag_rules\.name/.test(e?.message ?? "")
+    ? new AutoTagInputError(`A rule named "${name}" already exists`, 409)
+    : null;
+}
+
 export async function createAutoTagRule(input: AutoTagRuleInput): Promise<AutoTagRule> {
   const v = await checkedValues(input, null);
-  const result = await db
-    .prepare(
-      `INSERT INTO auto_tag_rules (name, enabled, match_mode, library_types, genres, list_ids, tag_ids, remove_when_unmatched)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(v.name, v.enabled ? 1 : 0, v.match, JSON.stringify(v.libraryTypes), JSON.stringify(v.genres), JSON.stringify(v.listIds), JSON.stringify(v.tagIds), v.removeWhenUnmatched ? 1 : 0);
+  let result;
+  try {
+    result = await db
+      .prepare(
+        `INSERT INTO auto_tag_rules (name, enabled, match_mode, library_types, genres, list_ids, tag_ids, remove_when_unmatched)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(v.name, v.enabled ? 1 : 0, v.match, JSON.stringify(v.libraryTypes), JSON.stringify(v.genres), JSON.stringify(v.listIds), JSON.stringify(v.tagIds), v.removeWhenUnmatched ? 1 : 0);
+  } catch (err) {
+    throw nameTaken(err, v.name) ?? err;
+  }
   invalidateAutoTagRules();
   return (await getAutoTagRule(Number(result.lastInsertRowid)))!;
 }
@@ -224,12 +239,16 @@ export async function updateAutoTagRule(id: number, input: AutoTagRuleInput): Pr
   const existing = await getAutoTagRule(id);
   if (!existing) return null;
   const v = await checkedValues(input, existing);
-  await db
-    .prepare(
-      `UPDATE auto_tag_rules SET name = ?, enabled = ?, match_mode = ?, library_types = ?, genres = ?, list_ids = ?, tag_ids = ?,
-       remove_when_unmatched = ?, updated_at = ${nowExpr(db)} WHERE id = ?`
-    )
-    .run(v.name, v.enabled ? 1 : 0, v.match, JSON.stringify(v.libraryTypes), JSON.stringify(v.genres), JSON.stringify(v.listIds), JSON.stringify(v.tagIds), v.removeWhenUnmatched ? 1 : 0, id);
+  try {
+    await db
+      .prepare(
+        `UPDATE auto_tag_rules SET name = ?, enabled = ?, match_mode = ?, library_types = ?, genres = ?, list_ids = ?, tag_ids = ?,
+         remove_when_unmatched = ?, updated_at = ${nowExpr(db)} WHERE id = ?`
+      )
+      .run(v.name, v.enabled ? 1 : 0, v.match, JSON.stringify(v.libraryTypes), JSON.stringify(v.genres), JSON.stringify(v.listIds), JSON.stringify(v.tagIds), v.removeWhenUnmatched ? 1 : 0, id);
+  } catch (err) {
+    throw nameTaken(err, v.name) ?? err;
+  }
   // A rule that is switched off lets go of its tags: they stay on the titles as plain tags, and switching the rule on
   // again does not take them back (it only ever removes what it adds from then on).
   if (existing.enabled && !v.enabled) await db.prepare("DELETE FROM media_item_auto_tags WHERE rule_id = ?").run(id);
