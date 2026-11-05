@@ -146,6 +146,14 @@ export async function syncFromProwlarr(): Promise<{ synced: number; error?: stri
       const prowlarrEnabled = !!idx.enable;
       const categoryIds = (idx.capabilities?.categories ?? []).flatMap((c) => [c.id, ...(c.subCategories ?? []).map((sub) => sub.id)]);
 
+      // A row Prowlarr pushed through Settings > Apps (src/starr/indexerRoutes.ts) is Prowlarr's to keep as it sent it. Pulling over
+      // it renamed it ("X (Prowlarr)" became "X"), so Prowlarr edited it back at every sync and this pull renamed it again.
+      const pushedTo = existing ? parseIndexerConfig(existing.config).starrApps : undefined;
+      if (Array.isArray(pushedTo) && pushedTo.length > 0) {
+        log.info(`[prowlarrSync] indexer "${idx.name}" is already pushed to AoNarr by Prowlarr (Settings > Apps): not pulled over it`);
+        continue;
+      }
+
       if (existing) {
         // Only a change of Prowlarr's own flag is mirrored: copying it on every sync re-enabled an
         // indexer the admin had turned off in AoNarr, while never copying it left one disabled in

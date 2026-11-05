@@ -1,0 +1,363 @@
+{
+  "_about": "Request bodies Prowlarr 2.7.0.5723 (linuxserver image 2.7.0.5723-ls167) sent to AoNarr 30g (worktree d4142a3) when pushing indexers through Settings > Apps; captured by a logging proxy in the 30g-4 live check. Keys are Prowlarr own (its API key as apiKey, baseUrl = its caps proxy).",
+  "sonarrNewznab": {
+    "id": 0,
+    "enableRss": true,
+    "enableAutomaticSearch": true,
+    "enableInteractiveSearch": true,
+    "priority": 25,
+    "name": "StubNab (Prowlarr)",
+    "implementation": "Newznab",
+    "configContract": "NewznabSettings",
+    "tags": [],
+    "fields": [
+      {
+        "name": "baseUrl",
+        "value": "http://aon30gg4-prowlarr:9696/1/",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "apiPath",
+        "value": "/api",
+        "type": "textbox",
+        "advanced": true
+      },
+      {
+        "name": "apiKey",
+        "value": "prowlarr-own-key",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "categories",
+        "value": [
+          5000,
+          5030,
+          5040,
+          5045
+        ],
+        "type": "select",
+        "advanced": false
+      },
+      {
+        "name": "animeCategories",
+        "value": [
+          5070
+        ],
+        "type": "select",
+        "advanced": true
+      },
+      {
+        "name": "animeStandardFormatSearch",
+        "value": true,
+        "type": "checkbox",
+        "advanced": true
+      },
+      {
+        "name": "additionalParameters",
+        "value": "",
+        "type": "textbox",
+        "advanced": true
+      }
+    ]
+  },
+  "radarrNewznab": {
+    "id": 0,
+    "enableRss": true,
+    "enableAutomaticSearch": true,
+    "enableInteractiveSearch": true,
+    "priority": 25,
+    "name": "StubNab (Prowlarr)",
+    "implementation": "Newznab",
+    "configContract": "NewznabSettings",
+    "tags": [],
+    "fields": [
+      {
+        "name": "baseUrl",
+        "value": "http://aon30gg4-prowlarr:9696/1/",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "apiPath",
+        "value": "/api",
+        "type": "textbox",
+        "advanced": true
+      },
+      {
+        "name": "apiKey",
+        "value": "prowlarr-own-key",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "categories",
+        "value": [
+          2000,
+          2040,
+          2045
+        ],
+        "type": "select",
+        "advanced": false
+      },
+      {
+        "name": "additionalParameters",
+        "value": "",
+        "type": "textbox",
+        "advanced": true
+      }
+    ]
+  },
+  "sonarrTorznab": {
+    "id": 0,
+    "enableRss": true,
+    "enableAutomaticSearch": true,
+    "enableInteractiveSearch": true,
+    "priority": 25,
+    "name": "StubTorz (Prowlarr)",
+    "implementation": "Torznab",
+    "configContract": "TorznabSettings",
+    "tags": [],
+    "fields": [
+      {
+        "name": "baseUrl",
+        "value": "http://aon30gg4-prowlarr:9696/2/",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "apiPath",
+        "value": "/api",
+        "type": "textbox",
+        "advanced": true
+      },
+      {
+        "name": "apiKey",
+        "value": "prowlarr-own-key",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "categories",
+        "value": [
+          5000,
+          5030,
+          5040,
+          5045
+        ],
+        "type": "select",
+        "advanced": false
+      },
+      {
+        "name": "animeCategories",
+        "value": [
+          5070
+        ],
+        "type": "select",
+        "advanced": true
+      },
+      {
+        "name": "animeStandardFormatSearch",
+        "value": true,
+        "type": "checkbox",
+        "advanced": true
+      },
+      {
+        "name": "additionalParameters",
+        "value": "",
+        "type": "textbox",
+        "advanced": true
+      },
+      {
+        "name": "minimumSeeders",
+        "value": 3,
+        "type": "number",
+        "advanced": true
+      },
+      {
+        "name": "seedCriteria.seedRatio",
+        "value": 2.5,
+        "type": "number",
+        "advanced": true
+      },
+      {
+        "name": "seedCriteria.seedTime",
+        "value": 60,
+        "type": "number",
+        "advanced": true
+      },
+      {
+        "name": "seedCriteria.seasonPackSeedTime",
+        "value": 120,
+        "type": "number",
+        "advanced": true
+      },
+      {
+        "name": "rejectBlocklistedTorrentHashesWhileGrabbing",
+        "value": false,
+        "type": "checkbox",
+        "advanced": true
+      }
+    ]
+  },
+  "radarrTorznab": {
+    "id": 0,
+    "enableRss": true,
+    "enableAutomaticSearch": true,
+    "enableInteractiveSearch": true,
+    "priority": 25,
+    "name": "StubTorz (Prowlarr)",
+    "implementation": "Torznab",
+    "configContract": "TorznabSettings",
+    "tags": [],
+    "fields": [
+      {
+        "name": "baseUrl",
+        "value": "http://aon30gg4-prowlarr:9696/2/",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "apiPath",
+        "value": "/api",
+        "type": "textbox",
+        "advanced": true
+      },
+      {
+        "name": "apiKey",
+        "value": "prowlarr-own-key",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "categories",
+        "value": [
+          2000,
+          2040,
+          2045
+        ],
+        "type": "select",
+        "advanced": false
+      },
+      {
+        "name": "additionalParameters",
+        "value": "",
+        "type": "textbox",
+        "advanced": true
+      },
+      {
+        "name": "minimumSeeders",
+        "value": 3,
+        "type": "number",
+        "advanced": true
+      },
+      {
+        "name": "seedCriteria.seedRatio",
+        "value": 2.5,
+        "type": "number",
+        "advanced": true
+      },
+      {
+        "name": "seedCriteria.seedTime",
+        "value": 60,
+        "type": "number",
+        "advanced": true
+      },
+      {
+        "name": "rejectBlocklistedTorrentHashesWhileGrabbing",
+        "value": false,
+        "type": "checkbox",
+        "advanced": true
+      }
+    ]
+  },
+  "lidarrNewznab": {
+    "id": 0,
+    "enableRss": true,
+    "enableAutomaticSearch": true,
+    "enableInteractiveSearch": true,
+    "priority": 25,
+    "name": "StubAll (Prowlarr)",
+    "implementation": "Newznab",
+    "configContract": "NewznabSettings",
+    "tags": [],
+    "fields": [
+      {
+        "name": "baseUrl",
+        "value": "http://aon30gg4-prowlarr:9696/4/",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "apiPath",
+        "value": "/api",
+        "type": "textbox",
+        "advanced": true
+      },
+      {
+        "name": "apiKey",
+        "value": "prowlarr-own-key",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "categories",
+        "value": [
+          3000,
+          3010,
+          3040
+        ],
+        "type": "select",
+        "advanced": false
+      },
+      {
+        "name": "additionalParameters",
+        "value": "",
+        "type": "textbox",
+        "advanced": true
+      }
+    ]
+  },
+  "readarrNewznab": {
+    "id": 0,
+    "enableRss": true,
+    "enableAutomaticSearch": true,
+    "enableInteractiveSearch": true,
+    "priority": 25,
+    "name": "StubAll (Prowlarr)",
+    "implementation": "Newznab",
+    "configContract": "NewznabSettings",
+    "tags": [],
+    "fields": [
+      {
+        "name": "baseUrl",
+        "value": "http://aon30gg4-prowlarr:9696/4/",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "apiPath",
+        "value": "/api",
+        "type": "textbox",
+        "advanced": true
+      },
+      {
+        "name": "apiKey",
+        "value": "prowlarr-own-key",
+        "type": "textbox",
+        "advanced": false
+      },
+      {
+        "name": "categories",
+        "value": [
+          7000,
+          7020,
+          7030
+        ],
+        "type": "select",
+        "advanced": false
+      }
+    ]
+  }
+}
