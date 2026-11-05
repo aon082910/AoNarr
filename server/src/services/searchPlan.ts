@@ -236,6 +236,25 @@ export async function discographyPlanFor(item: MediaItem): Promise<SearchPlan> {
   };
 }
 
+/**
+ * The search for an author's collection ("Terry Pratchett complete collection"), run before the searches of single books: no
+ * book search finds one, because a book's title is not in its name. The other words releases use for one ("collection",
+ * "complete works", "bibliography") are the alternates, tried where the first finds nothing, and the author's other names.
+ * Free text only: a typed book search by author would list every book.
+ */
+export async function collectionPlanFor(item: MediaItem): Promise<SearchPlan> {
+  const author = cleanSceneTitle(item.title, { ampersand: "drop" });
+  const query = `${author} complete collection`;
+  const others = [...looseTitleVariants(item.title, { ampersand: "drop" }), ...(await alternateTitlesFor(item)).map((title) => cleanSceneTitle(title, { ampersand: "drop" }))];
+  return {
+    query,
+    alternateQueries: alternatesFor(query, others.map((title) => `${title} complete collection`), [`${author} collection`, `${author} complete works`, `${author} bibliography`]),
+    ids: {},
+    hints: {},
+    target: null,
+  };
+}
+
 /** The fields of a typed music or book search: an album is asked for by artist and album, a book by author and
  * the title before its subtitle and series bracket. Other types have no typed search. */
 function subItemHints(item: Pick<MediaItem, "type" | "title">, subTitle: string): SearchPlan["hints"] {

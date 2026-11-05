@@ -99,6 +99,20 @@ import { checkIndexerHealth } from "./indexerClient.js";
 import { sceneIndexFor, syncAllSceneNumbering } from "./sceneNumbering.js";
 import { runDeletedFileCheckJob } from "./deletedFileJob.js";
 import { sweepStaleImportTemps } from "./importTempSweep.js";
+import {
+  collectionBooksOf,
+  collectionGrabsEnabled,
+  COLLECTION_ITEM_TYPES,
+  COLLECTION_SEARCH_KEY,
+  importedReleaseTitles,
+  isWantedBook,
+  judgeCollection,
+  MIN_WANTED_FOR_AUTOMATIC_COLLECTION,
+  MIN_WANTED_SHARE_FOR_AUTOMATIC_COLLECTION,
+  type CollectionBook,
+  type CollectionVerdict,
+} from "./bookCollections.js";
+import { collectionPlanFor } from "./searchPlan.js";
 
 /** Radarr/Sonarr-style seed-goal cleanup — removes a torrent from every enabled download client
  * that supports it (qBittorrent) once it's met a configured ratio and/or seed-time goal. Both
@@ -516,6 +530,9 @@ export interface ChooseOptions {
    * passes judgeDiscography against these albums is taken, and the one adding the most missing albums comes first
    * among releases of the same format. */
   discography?: { albums: DiscographyAlbum[]; minWanted: number; minShare?: number; mustCover?: number };
+  /** The author's collection is wanted (not a book): only a collection naming the author (`name`) that passes judgeCollection
+   * against these books is taken, and the one adding the most missing books comes first among releases of the same format. */
+  collection?: { books: CollectionBook[]; minWanted: number; minShare?: number };
   /** Told of every release the call turns away, with the reason it is logged with (the first one for a release counts). */
   onRejected?: (result: SearchResult, reason: string) => void;
   /** Human-readable "media title" (plus episode/season where relevant) for this call's log lines
@@ -531,7 +548,8 @@ const DEFAULT_INDEXER_PRIORITY = 25;
 
 const TITLE_STOPWORDS = new Set(["a", "an", "the", "and", "of", "to", "in", "on", "at", "for", "by", "with"]);
 // A pack names the one album/book it was found for as only one entry of many.
-const MULTI_RELEASE_PACK = /\b(discography|discografia|anthology|box[ ._-]?set|trilogy|omnibus|collection|complete[ ._-]+(?:series|works|discography))\b/i;
+const MULTI_RELEASE_PACK =
+  /\b(discography|discografia|anthology|box[ ._-]?set|trilogy|omnibus|collection|complete[ ._-]+(?:series|works|discography)|collected[ ._-]+works|bibliograph(?:y|ie)|gesamtausgabe|oeuvres[ ._-]+completes|obras[ ._-]+completas)\b/i;
 // Comic issues ("#12 - Name") and manga chapters ("Chapter 5 — Name") as metadata titles them.
 const NUMBERED_CHILD = /^\s*(?:#|issue\s*#?\s*|chapter\s*|ch\.?\s*)(\d+(?:\.\d+)?)/i;
 const SEQUEL_NUMERALS = new Set(["ii", "iii", "iv", "vi", "vii", "viii", "ix"]);
@@ -1067,8 +1085,27 @@ export async function chooseBestResult(
   const runtimeOf = (parsed: Parameters<typeof releaseRuntimeMinutes>[0]) => (runtimeContext ? releaseRuntimeMinutes(parsed, runtimeContext) : null);
   const namesMainTitleOnly = new Set<SearchResult>();
   const discographyVerdicts = new Map<SearchResult, DiscographyVerdict>();
+  const collectionVerdicts = new Map<SearchResult, CollectionVerdict>();
   const relevant = packFiltered.filter(({ result, parsed, size }) => {
     if (!tiered) {
+      if (options.collection) {
+        if (!parsed.collection) {
+          noteRejected(result, `it is not a collection`);
+          return false;
+        }
+        const verdict = judgeCollection(result.title, name?.title ?? "", options.collection.books, {
+          minWanted: options.collection.minWanted,
+          minShare: options.collection.minShare,
+          isUnreleased: isNotYetReleased,
+          mediaType,
+        });
+        if (!verdict.ok) {
+          noteRejected(result, `${verdict.reason}`);
+          return false;
+        }
+        collectionVerdicts.set(result, verdict);
+        return true;
+      }
       if (options.discography) {
         if (!parsed.discography) {
           noteRejected(result, `it is not a discography`);
@@ -1298,6 +1335,8 @@ export async function chooseBestResult(
       // A discography: the one that adds more missing albums. Lidarr compares album count after quality, protocol,
       // priority and peers, so the admin's own choices come first.
       (discographyVerdicts.get(b.result)?.wanted.length ?? 0) - (discographyVerdicts.get(a.result)?.wanted.length ?? 0) ||
+      // The same for a collection: the one that adds more missing books.
+      (collectionVerdicts.get(b.result)?.wanted.length ?? 0) - (collectionVerdicts.get(a.result)?.wanted.length ?? 0) ||
       publishedAt(b) - publishedAt(a) ||
       (reputationByGroup.get(parseReleaseTitle(b.result.title).releaseGroup) ?? 0.5) -
         (reputationByGroup.get(parseReleaseTitle(a.result.title).releaseGroup) ?? 0.5) ||
@@ -2125,6 +2164,8 @@ export async function runAutoSearch(signal?: AbortSignal) {
   const wantedByShow = new Map<number, { item: MediaItem; episodes: any[] }>();
   /** The artists with enough albums missing for a discography to be worth looking for. */
   const discographyArtists: MediaItem[] = [];
+  /** The authors with enough books missing for a collection to be worth looking for. */
+  const collectionAuthors: MediaItem[] = [];
   for (const item of monitoredItems) {
     // Cheap to check even though neither ever actually fires mid-discovery today (this map starts
     // empty and nothing populates it until the processing loop below runs) — it's a guard against
@@ -2153,6 +2194,10 @@ export async function runAutoSearch(signal?: AbortSignal) {
       // An artist with several albums missing is looked for as a discography before its albums are looked for one by one.
       if (item.type === "artist" && subItems.filter((s) => !isNotYetReleased(s.release_date)).length >= MIN_WANTED_FOR_AUTOMATIC_DISCOGRAPHY) {
         discographyArtists.push(item);
+      }
+      // An author with several books missing is looked for as a collection before its books are looked for one by one.
+      if (COLLECTION_ITEM_TYPES.has(item.type) && subItems.filter((s) => !isNotYetReleased(s.release_date)).length >= MIN_WANTED_FOR_AUTOMATIC_COLLECTION) {
+        collectionAuthors.push(item);
       }
       for (const subItem of subItems) {
         // An album or book not yet out has nothing to find (Lidarr and Readarr wait for the release date too).
@@ -2445,6 +2490,23 @@ export async function runAutoSearch(signal?: AbortSignal) {
         else fallbackTried.add(item.id);
       } catch (err) {
         log.warn(`[scheduler] discography search failed for "${item.title}":`, (err as Error).message);
+      }
+    }
+  }
+
+  // Collections of books, the same way: an author with three or more books missing is searched once for a collection before
+  // any of its books is searched alone; the books a grabbed one covers are then skipped below (isAlreadyQueued).
+  if (collectionGrabsEnabled()) {
+    for (const item of collectionAuthors) {
+      if (signal?.aborted || noClientReachable() || searchedCount >= cap) break;
+      try {
+        const ctx = await getItemContext(item);
+        if (ctx.overQuota) continue;
+        if (!reserveSearchSlot()) break;
+        const made = await searchCollectionFirst(item, seasonEnv);
+        if (made.searches === 0) searchedCount--;
+      } catch (err) {
+        log.warn(`[scheduler] collection search failed for "${item.title}":`, (err as Error).message);
       }
     }
   }
@@ -2861,6 +2923,93 @@ async function searchDiscographyFallback(
   }
 }
 
+/**
+ * One search for an author's collection, grabbed for the books it would add. `books` is the author's books as the release is
+ * judged against them (a book already on its way is marked unmonitored, so it is covered but not wanted). Only a release that
+ * passes judgeCollection is taken, and not one that already filled books of this author: its files are in the library, and
+ * the books it lacked are searched one by one.
+ */
+async function searchAndGrabCollection(
+  item: MediaItem,
+  books: CollectionBook[],
+  minWanted: number,
+  ctx: BulkSearchContext
+): Promise<{ result: GrabResult; error?: string }> {
+  if (ctx.clients.length > 0 && ctx.clients.every((c) => ctx.unavailable.has(c.id))) {
+    return { result: "skipped", error: Array.from(ctx.unavailable.values()).join("; ") };
+  }
+  const plan = await collectionPlanFor(item);
+  const blocklisted = await getBlocklistedTitles(item.id);
+  const delayProfile = pickDelayProfile(ctx.delayProfiles, await tagIdsForMediaItem(item.id));
+  const found = await searchAllIndexers(ctx.indexers, plan.query, item.type, false, plan.ids, { ...searchHintsOf(plan, item.id), includeFeeds: !ctx.automatic });
+  const imported = await importedReleaseTitles(item.id);
+  const collections = found.filter((r) => !!parseReleaseTitle(r.title).collection && !imported.has(r.title));
+  const usable = ctx.directBudget.usableClients().filter((c) => !ctx.unavailable.has(c.id));
+  const judging = { minWanted, minShare: MIN_WANTED_SHARE_FOR_AUTOMATIC_COLLECTION, isUnreleased: (date: string | null) => isNotYetReleased(date), mediaType: item.type };
+  const choose = (remaining: SearchResult[], delay: DelayProfile | null) =>
+    chooseBestResult(remaining, [], "", item.qualityProfileId, 0, null, blocklisted, item.type, delay, null, item.id, {
+      clients: usable,
+      name: { title: item.title },
+      indexers: ctx.indexers,
+      label: `${item.title} collection`,
+      collection: { books, minWanted, minShare: MIN_WANTED_SHARE_FOR_AUTOMATIC_COLLECTION },
+      userInvoked: !ctx.automatic,
+    });
+  let outcome: Awaited<ReturnType<typeof grabBestRelease>>;
+  try {
+    outcome = await grabBestRelease(
+      collections,
+      usable,
+      (remaining) => choose(remaining, delayProfile),
+      (client, chosen) => {
+        const verdict = judgeCollection(chosen.result.title, item.title, books, judging);
+        if (verdict.wanted.length === 0) return Promise.resolve(false);
+        return grab(client, item, null, null, chosen, 0, null, "auto", { targetSubItemIds: verdict.wanted.map((book) => book.id) });
+      },
+      { itemId: item.id, indexers: ctx.indexers }
+    );
+  } catch (err) {
+    if (!noteUnavailableClient(err, ctx.unavailable)) throw err;
+    return { result: "skipped", error: (err as Error).message };
+  }
+  if (!outcome) {
+    return { result: await noGrabVerdict({ searched: found, candidates: collections, indexers: ctx.indexers, type: item.type, usable, cutoff: "", delayProfile, choose, itemTags: await tagIdsForMediaItem(item.id) }) };
+  }
+  if (!outcome.grabbed) return { result: "skipped" };
+  ctx.directBudget.consume(outcome.client);
+  return { result: "grabbed" };
+}
+
+/**
+ * The collection search that comes before the searches of single books: when three or more of an author's books are
+ * missing, one search for a collection. A collection that is grabbed is queued against the books it covers, so the book
+ * searches that follow skip them (isAlreadyQueued). Returns how many searches were made and how many grabbed. Automatic
+ * runs keep to the backoff of searchBackoff.ts, under their own key.
+ */
+async function searchCollectionFirst(item: MediaItem, ctx: BulkSearchContext): Promise<{ searches: number; grabbed: number }> {
+  if (!COLLECTION_ITEM_TYPES.has(item.type) || !collectionGrabsEnabled()) return { searches: 0, grabbed: 0 };
+  const books = await collectionBooksOf(item.id);
+  // A book already downloading is covered by the release but is not one it is wanted for.
+  const forJudging: CollectionBook[] = [];
+  let wantedCount = 0;
+  for (const book of books) {
+    const wanted = isWantedBook(book, (date) => isNotYetReleased(date)) && !(await isAlreadyQueued(item.id, null, book.id));
+    if (wanted) wantedCount++;
+    forJudging.push(wanted ? book : { ...book, monitored: false });
+  }
+  if (wantedCount < MIN_WANTED_FOR_AUTOMATIC_COLLECTION) return { searches: 0, grabbed: 0 };
+  if (ctx.automatic && !(await seasonSearchDue(item.id, COLLECTION_SEARCH_KEY))) return { searches: 0, grabbed: 0 };
+  if (ctx.automatic && noIndexerAvailable(ctx.indexers, item.type)) return { searches: 0, grabbed: 0 };
+  try {
+    const found = await searchAndGrabCollection(item, forJudging, MIN_WANTED_FOR_AUTOMATIC_COLLECTION, ctx);
+    await recordSeasonResult(item.id, COLLECTION_SEARCH_KEY, found.result, !!ctx.automatic);
+    return { searches: 1, grabbed: found.result === "grabbed" ? 1 : 0 };
+  } catch (err) {
+    log.warn(`[scheduler] collection search failed for "${item.title}":`, (err as Error).message);
+    return { searches: 1, grabbed: 0 };
+  }
+}
+
 async function searchAndGrabTarget(item: MediaItem, t: BulkSearchTarget, ctx: BulkSearchContext): Promise<{ grabbed: boolean; error?: string }> {
   const episodeId = t.episodeId ?? null;
   const subItemId = t.subItemId ?? null;
@@ -3082,7 +3231,12 @@ export async function searchAndGrabTargets(targets: BulkSearchTarget[], opts: { 
       childSearchesLeft -= discographies.searches;
       searchedCount += discographies.searches;
       grabbedCount += discographies.grabbed;
-      if (seasons.grabbed > 0 || discographies.grabbed > 0) {
+      // An author's missing books are looked for as a collection first, the same way.
+      const collections = children.length >= 2 ? await searchCollectionFirst(item, ctx) : { searches: 0, grabbed: 0 };
+      childSearchesLeft -= collections.searches;
+      searchedCount += collections.searches;
+      grabbedCount += collections.grabbed;
+      if (seasons.grabbed > 0 || discographies.grabbed > 0 || collections.grabbed > 0) {
         for (let i = children.length - 1; i >= 0; i--) {
           if (await isAlreadyQueued(item.id, children[i].episodeId ?? null, children[i].subItemId ?? null)) children.splice(i, 1);
         }
@@ -3436,6 +3590,13 @@ export async function retryFailedGrab(
       for (const id of await queueTargetIds(match.id)) await wakeLeaf("sub_items", id);
       await wakeSeason(item.id, DISCOGRAPHY_SEARCH_KEY);
       await notifyFailed(mediaTitle, `${reason} (the albums it was for are searched again)`, notifyContext);
+      return;
+    }
+    // A failed collection of books is the same: blocklisted above, its books and the collection search woken.
+    if (COLLECTION_ITEM_TYPES.has(item.type) && !match.subItemId && !match.episodeId && match.seasonNumber == null && parseReleaseTitle(match.title).collection) {
+      for (const id of await queueTargetIds(match.id)) await wakeLeaf("sub_items", id);
+      await wakeSeason(item.id, COLLECTION_SEARCH_KEY);
+      await notifyFailed(mediaTitle, `${reason} (the books it was for are searched again)`, notifyContext);
       return;
     }
     const profile = await getQualityProfile(item.qualityProfileId);

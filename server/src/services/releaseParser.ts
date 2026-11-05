@@ -110,6 +110,12 @@ export interface ParsedRelease {
    * ParsedAlbumInfo.Discography. `from` and `to` are the years it spans when the name gives them (an open
    * end, "1990-Present", leaves `to` null); both are null when it names none. Absent for every other release. */
   discography?: { from: number | null; to: number | null };
+  /** A release of an author's books as a whole ("Terry Pratchett - Complete Collection (Books 1-41) [EPUB]"): the
+   * book counterpart of `discography` (bookCollections.ts decides what it covers). `kind`: "complete" (the author's
+   * works as a whole), "range" (numbered books, "Books 1-12", "Vol. 1-9", "#1-#9") or "series" ("Complete Series",
+   * a box set, a trilogy). `from` and `to` are book numbers (under 1000) or the publication years the set spans
+   * (1000 and over); both absent when the name gives none. Absent for every other release. */
+  collection?: { kind: "complete" | "range" | "series"; from?: number; to?: number };
 }
 
 // Group 3 (hyphenated range end, e.g. "S01E01-E03"/"S01E01-03"), groups 4-5 (a repeated season tag,
@@ -1002,6 +1008,102 @@ export function isDiscographyTitle(title: string): boolean {
   return DISCOGRAPHY_WORD.test(title);
 }
 
+// The words that make a release the whole of an author's books, in the languages ebook releases are named in. "Collection"
+// alone counts: bookCollections.ts decides, from the author named and the books the library has, whether it is one.
+// (Boundaries by letter, as for the discography word; longer phrases first, as the same source also strips them.)
+const COLLECTION_WORD_SOURCE =
+  "(?<![\\p{L}\\p{N}_])(?:" +
+  [
+    "complete[ ._-]+(?:works|collections?|bibliograph(?:y|ie)|novels|books|library|e-?books?|stories|short[ ._-]stories|set|anthology|omnibus)",
+    "collected[ ._-]+(?:works|novels|stories|short[ ._-]stories|books|fiction|e-?books?)",
+    "(?:e-?books?|books|novels|works|stories)[ ._-]+collections?",
+    "collections?",
+    "bibliograph(?:y|ie|ia)",
+    "omnibus(?:es)?",
+    "antholog(?:y|ie|ies)",
+    "opera[ ._-]+omnia",
+    "gesamtausgabe|werkausgabe|s[aä]mtliche[ ._-]+werke|gesammelte[ ._-]+(?:werke|romane)",
+    "[oœ]e?uvres?[ ._-]+compl[eè]tes?|collection[ ._-]+compl[eè]te|intégrale",
+    "obras?[ ._-]+completas?|colecci[oó]n[ ._-]+completa|cole[cç][aã]o[ ._-]+completa",
+    "opere[ ._-]+complete|tutte[ ._-]+le[ ._-]+opere|raccolta[ ._-]+completa",
+    "полное[ ._-]+собрание(?:[ ._-]+сочинений)?|собрание[ ._-]+сочинений|библиография",
+  ].join("|") +
+  ")(?![\\p{L}\\p{N}_])";
+// A set of numbered books: "complete series", a box set, a trilogy.
+const COLLECTION_SERIES_SOURCE =
+  "(?<![\\p{L}\\p{N}_])(?:(?:complete|full|entire|whole)[ ._-]+(?:series|saga)|series[ ._-]+(?:collection|set|bundle|pack)|box(?:ed)?[ ._-]?sets?|(?:duo|tri|tetra|quadri|penta|hexa|hepta)logy|trilogie)(?![\\p{L}\\p{N}_])";
+const COLLECTION_WORD = new RegExp(COLLECTION_WORD_SOURCE, "iu");
+const COLLECTION_SERIES_WORD = new RegExp(COLLECTION_SERIES_SOURCE, "iu");
+// How many books a named set holds.
+const SERIES_SIZES: Record<string, number> = { duo: 2, tri: 3, tetra: 4, quadri: 4, penta: 5, hexa: 6, hepta: 7 };
+// Book numbers after a word for them: "Books 1-12", "Vol. 01 to 09", "#1-#9", "Parts 1 - 3".
+const COLLECTION_NUMBERS =
+  /(?:(?<![\p{L}\p{N}_])(?:books?|volumes?|vols?|parts?|novels?|nos?|numbers?)\b\.?|#)[ .]*0*(\d{1,3})[ ]*(?:-|–|—|~|to|thru|through)[ ]*(?:#|(?:books?|volumes?|vols?|parts?)[ .]*)?0*(\d{1,3})(?!\d)/iu;
+// "(1-12)" or "[01-41]" in brackets, which names book numbers only beside a collection word.
+const COLLECTION_BRACKET_NUMBERS = /[([]\s*0*(\d{1,3})\s*(?:-|–|—|~|to)\s*0*(\d{1,3})\s*[)\]]/;
+// The years it spans: "(1974-2019)", "1990 - Present".
+const COLLECTION_YEARS = /(?<![\d])((?:1[5-9]|20)\d{2})\s*(?:-|–|—|~|to)\s*((?:1[5-9]|20)\d{2}|\d{2}|present|now|current)(?![\d])/i;
+// Quick test that spares most releases the longer patterns.
+const COLLECTION_HINT = /collect|complete|bibliogra|omnibus|antholog|opera|gesamt|werk|sämtlich|gesammelt|uvres|grale|obras?\b|colecci|coleç|opere|raccolta|собрани|библиограф|series|saga|box|logy|logie|(?:books?|volumes?|vols?|parts?|novels?|nos?|numbers?)\b\.?\s*0*\d|#\s*\d/i;
+
+function detectCollection(title: string): ParsedRelease["collection"] | null {
+  if (!COLLECTION_HINT.test(title)) return null;
+  const text = title.normalize("NFC");
+  const complete = COLLECTION_WORD.test(text);
+  const series = COLLECTION_SERIES_WORD.test(text);
+  let numbers = text.match(COLLECTION_NUMBERS);
+  // Brackets alone could be anything ("[320-256]"): book numbers only beside a word that says it is a set.
+  if (!numbers && (complete || series)) numbers = text.match(COLLECTION_BRACKET_NUMBERS);
+  // A run that does not go up ("Book 3-2") names no books.
+  const validNumbers = numbers !== null && Number(numbers[2]) > Number(numbers[1]);
+  if (!complete && !series && !validNumbers) return null;
+  let from: number | undefined;
+  let to: number | undefined;
+  if (validNumbers) {
+    from = Number(numbers![1]);
+    to = Number(numbers![2]);
+  } else {
+    const span = text.match(COLLECTION_YEARS);
+    if (span) {
+      const start = Number(span[1]);
+      const end = span[2].toLowerCase();
+      // "1974-2019", "1974-19" (the start's century), "1990-Present" (still going: no end).
+      const finish = /^[a-z]/.test(end) ? null : end.length === 2 ? Math.floor(start / 100) * 100 + Number(end) : Number(end);
+      if (finish === null) from = start;
+      else if (finish >= start) {
+        from = start;
+        to = finish;
+      }
+    }
+  }
+  if (from === undefined) {
+    // "Trilogy" is books 1 to 3.
+    const size = text.match(/(?<![\p{L}\p{N}_])(duo|tri|tetra|quadri|penta|hexa|hepta)logy(?![\p{L}\p{N}_])/iu);
+    if (size) {
+      from = 1;
+      to = SERIES_SIZES[size[1].toLowerCase()];
+    }
+  }
+  const kind = series ? "series" : validNumbers && !complete ? "range" : "complete";
+  return { kind, ...(from !== undefined ? { from } : {}), ...(to !== undefined ? { to } : {}) };
+}
+
+/** Whether a release name carries a word for a collection of an author's books ("Complete Collection", "Bibliography"). */
+export function isCollectionTitle(title: string): boolean {
+  return COLLECTION_HINT.test(title) && (COLLECTION_WORD.test(title.normalize("NFC")) || COLLECTION_SERIES_WORD.test(title.normalize("NFC")));
+}
+
+/** The release name without its collection words, book numbers and year span, for comparing the rest of the name. */
+export function withoutCollectionWords(title: string): string {
+  return title
+    .normalize("NFC")
+    .replace(new RegExp(COLLECTION_SERIES_SOURCE, "giu"), " ")
+    .replace(new RegExp(COLLECTION_WORD_SOURCE, "giu"), " ")
+    .replace(new RegExp(COLLECTION_NUMBERS.source, "giu"), " ")
+    .replace(COLLECTION_BRACKET_NUMBERS, " ")
+    .replace(new RegExp(COLLECTION_YEARS.source, "gi"), " ");
+}
+
 /** Options for parseReleaseTitle when the name is that of a file already in the library, not a
  * release on offer: a file is never a disc image, whatever its name says ("Movie.1080p.BluRay.AVC.
  * DTS-HD.mkv" is a remux). */
@@ -1308,6 +1410,7 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
   const qualityModifier = detectQualityModifier(tags) ?? (rawDisc && !DISC_DVD_IMAGE.test(title) ? "brdisk" : null);
   const captureTags = bareSourceText(title, start, cutAt, titleYearInfo?.index ?? null, qualityAt, episodic);
   const discography = detectDiscography(title);
+  const collection = detectCollection(title);
 
   return {
     title: isolatedTitle,
@@ -1340,6 +1443,7 @@ export function parseReleaseTitle(rawTitle: string, options?: { file?: boolean }
     hardcodedSubs: HARDCODED_SUBS.test(tags.replace(LEADING_BRACKET_GROUP, " ")),
     rawDisc,
     ...(discography ? { discography } : {}),
+    ...(collection ? { collection } : {}),
   };
 }
 

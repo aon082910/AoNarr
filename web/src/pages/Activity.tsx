@@ -788,7 +788,7 @@ export default function Activity() {
                     {q.title}
                     {q.albums && q.albums.length > 0 && (
                       <span className="badge" style={{ marginLeft: 6 }} title={q.albums.map((a) => a.title).join(", ")}>
-                        {q.albums.length} album{q.albums.length === 1 ? "" : "s"}
+                        {q.albums.length} {q.targetKind ?? "album"}{q.albums.length === 1 ? "" : "s"}
                       </span>
                     )}
                     {q.retryCount > 0 && (
