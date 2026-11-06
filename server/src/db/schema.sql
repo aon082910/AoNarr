@@ -252,7 +252,16 @@ CREATE TABLE IF NOT EXISTS queue (
   -- What the release was, kept so "Remove and Blocklist" can block that release and not just its name.
   protocol TEXT,
   publish_date TEXT,
-  info_hash TEXT
+  info_hash TEXT,
+  -- Throttlearr (services/throttlearr): a grab held back until its download client has room. gate_state is NULL for a
+  -- row that was never gated, else 'held' (waiting, no download_id yet), 'releasing' (being sent) or 'released'. A held
+  -- row keeps status 'queued' so every query that counts queued rows still sees the target as covered.
+  -- gate_payload is the JSON that addDownload needs later; gate_priority orders the release (higher first).
+  gate_state TEXT,
+  gate_held_at TEXT,
+  gate_reason TEXT,
+  gate_payload TEXT,
+  gate_priority INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);

@@ -211,6 +211,12 @@ ensureColumn("blocklist", "info_hash", "info_hash TEXT");
 ensureColumn("queue", "protocol", "protocol TEXT");
 ensureColumn("queue", "publish_date", "publish_date TEXT");
 ensureColumn("queue", "info_hash", "info_hash TEXT");
+// Throttlearr (services/throttlearr): a grab held back until its download client has room. NULL = never gated.
+ensureColumn("queue", "gate_state", "gate_state TEXT");
+ensureColumn("queue", "gate_held_at", "gate_held_at TEXT");
+ensureColumn("queue", "gate_reason", "gate_reason TEXT");
+ensureColumn("queue", "gate_payload", "gate_payload TEXT");
+ensureColumn("queue", "gate_priority", "gate_priority INTEGER NOT NULL DEFAULT 0");
 // Round 26: monitoring, profiles, lists and tags.
 // What a refresh does with an item the provider lists after the first sync: NULL (the behavior before this existed), all, none or new.
 ensureColumn("media_items", "monitor_new_items", "monitor_new_items TEXT");

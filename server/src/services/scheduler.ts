@@ -1454,6 +1454,44 @@ export async function seedGoalFor(indexerId: number | null | undefined): Promise
   return ratio === null && minutes === null ? null : { ratio, minutes };
 }
 
+/** What `sendToClient` needs to add one release to a download client. */
+export interface ClientSend {
+  downloadUrl: string;
+  title: string;
+  protocol: SearchResult["protocol"];
+  indexerId: number | null | undefined;
+  /** The client category for this release. A function so a lookup that throws is reported like any other add failure. */
+  category: string | null | (() => string | null);
+}
+
+/**
+ * Adds one release to a download client and returns the client's download id. The one place a grab reaches a
+ * client: `grab()` calls it at once, and the Throttlearr release worker calls it for a grab it held back. A
+ * client that is down or backed off throws DownloadClientUnavailableError (the release is not at fault); any
+ * other refusal throws ReleaseRefusedError.
+ */
+export async function sendToClient(client: DownloadClient, send: ClientSend, source: GrabSource = "auto"): Promise<string> {
+  const adapter = getDownloadClientAdapter(client.type);
+  // Grabs for one title run one after another here, so a client that failed while this one waited is not asked again at
+  // full cost (a hand-picked release is always tried).
+  if (source !== "interactive" && isClientBackedOff(client.id)) {
+    throw new DownloadClientUnavailableError(client, new Error("it is being left alone after failing a moment ago"));
+  }
+  try {
+    // A torrent client is told the seed goal that applies (its indexer's, else the global one) when it is added.
+    const seedGoal = send.protocol === "torrent" ? await seedGoalFor(send.indexerId) : null;
+    const category = typeof send.category === "function" ? send.category() : send.category;
+    const { downloadId } = seedGoal
+      ? await adapter.addDownload(client, send.downloadUrl, category, send.title, send.protocol, { seedGoal })
+      : await adapter.addDownload(client, send.downloadUrl, category, send.title, send.protocol);
+    await recordClientSuccess(client.id);
+    return downloadId;
+  } catch (err) {
+    if (isClientLevelError(client, send.downloadUrl, err)) throw new DownloadClientUnavailableError(client, err);
+    throw new ReleaseRefusedError(err instanceof Error ? err.message : String(err));
+  }
+}
+
 /** Sends a release to the client and records it. Resolves false without sending anything when a
  * queued download already covers the target, and false without a second queue row when the client
  * answers with a download another active row already tracks (qBittorrent drops a duplicate add). */
@@ -1535,25 +1573,11 @@ export async function grab(
       // A scene-numbered pack of another season ("Show.S02" for TVDB S01E13) doesn't cover this one.
       if (ep && (parsedBest.seasonNumber == null || parsedBest.seasonNumber === ep.season_number)) packSeason = ep.season_number;
     }
-    const adapter = getDownloadClientAdapter(client.type);
-    let downloadId: string;
-    // Grabs for one title run one after another here, so a client that failed while this one waited is not asked again at
-    // full cost (a hand-picked release is always tried).
-    if (source !== "interactive" && isClientBackedOff(client.id)) {
-      throw new DownloadClientUnavailableError(client, new Error("it is being left alone after failing a moment ago"));
-    }
-    try {
-      // A torrent client is told the seed goal that applies (its indexer's, else the global one) when it is added.
-      const seedGoal = best.protocol === "torrent" ? await seedGoalFor(best.indexerId) : null;
-      const category = categoryForType(client, mediaItem.type);
-      ({ downloadId } = seedGoal
-        ? await adapter.addDownload(client, best.downloadUrl, category, best.title, best.protocol, { seedGoal })
-        : await adapter.addDownload(client, best.downloadUrl, category, best.title, best.protocol));
-      await recordClientSuccess(client.id);
-    } catch (err) {
-      if (isClientLevelError(client, best.downloadUrl, err)) throw new DownloadClientUnavailableError(client, err);
-      throw new ReleaseRefusedError(err instanceof Error ? err.message : String(err));
-    }
+    const downloadId = await sendToClient(
+      client,
+      { downloadUrl: best.downloadUrl, title: best.title, protocol: best.protocol, indexerId: best.indexerId, category: () => categoryForType(client, mediaItem.type) },
+      source
+    );
 
     const tracked = await db
       .prepare("SELECT id FROM queue WHERE download_client_id = ? AND download_id = ? AND status NOT IN ('failed')")

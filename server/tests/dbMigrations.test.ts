@@ -44,7 +44,7 @@ describe.skipIf(isPostgres)("SQLite: upgrading a database created by an older sc
     // Also from before queue rows recorded their imports and import lists had a root folder.
     const legacySchema = schema
       .replace(`'${NEW_DEFAULT}'`, `'${OLD_SCHEMA_DEFAULT}'`)
-      .replace(/(download_path TEXT),\r?\n[\s\S]*?info_hash TEXT\r?\n/, "$1\n")
+      .replace(/(download_path TEXT),\r?\n[\s\S]*?gate_priority INTEGER NOT NULL DEFAULT 0\r?\n/, "$1\n")
       .replace(/(exclude_genres TEXT,)\r?\n\s*root_folder_id INTEGER REFERENCES root_folders\(id\) ON DELETE SET NULL,\r?\n/, "$1\n")
       // ...and from before the search backoff and the RSS sync kept their state.
       .replace(/^[ \t]*auto_search_misses INTEGER NOT NULL DEFAULT 0,[^\n]*\n/gm, "")
@@ -175,6 +175,18 @@ describe.skipIf(isPostgres)("SQLite: upgrading a database created by an older sc
     });
   });
 
+  it("adds the Throttlearr gate columns, leaving an existing queue row never gated", () => {
+    const cols = (sqlite.prepare("PRAGMA table_info(queue)").all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toEqual(expect.arrayContaining(["gate_state", "gate_held_at", "gate_reason", "gate_payload", "gate_priority"]));
+    expect(sqlite.prepare("SELECT gate_state, gate_held_at, gate_reason, gate_payload, gate_priority FROM queue WHERE title = 'Old.Movie.1080p'").get()).toEqual({
+      gate_state: null,
+      gate_held_at: null,
+      gate_reason: null,
+      gate_payload: null,
+      gate_priority: 0,
+    });
+  });
+
   it("adds import_lists.root_folder_id, cleared when its root folder is removed", () => {
     const cols = (sqlite.prepare("PRAGMA table_info(import_lists)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toContain("root_folder_id");
@@ -240,6 +252,27 @@ describe.runIf(isPostgres)("Postgres: upgrading columns created by an older sche
     const id = (await db.prepare("INSERT INTO indexers (name, protocol, url) VALUES ('Fresh', 'torznab', 'http://f')").run()).lastInsertRowid;
     expect(await db.prepare("SELECT media_types FROM indexers WHERE id = ?").get(id)).toEqual({ media_types: NEW_DEFAULT });
     await db.prepare("DELETE FROM indexers WHERE id = ?").run(id);
+  });
+
+  it("adds the Throttlearr gate columns to a queue table created before them, keeping its rows ungated", async () => {
+    const { migratePostgresSchema } = await import("../src/db/postgresSchema.js");
+    const gateCols = ["gate_state", "gate_held_at", "gate_reason", "gate_payload", "gate_priority"];
+    const itemId = (await db.prepare("INSERT INTO media_items (type, title, sort_title) VALUES ('movie', 'Gate', 'gate')").run()).lastInsertRowid;
+    await db.prepare("INSERT INTO queue (media_item_id, title) VALUES (?, 'Gate.1080p')").run(itemId);
+    for (const c of gateCols) await db.exec(`ALTER TABLE queue DROP COLUMN ${c}`);
+
+    await migratePostgresSchema(db);
+    await migratePostgresSchema(db);
+
+    const cols = ((await db
+      .prepare("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'queue'")
+      .all()) as { column_name: string }[]).map((c) => c.column_name);
+    expect(cols).toEqual(expect.arrayContaining(gateCols));
+    expect(await db.prepare("SELECT gate_state, gate_payload, gate_priority FROM queue WHERE title = 'Gate.1080p'").get()).toEqual({
+      gate_state: null,
+      gate_payload: null,
+      gate_priority: 0,
+    });
   });
 
   it("widens a float4 queue.progress so a full-precision client value reads back unchanged", async () => {

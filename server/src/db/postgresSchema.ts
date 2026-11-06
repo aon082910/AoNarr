@@ -200,6 +200,12 @@ const COLUMN_MIGRATIONS: string[] = [
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS protocol TEXT`,
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS publish_date TEXT`,
   `ALTER TABLE queue ADD COLUMN IF NOT EXISTS info_hash TEXT`,
+  // Throttlearr (services/throttlearr): a grab held back until its download client has room.
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS gate_state TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS gate_held_at TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS gate_reason TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS gate_payload TEXT`,
+  `ALTER TABLE queue ADD COLUMN IF NOT EXISTS gate_priority INTEGER NOT NULL DEFAULT 0`,
 ];
 
 /**

@@ -224,7 +224,13 @@ CREATE TABLE IF NOT EXISTS queue (
   grab_source TEXT,
   protocol TEXT,
   publish_date TEXT,
-  info_hash TEXT
+  info_hash TEXT,
+  -- Throttlearr, see schema.sql.
+  gate_state TEXT,
+  gate_held_at TEXT,
+  gate_reason TEXT,
+  gate_payload TEXT,
+  gate_priority INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_queue_media_item_id ON queue(media_item_id);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
