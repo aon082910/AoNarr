@@ -33,6 +33,17 @@ import { existingFileRecord } from "./fileRelease.js";
 import { editionlessTitle, FORMAT_UPGRADE_STEP, formatUpgradeFloor, nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
 import { freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReason, freeSpaceReserveBytes } from "./freeSpace.js";
 import { recordGrabbed } from "./grabHistory.js";
+import { getThrottlearrSettings } from "./throttlearr/settings.js";
+import {
+  clientIsGated,
+  evaluateHold,
+  gateTimestamp,
+  heldCount,
+  notWaitingAtGate,
+  ownRowsLoad,
+  withClientGate,
+  type HeldPayload,
+} from "./throttlearr/gate.js";
 import {
   discographyAlbumsOf,
   discographyFallbackSingleEnabled,
@@ -1573,60 +1584,110 @@ export async function grab(
       // A scene-numbered pack of another season ("Show.S02" for TVDB S01E13) doesn't cover this one.
       if (ep && (parsedBest.seasonNumber == null || parsedBest.seasonNumber === ep.season_number)) packSeason = ep.season_number;
     }
-    const downloadId = await sendToClient(
-      client,
-      { downloadUrl: best.downloadUrl, title: best.title, protocol: best.protocol, indexerId: best.indexerId, category: () => categoryForType(client, mediaItem.type) },
-      source
-    );
-
-    const tracked = await db
-      .prepare("SELECT id FROM queue WHERE download_client_id = ? AND download_id = ? AND status NOT IN ('failed')")
-      .get(client.id, downloadId);
-    if (tracked) {
-      log.info(`[scheduler] "${best.title}" is already being downloaded by "${client.name}" for another queue entry`);
-      return false;
-    }
-
     // queue.size is BIGINT: Postgres rejects NaN or a fraction (from an indexer's odd size field)
     // after the client has already accepted the download, leaving it untracked.
     const size = Number.isFinite(best.size) ? Math.round(best.size) : null;
-    const grabFacts = { source, quality, client: { id: client.id, name: client.name }, forced: options.forced, releaseGroup: parsedBest.releaseGroup, downloadId };
-    // The row, the albums it is for and the history are written together: the client already has the download, and
-    // a row with some of its albums, or none, would be a download nothing tracks properly.
-    await db.transaction(async () => {
-      const inserted = await db
-        .prepare(
-          `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count, match_type, grab_source, protocol, publish_date, info_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          mediaItem.id,
-          episodeId,
-          subItemId,
-          packSeason,
-          best.title,
-          best.indexerId,
-          client.id,
-          downloadId,
-          size,
-          quality,
-          retryCount,
-          chosen.identity?.matchType ?? null,
+    // Throttlearr: a limited client decides and places one grab at a time, so two grabs cannot both see the same free slot.
+    const gate = getThrottlearrSettings();
+    const placed = await withClientGate(clientIsGated(gate, client.id) ? client.id : null, async () => {
+      let heldReason: string | null = null;
+      if (gate.enabled) {
+        const verdict = evaluateHold({
+          settings: gate,
+          client,
           source,
-          best.protocol,
-          best.publishDate ?? null,
-          best.infoHash ?? null
+          forced: !!options.forced,
+          active: (await ownRowsLoad(client.id)).active,
+          heldAhead: await heldCount(client.id),
+        });
+        if (verdict.hold && gate.dryRun) {
+          log.info(`[throttlearr] dry run: would hold "${best.title}" for "${mediaItem.title}": ${verdict.reason}`);
+        } else if (verdict.hold) {
+          heldReason = verdict.reason ?? "Waiting for room in the download client";
+        }
+      }
+
+      let downloadId: string | null = null;
+      let gatePayload: string | null = null;
+      if (heldReason === null) {
+        downloadId = await sendToClient(
+          client,
+          { downloadUrl: best.downloadUrl, title: best.title, protocol: best.protocol, indexerId: best.indexerId, category: () => categoryForType(client, mediaItem.type) },
+          source
         );
-      if (targets.length > 0) {
-        const queueId = Number(inserted.lastInsertRowid);
-        for (const id of targets) {
-          await db.prepare("INSERT INTO queue_targets (queue_id, sub_item_id) VALUES (?, ?)").run(queueId, id);
-          await recordGrabbed(mediaItem.id, { episodeId: null, subItemId: id, seasonNumber: null }, best, grabFacts);
+        const tracked = await db
+          .prepare("SELECT id FROM queue WHERE download_client_id = ? AND download_id = ? AND status NOT IN ('failed')")
+          .get(client.id, downloadId);
+        if (tracked) {
+          log.info(`[scheduler] "${best.title}" is already being downloaded by "${client.name}" for another queue entry`);
+          return { kind: "tracked" as const };
         }
       } else {
-        await recordGrabbed(mediaItem.id, { episodeId, subItemId, seasonNumber: packSeason }, best, grabFacts);
+        const payload: HeldPayload = {
+          v: 1,
+          release: best,
+          category: categoryForType(client, mediaItem.type),
+          quality,
+          source,
+          forced: !!options.forced,
+          releaseGroup: parsedBest.releaseGroup ?? null,
+          history: targets.length > 0 ? { episodeId: null, subItemId: null, seasonNumber: null } : { episodeId, subItemId, seasonNumber: packSeason },
+          targetSubItemIds: targets,
+        };
+        gatePayload = JSON.stringify(payload);
       }
+
+      const grabFacts = { source, quality, client: { id: client.id, name: client.name }, forced: options.forced, releaseGroup: parsedBest.releaseGroup, downloadId: downloadId ?? "" };
+      // The row, the albums it is for and the history are written together: the client already has the download, and
+      // a row with some of its albums, or none, would be a download nothing tracks properly. A held grab has no history
+      // yet: it is written when the grab is sent.
+      await db.transaction(async () => {
+        const inserted = await db
+          .prepare(
+            `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count, match_type, grab_source, protocol, publish_date, info_hash, gate_state, gate_held_at, gate_reason, gate_payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            mediaItem.id,
+            episodeId,
+            subItemId,
+            packSeason,
+            best.title,
+            best.indexerId,
+            client.id,
+            downloadId,
+            size,
+            quality,
+            retryCount,
+            chosen.identity?.matchType ?? null,
+            source,
+            best.protocol,
+            best.publishDate ?? null,
+            best.infoHash ?? null,
+            heldReason === null ? null : "held",
+            heldReason === null ? null : gateTimestamp(),
+            heldReason,
+            gatePayload
+          );
+        const queueId = Number(inserted.lastInsertRowid);
+        if (targets.length > 0) {
+          for (const id of targets) {
+            await db.prepare("INSERT INTO queue_targets (queue_id, sub_item_id) VALUES (?, ?)").run(queueId, id);
+            if (heldReason === null) await recordGrabbed(mediaItem.id, { episodeId: null, subItemId: id, seasonNumber: null }, best, grabFacts);
+          }
+        } else if (heldReason === null) {
+          await recordGrabbed(mediaItem.id, { episodeId, subItemId, seasonNumber: packSeason }, best, grabFacts);
+        }
+      });
+      return heldReason === null ? { kind: "sent" as const, downloadId: downloadId! } : { kind: "held" as const, reason: heldReason };
     });
+    if (placed.kind === "tracked") return false;
+    if (placed.kind === "held") {
+      notifyQueueChanged();
+      log.info(`[throttlearr] held "${best.title}" for "${mediaItem.title}": ${placed.reason}`);
+      return true;
+    }
+    const downloadId = placed.downloadId;
 
     // A manual grab answers at once; waiting for a webhook that never answers held the response (and every other
     // grab for the item) for the notification timeout.
@@ -4298,7 +4359,8 @@ export async function pollQueue(options: { background?: boolean } = {}) {
 
   const clients = await rowsToDownloadClients();
   const active = (
-    (await db.prepare("SELECT * FROM queue WHERE status IN ('queued','downloading')").all()) as any[]
+    // A grab Throttlearr holds is not at a client yet: there is nothing to ask the client about.
+    (await db.prepare(`SELECT * FROM queue WHERE status IN ('queued','downloading') AND ${notWaitingAtGate()}`).all()) as any[]
   ).map(queueItemFromRow) as QueueItem[];
   const activeIds = new Set(active.map((q) => q.id));
   for (const id of stalledSince.keys()) if (!activeIds.has(id)) stalledSince.delete(id);
@@ -4352,7 +4414,7 @@ async function markClientNotAnswering(clientId: number, rows: QueueItem[]): Prom
   const updated = await db
     .prepare(
       `UPDATE queue SET eta_seconds = NULL, size_left = NULL, client_state = 'warning', status_message = ?
-       WHERE download_client_id = ? AND status IN ('queued','downloading')
+       WHERE download_client_id = ? AND status IN ('queued','downloading') AND ${notWaitingAtGate()}
          AND (eta_seconds IS NOT NULL OR size_left IS NOT NULL OR client_state IS NULL OR client_state <> 'warning' OR status_message IS NULL OR status_message <> ?)`
     )
     .run(CLIENT_NOT_ANSWERING_NOTE, clientId, CLIENT_NOT_ANSWERING_NOTE);
@@ -4516,7 +4578,8 @@ async function failOrphanedDownloads(): Promise<void> {
   const rows = (await db
     .prepare(
       `SELECT q.*, c.id AS client_row_id FROM queue q LEFT JOIN download_clients c ON c.id = q.download_client_id
-       WHERE q.status IN ('queued', 'downloading') AND (c.id IS NULL OR q.download_id IS NULL OR q.download_id = '')`
+       WHERE q.status IN ('queued', 'downloading') AND (c.id IS NULL OR q.download_id IS NULL OR q.download_id = '')
+       AND ${notWaitingAtGate("q.")}`
     )
     .all()) as any[];
   for (const row of rows) {
@@ -4544,7 +4607,7 @@ export async function cleanupStalledDownloads(): Promise<void> {
   // no last_progress_at: it ages from when it was grabbed, or it would hold its target forever.
   const rows = (await db
     .prepare(
-      `SELECT * FROM queue WHERE status IN ('queued', 'downloading')
+      `SELECT * FROM queue WHERE status IN ('queued', 'downloading') AND ${notWaitingAtGate()}
        AND COALESCE(last_progress_at, added_at) <= ${nowOffsetHoursExpr(db, -thresholdHours)}`
     )
     .all()) as any[];

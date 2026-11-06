@@ -2,6 +2,7 @@ import { db } from "../db/index.js";
 import { nowOffsetHoursExpr } from "../db/asyncDb.js";
 import { downloadClientFromRow, indexerFromRow } from "../db/mappers.js";
 import { attachIndexerHealth } from "./indexerHealth.js";
+import { notWaitingAtGate } from "./throttlearr/gate.js";
 import { checkIndexerHealth } from "./indexerClient.js";
 import { getDownloadClientAdapter } from "./downloadClient.js";
 import { findRepeatedImports } from "./duplicates.js";
@@ -575,7 +576,7 @@ async function buildHealthReport(): Promise<HealthReport> {
     .prepare(
       `SELECT q.id, q.title, q.status, q.added_at AS "addedAt", m.title AS "mediaTitle" FROM queue q
        JOIN media_items m ON m.id = q.media_item_id
-       WHERE q.status IN ('queued','downloading')
+       WHERE q.status IN ('queued','downloading') AND ${notWaitingAtGate("q.")}
        AND q.added_at <= ${nowOffsetHoursExpr(db, -STUCK_QUEUE_HOURS)}`
     )
     .all()) as any[];
