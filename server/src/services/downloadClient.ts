@@ -160,6 +160,9 @@ export interface DownloadClientAdapter {
     options?: AddOptions
   ): Promise<GrabResult>;
   getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]>;
+  /** How many jobs the client has to download right now, whoever added them (Throttlearr's release worker feeds a client
+   * only while this is under its limit). Optional: a backend without it is counted from AoNarr's own queue rows. */
+  queueLoad?(client: DownloadClient): Promise<QueueLoad>;
   /** Not every backend has a real queue to reorder (the in-process http/ytdlp adapters start each
    * download the moment it's grabbed, with no queue of their own) — implementing this is optional;
    * callers check for its presence before offering the UI action. */
@@ -190,6 +193,50 @@ export interface DownloadClientAdapter {
    * Optional: not every backend has anything to remove (the in-process http/ytdlp adapters, a
    * blackhole watch folder) or an API that supports it — callers check for its presence first. */
   removeDownload?(client: DownloadClient, downloadId: string, deleteFiles: boolean): Promise<void>;
+}
+
+/** What a download client has to fetch right now. `bytesLeft` is null when the client does not say. */
+export interface QueueLoad {
+  active: number;
+  bytesLeft: number | null;
+}
+
+/** SABnzbd statuses of a queue slot that is not waiting on the news server: a job the admin paused takes no slot. */
+const SAB_IDLE_SLOT_STATUSES = new Set(["Paused"]);
+
+/** Pure: the load of a SABnzbd queue (its `queue.slots`). A paused job is not counted; everything else is, queued
+ * jobs included, because they take their turn without AoNarr adding anything. */
+export function sabnzbdQueueLoad(slots: unknown): QueueLoad {
+  let active = 0;
+  let bytes = 0;
+  let known = true;
+  for (const s of Array.isArray(slots) ? slots : []) {
+    if (SAB_IDLE_SLOT_STATUSES.has(String(s?.status))) continue;
+    active++;
+    const mb = Number(s?.mbleft);
+    if (Number.isFinite(mb)) bytes += mb * 1024 * 1024;
+    else known = false;
+  }
+  return { active, bytesLeft: known ? Math.round(bytes) : null };
+}
+
+/** qBittorrent states of a torrent that is (or is about to be) downloading. Paused and stopped ones, seeding ones and
+ * errors are not: they take no download slot. */
+const QBIT_LOADING_STATES = new Set(["downloading", "stalledDL", "queuedDL", "metaDL", "forcedDL", "forcedMetaDL", "checkingDL", "checkingResumeData", "allocating"]);
+
+/** Pure: the load of a qBittorrent `torrents/info` list. */
+export function qbittorrentQueueLoad(torrents: unknown): QueueLoad {
+  let active = 0;
+  let bytes = 0;
+  let known = true;
+  for (const t of Array.isArray(torrents) ? torrents : []) {
+    if (!QBIT_LOADING_STATES.has(String(t?.state))) continue;
+    active++;
+    const left = Number(t?.amount_left);
+    if (Number.isFinite(left) && left >= 0) bytes += left;
+    else known = false;
+  }
+  return { active, bytesLeft: known ? Math.round(bytes) : null };
 }
 
 export interface ClientHealthStats {
@@ -711,6 +758,13 @@ class QBittorrentAdapter implements DownloadClientAdapter {
     return { downloadId: `tag:${pendingTag}` };
   }
 
+  async queueLoad(client: DownloadClient): Promise<QueueLoad> {
+    // The whole list, filtered by state here: qBittorrent's own `filter=downloading` leaves out queued torrents on some builds.
+    const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info`);
+    if (!res.ok) throw new Error(`qBittorrent queue load failed: HTTP ${res.status}`);
+    return qbittorrentQueueLoad(await res.json());
+  }
+
   async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
     const res = await this.authedFetch(client, `${baseUrl(client)}/api/v2/torrents/info`);
     if (!res.ok) throw new Error(`qBittorrent status failed: HTTP ${res.status}`);
@@ -1048,6 +1102,12 @@ class SabnzbdAdapter implements DownloadClientAdapter {
    * since most active downloads are still there, and only the ids that have disappeared from it
    * get looked up in history.
    */
+  async queueLoad(client: DownloadClient): Promise<QueueLoad> {
+    const body: any = await sabnzbdApi(client, { mode: "queue" });
+    if (body?.error || body?.status === false) throw new Error(`SABnzbd queue load failed: ${body.error ?? "rejected"}`);
+    return sabnzbdQueueLoad(body?.queue?.slots);
+  }
+
   async getStatus(client: DownloadClient, downloadIds: string[]): Promise<QueueStatusUpdate[]> {
     const queueUrl = new URL(`${baseUrl(client)}/api`);
     queueUrl.searchParams.set("mode", "queue");

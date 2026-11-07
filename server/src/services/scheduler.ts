@@ -4399,6 +4399,10 @@ export async function pollQueue(options: { background?: boolean } = {}) {
       log.warn(`[scheduler] queue poll failed for client "${client.name}":`, (err as Error).message);
     }
   }
+  // A download that finished frees a slot: held grabs are released now, not at the next minute.
+  if (getThrottlearrSettings().enabled) {
+    void import("./throttlearr/release.js").then((m) => m.releaseHeldGrabsSafely());
+  }
 }
 
 /** What an active row says while its download client does not answer. */
@@ -4892,6 +4896,18 @@ export function startScheduler() {
     run: async () => {
       const { runPendingReleases } = await import("./pendingReleases.js");
       await runPendingReleases();
+    },
+  });
+
+  // Throttlearr: sends the grabs it held back as their download client has room (throttlearr/release.ts).
+  registerJob({
+    key: "throttlearrRelease",
+    name: "Throttlearr Release",
+    scheduleType: "cron",
+    defaultSchedule: "* * * * *",
+    run: async () => {
+      const { releaseHeldGrabs } = await import("./throttlearr/release.js");
+      await releaseHeldGrabs();
     },
   });
 
