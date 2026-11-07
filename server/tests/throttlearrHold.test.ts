@@ -252,17 +252,18 @@ describe("Throttlearr: evaluateHold", () => {
       clients: { "1": { ...DEFAULT_CLIENT_LIMITS, ...limits } },
       ...over,
     }) as any;
-  const base = { client: { id: 1, name: "C" }, source: "auto", forced: false, active: 0, heldAhead: 0 };
+  const state = (active = 0) => ({ active, bytesLeft: null, addsLastHour: 0, freeBytes: null, titleActive: new Map<number, number>() });
+  const base = { client: { id: 1, name: "C" }, source: "auto", forced: false, heldAhead: 0, candidate: { mediaItemId: 1, size: null, priorityClass: "movie" as const }, now: new Date() };
 
   it("holds only at the limit, or behind held grabs", async () => {
-    expect(gate.evaluateHold({ ...base, settings: settings(), active: 1 }).hold).toBe(false);
-    expect(gate.evaluateHold({ ...base, settings: settings(), active: 2 })).toEqual({ hold: true, reason: "C has 2 of 2 jobs" });
-    expect(gate.evaluateHold({ ...base, settings: settings(), active: 0, heldAhead: 3 })).toEqual({ hold: true, reason: "Waiting behind 3 held grabs" });
+    expect(gate.evaluateHold({ ...base, settings: settings(), state: state(1) }).hold).toBe(false);
+    expect(gate.evaluateHold({ ...base, settings: settings(), state: state(2) })).toEqual({ hold: true, reason: "C has 2 of 2 jobs" });
+    expect(gate.evaluateHold({ ...base, settings: settings(), state: state(0), heldAhead: 3 })).toEqual({ hold: true, reason: "Waiting behind 3 held grabs" });
   });
 
   it("never holds when disabled, or for a client with no limit", async () => {
-    expect(gate.evaluateHold({ ...base, settings: settings({ enabled: false }), active: 99 }).hold).toBe(false);
-    expect(gate.evaluateHold({ ...base, settings: settings({}, { maxActive: null }), active: 99, heldAhead: 5 }).hold).toBe(false);
+    expect(gate.evaluateHold({ ...base, settings: settings({ enabled: false }), state: state(99) }).hold).toBe(false);
+    expect(gate.evaluateHold({ ...base, settings: settings({}, { maxActive: null }), state: state(99), heldAhead: 5 }).hold).toBe(false);
   });
 
   it("knows which clients need the lock", async () => {
@@ -270,5 +271,8 @@ describe("Throttlearr: evaluateHold", () => {
     expect(gate.clientIsGated(settings(), 2)).toBe(false);
     expect(gate.clientIsGated(settings({ holdAll: true }), 2)).toBe(true);
     expect(gate.clientIsGated(settings({ enabled: false }), 1)).toBe(false);
+    // Any limit gates the client, not only the job count.
+    expect(gate.clientIsGated(settings({}, { maxActive: null, addsPerHour: 60 }), 1)).toBe(true);
+    expect(gate.clientIsGated(settings({}, { maxActive: null, windows: [{ days: [1], from: "01:00", to: "02:00" }] }), 1)).toBe(true);
   });
 });

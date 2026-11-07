@@ -136,7 +136,7 @@ describe("Throttlearr: the release worker", () => {
     const a = await grabMovie(client);
     const b = await grabMovie(client);
     const c = await grabMovie(client);
-    await db.prepare("UPDATE queue SET gate_priority = 10 WHERE media_item_id = ?").run(c);
+    await db.prepare("UPDATE queue SET gate_priority = 50 WHERE media_item_id = ?").run(c);
     // Older than the others, but well inside maxHeldAgeHours.
     const hourAgo = new Date(Date.now() - 3_600_000).toISOString().slice(0, 19).replace("T", " ");
     await db.prepare("UPDATE queue SET gate_held_at = ? WHERE media_item_id = ?").run(hourAgo, b);

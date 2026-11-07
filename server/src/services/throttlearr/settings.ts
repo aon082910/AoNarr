@@ -38,6 +38,9 @@ export interface PrioritySettings {
   backlog: number;
   /** Backlog (aired over a year ago) is released only inside the quiet-hours/night window. */
   backlogOnlyAtNight: boolean;
+  /** The night, in the server's local time ("HH:MM"), for backlogOnlyAtNight. */
+  nightFrom: string;
+  nightTo: string;
 }
 
 export interface ThrottlearrSettings {
@@ -55,6 +58,8 @@ export interface ThrottlearrSettings {
   /** Limits by download client id (as a string key). A client with no entry is not limited. */
   clients: Record<string, ClientLimits>;
   priority: PrioritySettings;
+  /** Most jobs of one title (a series, a movie) a client holds at once, so one show cannot take every slot. null: no limit. */
+  perTitleLimit: number | null;
 }
 
 export const DEFAULT_CLIENT_LIMITS: ClientLimits = {
@@ -73,7 +78,8 @@ export const DEFAULT_SETTINGS: ThrottlearrSettings = {
   maxHeldAgeHours: 72,
   bypassManual: true,
   clients: {},
-  priority: { movies: 20, recentTv: 10, backlog: 0, backlogOnlyAtNight: false },
+  priority: { movies: 20, recentTv: 10, backlog: 0, backlogOnlyAtNight: false, nightFrom: "23:00", nightTo: "07:00" },
+  perTitleLimit: 3,
 };
 
 const MAX_HELD_AGE_HOURS = 24 * 30;
@@ -144,7 +150,11 @@ export function normalizeSettings(raw: unknown): ThrottlearrSettings {
       recentTv: int(p.recentTv, d.priority.recentTv, -1000, 1000),
       backlog: int(p.backlog, d.priority.backlog, -1000, 1000),
       backlogOnlyAtNight: bool(p.backlogOnlyAtNight, d.priority.backlogOnlyAtNight),
+      nightFrom: typeof p.nightFrom === "string" && TIME.test(p.nightFrom) ? p.nightFrom : d.priority.nightFrom,
+      nightTo: typeof p.nightTo === "string" && TIME.test(p.nightTo) ? p.nightTo : d.priority.nightTo,
     },
+    // Absent keeps the default; 0, a negative or a non-number means no limit.
+    perTitleLimit: "perTitleLimit" in s ? limit(s.perTitleLimit) : d.perTitleLimit,
   };
 }
 

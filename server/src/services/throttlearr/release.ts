@@ -12,7 +12,8 @@ import { COLLECTION_ITEM_TYPES } from "../bookCollections.js";
 import { parseReleaseTitle } from "../releaseParser.js";
 import { DownloadClientUnavailableError, ReleaseRefusedError, retryFailedGrab, sendToClient, type GrabSource } from "../scheduler.js";
 import { getThrottlearrSettings, limitsFor, type ThrottlearrSettings } from "./settings.js";
-import { ownRowsLoad, parsePayload, withClientGate, type HeldPayload } from "./gate.js";
+import { limitsActive, measureClientState, parsePayload, withClientGate, type HeldPayload } from "./gate.js";
+import { selectReleases, type Candidate, type PriorityClass } from "./rules.js";
 
 /**
  * Throttlearr's release worker: sends held grabs to their download client as the client has room.
@@ -33,9 +34,9 @@ export interface ReleaseSummary {
 
 let running: Promise<ReleaseSummary> | null = null;
 
-/** Runs one release pass; a pass already running is waited for instead of started twice. */
-export function releaseHeldGrabs(): Promise<ReleaseSummary> {
-  if (!running) running = runRelease().finally(() => (running = null));
+/** Runs one release pass; a pass already running is waited for instead of started twice. `now` is for tests. */
+export function releaseHeldGrabs(now: Date = new Date()): Promise<ReleaseSummary> {
+  if (!running) running = runRelease(now).finally(() => (running = null));
   return running;
 }
 
@@ -61,7 +62,7 @@ export async function resetReleasingRows(): Promise<number> {
 
 let startupResetDone = false;
 
-async function runRelease(): Promise<ReleaseSummary> {
+async function runRelease(now: Date): Promise<ReleaseSummary> {
   const summary: ReleaseSummary = { released: 0, expired: 0, failed: 0, skippedClients: 0 };
   // The first pass after a start: any row still 'releasing' is left over from the run before.
   if (!startupResetDone) {
@@ -82,7 +83,7 @@ async function runRelease(): Promise<ReleaseSummary> {
 
   for (const clientId of clientIds) {
     await withClientGate(clientId, async () => {
-      const one = await releaseForClient(clientId, settings);
+      const one = await releaseForClient(clientId, settings, now);
       summary.released += one.released;
       summary.failed += one.failed;
       if (one.skipped) summary.skippedClients++;
@@ -110,7 +111,7 @@ async function expireOldHeldRows(settings: ThrottlearrSettings): Promise<number>
   return expired;
 }
 
-async function releaseForClient(clientId: number, settings: ThrottlearrSettings): Promise<{ released: number; failed: number; skipped: boolean }> {
+async function releaseForClient(clientId: number, settings: ThrottlearrSettings, now: Date): Promise<{ released: number; failed: number; skipped: boolean }> {
   const out = { released: 0, failed: 0, skipped: false };
   const clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(clientId);
   if (!clientRow) return out; // deleted: its rows were failed with it
@@ -120,34 +121,47 @@ async function releaseForClient(clientId: number, settings: ThrottlearrSettings)
     return out;
   }
 
-  // Throttlearr off: nothing is limited any more, every held grab goes now. Otherwise only what the limits leave room for.
-  let room = Number.POSITIVE_INFINITY;
-  if (settings.enabled) {
-    const limits = limitsFor(settings, client.id);
-    if (limits.maxActive !== null) {
-      let active: number;
-      try {
-        const adapter = getDownloadClientAdapter(client.type);
-        active = adapter.queueLoad ? (await adapter.queueLoad(client)).active : (await ownRowsLoad(client.id)).active;
-      } catch (err) {
-        // The client does not answer: its grabs stay held, and the failure is on file like any other client failure.
-        await recordClientFailure(client.id, (err as Error).message).catch(() => undefined);
-        out.skipped = true;
-        return out;
-      }
-      // Rows AoNarr is sending in this very moment may not show in the client's list yet.
-      const sending = Number(((await db.prepare("SELECT COUNT(*) AS c FROM queue WHERE download_client_id = ? AND gate_state = 'releasing'").get(client.id)) as any).c);
-      room = limits.maxActive - Math.max(active, 0) - sending;
+  const held = (await db
+    .prepare("SELECT * FROM queue WHERE download_client_id = ? AND gate_state = 'held' ORDER BY gate_priority DESC, gate_held_at ASC, id ASC")
+    .all(client.id)) as any[];
+  if (held.length === 0) return out;
+
+  // Throttlearr off, or no limit set for this client: nothing is limited, every held grab goes now.
+  const limits = limitsFor(settings, client.id);
+  let toSend = held;
+  if (settings.enabled && limitsActive(limits)) {
+    let measured;
+    try {
+      measured = await measureClientState(client, limits, { strict: true });
+    } catch (err) {
+      // The client does not answer: its grabs stay held, and the failure is on file like any other client failure.
+      await recordClientFailure(client.id, (err as Error).message).catch(() => undefined);
+      out.skipped = true;
+      return out;
+    }
+    const state = measured.state;
+    // Rows AoNarr is sending in this very moment may not show in the client's own list yet.
+    if (measured.source === "client") {
+      state.active += Number(((await db.prepare("SELECT COUNT(*) AS c FROM queue WHERE download_client_id = ? AND gate_state = 'releasing'").get(client.id)) as any).c);
+    }
+    const candidates: Candidate[] = held.map((r) => ({
+      id: Number(r.id),
+      mediaItemId: Number(r.media_item_id),
+      size: r.size == null ? null : Number(r.size),
+      priorityClass: (parsePayload(r.gate_payload)?.priorityClass ?? "backlog") as PriorityClass,
+    }));
+    const pick = selectReleases(candidates, { clientName: client.name, limits, state, priority: settings.priority, perTitleLimit: settings.perTitleLimit, now });
+    const chosen = new Set(pick.selected.map((c) => c.id));
+    toSend = held.filter((r) => chosen.has(Number(r.id)));
+    // Say why the rest are waiting (written only when it changes, so a quiet minute writes nothing).
+    if (pick.blockedBy?.reason) {
+      await db
+        .prepare("UPDATE queue SET gate_reason = ? WHERE download_client_id = ? AND gate_state = 'held' AND (gate_reason IS NULL OR gate_reason <> ?)")
+        .run(pick.blockedBy.reason, client.id, pick.blockedBy.reason);
     }
   }
-  if (room < 1) return out;
 
-  const limit = Number.isFinite(room) ? room : 1_000_000;
-  const rows = (await db
-    .prepare("SELECT * FROM queue WHERE download_client_id = ? AND gate_state = 'held' ORDER BY gate_priority DESC, gate_held_at ASC, id ASC LIMIT ?")
-    .all(client.id, limit)) as any[];
-
-  for (const row of rows) {
+  for (const row of toSend) {
     const result = await releaseOne(client, row);
     if (result === "released") out.released++;
     else if (result === "failed") out.failed++;

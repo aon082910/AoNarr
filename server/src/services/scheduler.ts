@@ -33,14 +33,15 @@ import { existingFileRecord } from "./fileRelease.js";
 import { editionlessTitle, FORMAT_UPGRADE_STEP, formatUpgradeFloor, nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
 import { freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReason, freeSpaceReserveBytes } from "./freeSpace.js";
 import { recordGrabbed } from "./grabHistory.js";
-import { getThrottlearrSettings } from "./throttlearr/settings.js";
+import { getThrottlearrSettings, limitsFor } from "./throttlearr/settings.js";
+import { classifyGrab, priorityFor, type PriorityClass } from "./throttlearr/rules.js";
 import {
   clientIsGated,
   evaluateHold,
   gateTimestamp,
   heldCount,
+  measureClientState,
   notWaitingAtGate,
-  ownRowsLoad,
   withClientGate,
   type HeldPayload,
 } from "./throttlearr/gate.js";
@@ -1591,14 +1592,24 @@ export async function grab(
     const gate = getThrottlearrSettings();
     const placed = await withClientGate(clientIsGated(gate, client.id) ? client.id : null, async () => {
       let heldReason: string | null = null;
+      let priorityClass: PriorityClass = "backlog";
       if (gate.enabled) {
+        // A client without limits is not measured; a client that does not answer is counted from AoNarr's own rows.
+        const limited = clientIsGated(gate, client.id);
+        const airDate = episodeId
+          ? (((await db.prepare("SELECT air_date FROM episodes WHERE id = ?").get(episodeId)) as { air_date: string | null } | undefined)?.air_date ?? null)
+          : null;
+        priorityClass = classifyGrab({ type: mediaItem.type, episodeId, seasonNumber: packSeason, airDate });
+        const measured = limited ? await measureClientState(client, limitsFor(gate, client.id), { strict: false }) : null;
         const verdict = evaluateHold({
           settings: gate,
           client,
           source,
           forced: !!options.forced,
-          active: (await ownRowsLoad(client.id)).active,
-          heldAhead: await heldCount(client.id),
+          state: measured?.state ?? { active: 0, bytesLeft: null, addsLastHour: 0, freeBytes: null, titleActive: new Map() },
+          heldAhead: limited ? await heldCount(client.id) : 0,
+          candidate: { mediaItemId: mediaItem.id, size, priorityClass },
+          now: new Date(),
         });
         if (verdict.hold && gate.dryRun) {
           log.info(`[throttlearr] dry run: would hold "${best.title}" for "${mediaItem.title}": ${verdict.reason}`);
@@ -1633,6 +1644,7 @@ export async function grab(
           releaseGroup: parsedBest.releaseGroup ?? null,
           history: targets.length > 0 ? { episodeId: null, subItemId: null, seasonNumber: null } : { episodeId, subItemId, seasonNumber: packSeason },
           targetSubItemIds: targets,
+          priorityClass,
         };
         gatePayload = JSON.stringify(payload);
       }
@@ -1644,8 +1656,8 @@ export async function grab(
       await db.transaction(async () => {
         const inserted = await db
           .prepare(
-            `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count, match_type, grab_source, protocol, publish_date, info_hash, gate_state, gate_held_at, gate_reason, gate_payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            `INSERT INTO queue (media_item_id, episode_id, sub_item_id, season_number, title, indexer_id, download_client_id, download_id, size, quality, status, retry_count, match_type, grab_source, protocol, publish_date, info_hash, gate_state, gate_held_at, gate_reason, gate_payload, gate_priority)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .run(
             mediaItem.id,
@@ -1667,7 +1679,8 @@ export async function grab(
             heldReason === null ? null : "held",
             heldReason === null ? null : gateTimestamp(),
             heldReason,
-            gatePayload
+            gatePayload,
+            heldReason === null ? 0 : priorityFor(priorityClass, gate.priority)
           );
         const queueId = Number(inserted.lastInsertRowid);
         if (targets.length > 0) {
