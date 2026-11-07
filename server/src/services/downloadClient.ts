@@ -429,6 +429,15 @@ export interface SeedGoal {
 export interface AddOptions {
   /** The seed goal that applies to the torrent (its indexer's, else the global one): sent to a client that can hold it. */
   seedGoal?: SeedGoal | null;
+  /** Looks at an NZB the adapter has fetched and validated: returns the reason to refuse it, or null to go on. Only the
+   * adapters that fetch the NZB themselves (SABnzbd, NZBGet) call it; a refusal is a refused release, not a client failure. */
+  inspectNzb?: (nzb: Buffer) => string | null;
+}
+
+/** Runs the caller's NZB inspection; throws the reason as a refusal of the release. */
+function inspectNzbOrRefuse(nzb: Buffer, options: AddOptions | undefined): void {
+  const reason = options?.inspectNzb?.(nzb);
+  if (reason) throw new Error(`Refused before download: ${reason}`);
 }
 
 /** The tag that records an indexer's seed goal on a torrent, or null when the indexer sets none. */
@@ -1052,7 +1061,9 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     client: DownloadClient,
     downloadUrl: string,
     category: string | null,
-    releaseTitle?: string
+    releaseTitle?: string,
+    _protocol?: SearchResult["protocol"],
+    options: AddOptions = {}
   ): Promise<GrabResult> {
     // Fetch the NZB here and upload it (mode=addfile) instead of handing SABnzbd the URL
     // (mode=addurl). With addurl the *client* performs the fetch, and a client that guards
@@ -1063,6 +1074,7 @@ class SabnzbdAdapter implements DownloadClientAdapter {
     const source = await resolveDownloadSource(downloadUrl);
     if (source.kind === "magnet") throw new Error("SABnzbd cannot accept a magnet link");
     const nzb = validateNzb(source.bytes);
+    inspectNzbOrRefuse(nzb, options);
 
     const url = new URL(`${baseUrl(client)}/api`);
     url.searchParams.set("apikey", client.apiKey ?? "");
@@ -2413,10 +2425,11 @@ function nzbgetFailureReason(status: string, history: any): string {
 }
 
 export class NzbgetAdapter implements DownloadClientAdapter {
-  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null, releaseTitle?: string): Promise<GrabResult> {
+  async addDownload(client: DownloadClient, downloadUrl: string, category: string | null, releaseTitle?: string, _protocol?: SearchResult["protocol"], options: AddOptions = {}): Promise<GrabResult> {
     const source = await resolveDownloadSource(downloadUrl);
     if (source.kind === "magnet") throw new Error("NZBGet cannot accept a magnet link");
     const nzb = validateNzb(source.bytes);
+    inspectNzbOrRefuse(nzb, options);
     // append(NZBFilename, NZBContent, Category, Priority, AddToTop, AddPaused, DupeKey, DupeScore, DupeMode, PPParameters)
     const id = await nzbgetRpc(client, "append", [
       `${sanitizeFilename(releaseTitle || "release")}.nzb`,

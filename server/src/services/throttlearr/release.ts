@@ -14,6 +14,7 @@ import { DownloadClientUnavailableError, ReleaseRefusedError, retryFailedGrab, s
 import { getThrottlearrSettings, limitsFor, type ThrottlearrSettings } from "./settings.js";
 import { limitsActive, measureClientState, parsePayload, withClientGate, type HeldPayload } from "./gate.js";
 import { selectReleases, type Candidate, type PriorityClass } from "./rules.js";
+import { mediaTypeOf, nzbInspectorFor } from "./preflight.js";
 
 /**
  * Throttlearr's release worker: sends held grabs to their download client as the client has room.
@@ -196,6 +197,10 @@ async function releaseOne(client: DownloadClient, row: any): Promise<ReleaseOutc
         protocol: payload.release.protocol,
         indexerId: payload.release.indexerId,
         category: payload.category,
+        inspectNzb:
+          payload.source === "interactive"
+            ? undefined
+            : await nzbInspectorFor(getThrottlearrSettings(), payload.release, Number(row.media_item_id), (await mediaTypeOf(Number(row.media_item_id))) ?? "movie"),
       },
       payload.source as GrabSource
     );

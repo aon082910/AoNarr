@@ -20,7 +20,7 @@ import {
   blackholeOutputBusy,
 } from "./downloadClient.js";
 import { categoryForType } from "./clientCategory.js";
-import type { QueueStatusUpdate, SeedGoal } from "./downloadClient.js";
+import type { AddOptions, QueueStatusUpdate, SeedGoal } from "./downloadClient.js";
 import { parseReleaseTitle, releaseMatchesAirDate, releaseMatchesEpisode } from "./releaseParser.js";
 import { identityModeFor, releaseIdentifiesTarget, type IdentityMode, type IdentityVerdict } from "./releaseIdentity.js";
 import { releaseRejection } from "./releaseRejections.js";
@@ -35,6 +35,7 @@ import { freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReason, freeSpaceRese
 import { recordGrabbed } from "./grabHistory.js";
 import { getThrottlearrSettings, limitsFor } from "./throttlearr/settings.js";
 import { classifyGrab, priorityFor, type PriorityClass } from "./throttlearr/rules.js";
+import { nzbInspectorFor, preflightContextFor, preflightRejection } from "./throttlearr/preflight.js";
 import {
   clientIsGated,
   evaluateHold,
@@ -951,6 +952,8 @@ export async function chooseBestResult(
   // Free space on the item's root folder, read once per call: a release that would not fit is not worth downloading.
   const freeBytes = freeSpaceCheckEnabled() ? await freeBytesForItem(mediaItemId) : null;
   const reserveBytes = freeSpaceReserveBytes();
+  // Throttlearr's pre-flight (junk names, size floor), null while it is off or for media without qualities.
+  const preflight = await preflightContextFor(mediaItemId, mediaType);
 
   // Radarr/Sonarr-style per-release rejection reasons — each filter below is unchanged logic,
   // just with a log.info added on the reject path so a search's container-log trail shows why
@@ -984,6 +987,15 @@ export async function chooseBestResult(
       const rejection = releaseRejection(parsed, { title: result.title, size }, mediaType);
       if (rejection) {
         noteRejected(result, `${rejection.reason}`);
+        return false;
+      }
+      return true;
+    })
+    .filter(({ result, parsed, size }) => {
+      // A release that can never end in a usable import is skipped here, and the next best one is tried.
+      const refused = preflight ? preflightRejection(preflight, result, parsed, size) : null;
+      if (refused) {
+        noteRejected(result, refused.reason);
         return false;
       }
       return true;
@@ -1161,6 +1173,13 @@ export async function chooseBestResult(
           return false;
         }
         log.info(`[scheduler] identity gate (log-only) would reject "${result.title}": ${verdict.detail}`);
+      } else if (verdict.matchType === "id" && identityMode === "enforce" && preflight?.settings.preflight.strictIdentity) {
+        // Throttlearr: the indexer's id is not taken for proof. Judged by its name alone, the release must still name the item.
+        const byName = releaseIdentifiesTarget({ title: result.title }, parsed, identityTarget);
+        if (!byName.ok) {
+          noteRejected(result, `the indexer's id matches, but the name does not (ids are not trusted here): ${byName.detail}`);
+          return false;
+        }
       }
     }
     if (allowed.size > 0 && !allowed.has(parsed.quality)) {
@@ -1474,6 +1493,8 @@ export interface ClientSend {
   indexerId: number | null | undefined;
   /** The client category for this release. A function so a lookup that throws is reported like any other add failure. */
   category: string | null | (() => string | null);
+  /** Throttlearr's look inside an NZB the client adapter has fetched (see throttlearr/preflight.ts). */
+  inspectNzb?: (nzb: Buffer) => string | null;
 }
 
 /**
@@ -1493,8 +1514,11 @@ export async function sendToClient(client: DownloadClient, send: ClientSend, sou
     // A torrent client is told the seed goal that applies (its indexer's, else the global one) when it is added.
     const seedGoal = send.protocol === "torrent" ? await seedGoalFor(send.indexerId) : null;
     const category = typeof send.category === "function" ? send.category() : send.category;
-    const { downloadId } = seedGoal
-      ? await adapter.addDownload(client, send.downloadUrl, category, send.title, send.protocol, { seedGoal })
+    const addOptions: AddOptions = {};
+    if (seedGoal) addOptions.seedGoal = seedGoal;
+    if (send.inspectNzb) addOptions.inspectNzb = send.inspectNzb;
+    const { downloadId } = Object.keys(addOptions).length > 0
+      ? await adapter.addDownload(client, send.downloadUrl, category, send.title, send.protocol, addOptions)
       : await adapter.addDownload(client, send.downloadUrl, category, send.title, send.protocol);
     await recordClientSuccess(client.id);
     return downloadId;
@@ -1623,7 +1647,15 @@ export async function grab(
       if (heldReason === null) {
         downloadId = await sendToClient(
           client,
-          { downloadUrl: best.downloadUrl, title: best.title, protocol: best.protocol, indexerId: best.indexerId, category: () => categoryForType(client, mediaItem.type) },
+          {
+            downloadUrl: best.downloadUrl,
+            title: best.title,
+            protocol: best.protocol,
+            indexerId: best.indexerId,
+            category: () => categoryForType(client, mediaItem.type),
+            // A hand-picked release is looked at too, but only the user can say it is wrong: its NZB is not refused.
+            inspectNzb: source === "interactive" ? undefined : await nzbInspectorFor(gate, best, mediaItem.id, mediaItem.type),
+          },
           source
         );
         const tracked = await db

@@ -43,6 +43,22 @@ export interface PrioritySettings {
   nightTo: string;
 }
 
+/** Checks run before a release may take a slot (see preflight.ts). They run only while Throttlearr itself is on. */
+export interface PreflightSettings {
+  /** The master switch for the checks below. */
+  enabled: boolean;
+  /** Refuse samples, trailers, extras, .nfo files, incomplete and passworded names. */
+  junkNames: boolean;
+  /** Refuse a release far under the size its quality and runtime need. */
+  sizeFloor: boolean;
+  /** Read an NZB's file list when the client adapter fetches it: no video, a password, a program, too little video. */
+  inspectNzb: boolean;
+  /** Judge a release by its name only, ignoring the id an indexer reports for it. Indexers hand the wrong film's id to a
+   * release, and an id that matches settles a release whose title does not; with this on, the title has to match too. A
+   * release under a title AoNarr has no alias for (a foreign or regional title) is lost, so it is off by default. */
+  strictIdentity: boolean;
+}
+
 export interface ThrottlearrSettings {
   version: number;
   /** The feature flag. Off: every grab goes to the client at once, as before Throttlearr existed. */
@@ -60,6 +76,7 @@ export interface ThrottlearrSettings {
   priority: PrioritySettings;
   /** Most jobs of one title (a series, a movie) a client holds at once, so one show cannot take every slot. null: no limit. */
   perTitleLimit: number | null;
+  preflight: PreflightSettings;
 }
 
 export const DEFAULT_CLIENT_LIMITS: ClientLimits = {
@@ -80,6 +97,7 @@ export const DEFAULT_SETTINGS: ThrottlearrSettings = {
   clients: {},
   priority: { movies: 20, recentTv: 10, backlog: 0, backlogOnlyAtNight: false, nightFrom: "23:00", nightTo: "07:00" },
   perTitleLimit: 3,
+  preflight: { enabled: true, junkNames: true, sizeFloor: true, inspectNzb: true, strictIdentity: false },
 };
 
 const MAX_HELD_AGE_HOURS = 24 * 30;
@@ -155,6 +173,13 @@ export function normalizeSettings(raw: unknown): ThrottlearrSettings {
     },
     // Absent keeps the default; 0, a negative or a non-number means no limit.
     perTitleLimit: "perTitleLimit" in s ? limit(s.perTitleLimit) : d.perTitleLimit,
+    preflight: {
+      enabled: bool(obj(s.preflight).enabled, d.preflight.enabled),
+      junkNames: bool(obj(s.preflight).junkNames, d.preflight.junkNames),
+      sizeFloor: bool(obj(s.preflight).sizeFloor, d.preflight.sizeFloor),
+      inspectNzb: bool(obj(s.preflight).inspectNzb, d.preflight.inspectNzb),
+      strictIdentity: bool(obj(s.preflight).strictIdentity, d.preflight.strictIdentity),
+    },
   };
 }
 

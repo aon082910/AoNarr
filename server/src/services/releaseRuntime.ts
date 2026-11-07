@@ -35,8 +35,9 @@ export interface RuntimeContext {
 }
 
 /** The runtime facts of one media item, for releaseRuntimeMinutes. Null when sizes are not judged per minute. */
-export async function runtimeContextFor(mediaItemId: number | null, mediaType: string): Promise<RuntimeContext | null> {
-  if (sizeLimitMode() !== "perMinute") return null;
+export async function runtimeContextFor(mediaItemId: number | null, mediaType: string, opts: { always?: boolean } = {}): Promise<RuntimeContext | null> {
+  // `always`: a caller that needs the runtime whatever the size-limit mode is (Throttlearr's size floor).
+  if (!opts.always && sizeLimitMode() !== "perMinute") return null;
   const episodic = getMediaTypeConfig(mediaType).shape === "episodic";
   if (mediaItemId == null) return { runtimeMinutes: null, episodic };
   const row = (await db.prepare("SELECT runtime_minutes FROM media_items WHERE id = ?").get(mediaItemId)) as { runtime_minutes: number | null } | undefined;
