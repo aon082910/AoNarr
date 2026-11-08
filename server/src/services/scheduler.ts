@@ -37,8 +37,10 @@ import { getThrottlearrSettings, limitsFor } from "./throttlearr/settings.js";
 import { classifyGrab, priorityFor, type PriorityClass } from "./throttlearr/rules.js";
 import { nzbInspectorFor, preflightContextFor, preflightRejection } from "./throttlearr/preflight.js";
 import {
+  bypassesHold,
   clientIsGated,
   evaluateHold,
+  recordAdd,
   gateTimestamp,
   heldCount,
   measureClientState,
@@ -1495,6 +1497,8 @@ export interface ClientSend {
   category: string | null | (() => string | null);
   /** Throttlearr's look inside an NZB the client adapter has fetched (see throttlearr/preflight.ts). */
   inspectNzb?: (nzb: Buffer) => string | null;
+  /** An admin asked for this send by name ("Release now"): the client's back-off after a recent failure does not stop it. */
+  ignoreBackoff?: boolean;
 }
 
 /**
@@ -1507,7 +1511,7 @@ export async function sendToClient(client: DownloadClient, send: ClientSend, sou
   const adapter = getDownloadClientAdapter(client.type);
   // Grabs for one title run one after another here, so a client that failed while this one waited is not asked again at
   // full cost (a hand-picked release is always tried).
-  if (source !== "interactive" && isClientBackedOff(client.id)) {
+  if (source !== "interactive" && !send.ignoreBackoff && isClientBackedOff(client.id)) {
     throw new DownloadClientUnavailableError(client, new Error("it is being left alone after failing a moment ago"));
   }
   try {
@@ -1521,6 +1525,7 @@ export async function sendToClient(client: DownloadClient, send: ClientSend, sou
       ? await adapter.addDownload(client, send.downloadUrl, category, send.title, send.protocol, addOptions)
       : await adapter.addDownload(client, send.downloadUrl, category, send.title, send.protocol);
     await recordClientSuccess(client.id);
+    recordAdd(client.id);
     return downloadId;
   } catch (err) {
     if (isClientLevelError(client, send.downloadUrl, err)) throw new DownloadClientUnavailableError(client, err);
@@ -1614,14 +1619,18 @@ export async function grab(
     const size = Number.isFinite(best.size) ? Math.round(best.size) : null;
     // Throttlearr: a limited client decides and places one grab at a time, so two grabs cannot both see the same free slot.
     const gate = getThrottlearrSettings();
-    const placed = await withClientGate(clientIsGated(gate, client.id) ? client.id : null, async () => {
+    // A hand-picked grab that skips the hold has no decision to make under the lock, so it does not wait behind a release pass.
+    const placed = await withClientGate(clientIsGated(gate, client.id) && !bypassesHold(gate, source, !!options.forced) ? client.id : null, async () => {
       let heldReason: string | null = null;
       let priorityClass: PriorityClass = "backlog";
       if (gate.enabled) {
         // A client without limits is not measured; a client that does not answer is counted from AoNarr's own rows.
         const limited = clientIsGated(gate, client.id);
+        // An episode by its own air date; a season pack by the latest episode of the season it covers.
         const airDate = episodeId
           ? (((await db.prepare("SELECT air_date FROM episodes WHERE id = ?").get(episodeId)) as { air_date: string | null } | undefined)?.air_date ?? null)
+          : packSeason != null
+          ? (((await db.prepare("SELECT MAX(air_date) AS air_date FROM episodes WHERE media_item_id = ? AND season_number = ?").get(mediaItem.id, packSeason)) as { air_date: string | null } | undefined)?.air_date ?? null)
           : null;
         priorityClass = classifyGrab({ type: mediaItem.type, episodeId, seasonNumber: packSeason, airDate });
         const measured = limited ? await measureClientState(client, limitsFor(gate, client.id), { strict: false }) : null;

@@ -7,7 +7,7 @@ import { listJobs } from "../jobRegistry.js";
 import { measureClientState, parsePayload, withClientGate, clientIsGated, limitsActive } from "./gate.js";
 import { priorityFor } from "./rules.js";
 import { getThrottlearrSettings, limitsFor } from "./settings.js";
-import { releaseOne, type ReleaseOutcome } from "./release.js";
+import { releaseOne, runAfterGate, type AfterGate, type ReleaseOutcome } from "./release.js";
 
 /**
  * What an admin can do to a grab Throttlearr is holding, and what the Download Clients page and Health say about
@@ -51,7 +51,11 @@ export async function releaseHeldNow(queueId: number): Promise<ReleaseNowResult>
   if (!clientRow) return "client-off";
   const client = downloadClientFromRow(clientRow as any) as DownloadClient;
   if (!client.enabled) return "client-off";
-  const outcome = await withClientGate(client.id, () => releaseOne(client, row));
+  // An admin asked for this one by name: the client's back-off after a recent failure does not stop it. A refused release
+  // is searched for again after the lock is free (that search ends in a grab() that takes the same lock).
+  const after: AfterGate = [];
+  const outcome = await withClientGate(client.id, () => releaseOne(client, row, after, { ignoreBackoff: true }));
+  await runAfterGate(after);
   notifyQueueChanged();
   return outcome;
 }
@@ -80,39 +84,59 @@ export interface ThrottlearrStatus {
   job: { enabled: boolean; running: boolean; lastRunAt: string | null; lastStatus: string | null; lastError: string | null; nextRunAt: string | null } | null;
 }
 
+/** The longest the status page waits for one client to say how busy it is. */
+const STATUS_PROBE_MS = 4000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timed out")), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
+
 export async function throttlearrStatus(): Promise<ThrottlearrStatus> {
   const settings = getThrottlearrSettings();
   const clientRows = (await db.prepare("SELECT * FROM download_clients ORDER BY priority, id").all()) as any[];
   const heldRows = (await db
-    .prepare("SELECT download_client_id AS client, COUNT(*) AS c, MIN(gate_held_at) AS oldest FROM queue WHERE gate_state = 'held' GROUP BY download_client_id")
+    .prepare("SELECT download_client_id AS client, COUNT(*) AS c, MIN(gate_held_at) AS oldest FROM queue WHERE gate_state = 'held' AND status = 'queued' GROUP BY download_client_id")
     .all()) as { client: number | null; c: number | string; oldest: string | null }[];
   const heldBy = new Map(heldRows.map((r) => [Number(r.client), r]));
 
-  const clients: ClientGateStatus[] = [];
-  for (const row of clientRows) {
-    const client = downloadClientFromRow(row) as DownloadClient;
-    const held = heldBy.get(client.id);
-    const limited = clientIsGated(settings, client.id);
-    if (!limited && !held && !limitsActive(limitsFor(settings, client.id))) {
-      // A client with nothing to say about the gate still gets a row, so its panel can be opened.
-      clients.push({ id: client.id, name: client.name, type: client.type, limited: false, held: 0, oldestHeldAt: null, active: null, bytesLeft: null, source: null });
-      continue;
-    }
-    let active: number | null = null;
-    let bytesLeft: number | null = null;
-    let source: ClientGateStatus["source"] = null;
-    if (client.enabled) {
-      try {
-        const m = await measureClientState(client, limitsFor(settings, client.id), { strict: false });
-        active = m.state.active;
-        bytesLeft = m.state.bytesLeft;
-        source = m.source;
-      } catch {
-        /* unreadable: shown as unknown */
+  // Every client is measured at the same time, each given a few seconds: one slow client must not hold up the page.
+  const clients: ClientGateStatus[] = await Promise.all(
+    clientRows.map(async (row): Promise<ClientGateStatus> => {
+      const client = downloadClientFromRow(row) as DownloadClient;
+      const held = heldBy.get(client.id);
+      const limited = clientIsGated(settings, client.id);
+      if (!limited && !held && !limitsActive(limitsFor(settings, client.id))) {
+        // A client with nothing to say about the gate still gets a row, so its panel can be opened.
+        return { id: client.id, name: client.name, type: client.type, limited: false, held: 0, oldestHeldAt: null, active: null, bytesLeft: null, source: null };
       }
-    }
-    clients.push({ id: client.id, name: client.name, type: client.type, limited, held: held ? Number(held.c) : 0, oldestHeldAt: held?.oldest ?? null, active, bytesLeft, source });
-  }
+      let active: number | null = null;
+      let bytesLeft: number | null = null;
+      let source: ClientGateStatus["source"] = null;
+      if (client.enabled) {
+        try {
+          const m = await withTimeout(measureClientState(client, limitsFor(settings, client.id), { strict: false }), STATUS_PROBE_MS);
+          active = m.state.active;
+          bytesLeft = m.state.bytesLeft;
+          source = m.source;
+        } catch {
+          /* unreadable or too slow: shown as unknown */
+        }
+      }
+      return { id: client.id, name: client.name, type: client.type, limited, held: held ? Number(held.c) : 0, oldestHeldAt: held?.oldest ?? null, active, bytesLeft, source };
+    })
+  );
 
   const job = listJobs().find((j) => j.key === "throttlearrRelease");
   return {
@@ -139,14 +163,14 @@ const JOB_STALE_MINUTES = 10;
 
 export async function throttlearrIssues(now: Date = new Date()): Promise<GateIssue[]> {
   const settings = getThrottlearrSettings();
-  const held = (await db.prepare("SELECT COUNT(*) AS c, MIN(gate_held_at) AS oldest FROM queue WHERE gate_state = 'held'").get()) as { c: number | string; oldest: string | null };
+  const held = (await db.prepare("SELECT COUNT(*) AS c, MIN(gate_held_at) AS oldest FROM queue WHERE gate_state = 'held' AND status = 'queued'").get()) as { c: number | string; oldest: string | null };
   const count = Number(held.c);
   if (count === 0) return [];
   const issues: GateIssue[] = [];
 
   const agedHours = Math.max(1, Math.floor(settings.maxHeldAgeHours / 2));
   const aged = Number(
-    ((await db.prepare(`SELECT COUNT(*) AS c FROM queue WHERE gate_state = 'held' AND gate_held_at <= ${nowOffsetHoursExpr(db, -agedHours)}`).get()) as { c: number | string }).c
+    ((await db.prepare(`SELECT COUNT(*) AS c FROM queue WHERE gate_state = 'held' AND status = 'queued' AND gate_held_at <= ${nowOffsetHoursExpr(db, -agedHours)}`).get()) as { c: number | string }).c
   );
   if (aged > 0) {
     issues.push({

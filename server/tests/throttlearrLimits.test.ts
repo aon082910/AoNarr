@@ -23,11 +23,13 @@ let status: typeof import("../src/services/clientStatus.js");
 let release: typeof import("../src/services/throttlearr/release.js");
 let setSetting: (typeof import("../src/services/settingsStore.js"))["setSetting"];
 let mediaItemFromRow: (typeof import("../src/db/mappers.js"))["mediaItemFromRow"];
+let gateModule: typeof import("../src/services/throttlearr/gate.js");
 
 beforeAll(async () => {
   ({ db } = await setupTestDb());
   scheduler = await import("../src/services/scheduler.js");
   status = await import("../src/services/clientStatus.js");
+  gateModule = await import("../src/services/throttlearr/gate.js");
   release = await import("../src/services/throttlearr/release.js");
   ({ setSetting } = await import("../src/services/settingsStore.js"));
   ({ mediaItemFromRow } = await import("../src/db/mappers.js"));
@@ -37,6 +39,7 @@ let sent = 0;
 beforeEach(async () => {
   for (const t of ["history", "queue", "download_client_status", "download_clients", "episodes", "media_items", "blocklist"]) await db.prepare(`DELETE FROM ${t}`).run();
   status.resetClientStatuses();
+  gateModule.resetAddLog();
   sent = 0;
   freeNow = null;
   fake.active.clear();
@@ -133,9 +136,22 @@ describe("Throttlearr limits end to end", () => {
     expect(sent).toBe(2);
 
     await db.prepare("UPDATE queue SET added_at = '2020-01-01 00:00:00' WHERE download_id IS NOT NULL").run(); // an hour passes
+    gateModule.resetAddLog();
     await release.releaseHeldGrabs();
     expect(sent).toBe(4);
     expect(await held()).toHaveLength(1);
+  });
+
+  it("still counts the adds of rows that were imported and deleted within the hour", async () => {
+    const client = await insertClient();
+    setGate({ enabled: true, clients: { [client.id]: { addsPerHour: 2 } } });
+    for (let i = 0; i < 2; i++) await grabMovie(client);
+    expect(sent).toBe(2);
+    await db.prepare("DELETE FROM queue WHERE download_id IS NOT NULL").run(); // imported, rows gone
+    fake.active.clear();
+    await grabMovie(client);
+    expect(sent).toBe(2); // the hour's two adds are still on file
+    expect((await held())[0].gate_reason).toMatch(/took 2 of 2 adds this hour/);
   });
 
   it("holds grabs outside the client's hours and releases them inside", async () => {
@@ -159,15 +175,17 @@ describe("Throttlearr limits end to end", () => {
     const client = await insertClient();
     setGate({ enabled: true, clients: { [client.id]: { minFreeBytes: 500 } } });
     freeNow = 550;
-    await grabMovie(client, 100); // 550 - 0 - 100 = 450 < 500
-    expect(sent).toBe(0);
+    await grabMovie(client, 10); // an idle client takes one job whatever the disk says
+    expect(sent).toBe(1);
+    await grabMovie(client, 100); // 550 - 10 - 100 = 440 < 500
+    expect(sent).toBe(1);
     expect((await held())[0].gate_reason).toMatch(/Free disk would drop under/);
 
     await release.releaseHeldGrabs();
-    expect(sent).toBe(0);
+    expect(sent).toBe(1);
     freeNow = 5000;
     await release.releaseHeldGrabs();
-    expect(sent).toBe(1);
+    expect(sent).toBe(2);
   });
 
   it("never blocks on a disk it cannot read", async () => {

@@ -187,6 +187,8 @@ export default function Activity() {
   const [downloadClients, setDownloadClients] = useState<DownloadClient[]>([]);
   const [retrying, setRetrying] = useState<number | null>(null);
   const [manualImportFor, setManualImportFor] = useState<QueueItem | null>(null);
+  // Held grabs whose "Release now" is in flight, so a double click sends one request.
+  const [releasingNow, setReleasingNow] = useState<Set<number>>(new Set());
   const [qualities, setQualities] = useState<Quality[]>([]);
   const [overrideQuality, setOverrideQuality] = useState("");
   const [candidates, setCandidates] = useState<ImportCandidate[] | null>(null);
@@ -456,11 +458,18 @@ export default function Activity() {
   }
 
   async function releaseNow(id: number) {
+    if (releasingNow.has(id)) return;
+    setReleasingNow((prev) => new Set(prev).add(id));
     try {
       await api.post(`/activity/queue/${id}/release-now`, {});
     } catch (e) {
       notify.error((e as Error).message);
     } finally {
+      setReleasingNow((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
       load();
     }
   }
@@ -881,7 +890,7 @@ export default function Activity() {
                   <td>{q.size ? formatSize(q.size) : "-"}</td>
                   <td className="toolbar">
                     {q.gateState === "held" && (
-                      <button type="button" className="icon-button" onClick={() => releaseNow(q.id)} title="Release now (ignores the client's limits)" aria-label="Release now">
+                      <button type="button" className="icon-button" disabled={releasingNow.has(q.id)} onClick={() => releaseNow(q.id)} title="Release now (ignores the client's limits)" aria-label="Release now">
                         <DownloadIcon />
                       </button>
                     )}

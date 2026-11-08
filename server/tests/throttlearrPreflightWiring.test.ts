@@ -156,11 +156,11 @@ describe("NZB inspection on the way to the client", () => {
     expect((await db.prepare("SELECT COUNT(*) AS c FROM queue").get()) as any).toMatchObject({ c: 0 });
   });
 
-  it("refuses a password and a program", async () => {
+  it("refuses a program, but not a password the NZB brings (the client unpacks with it)", async () => {
     setGate({ enabled: true });
     const client = await insertClient();
-    adapterServing(() => nzb([{ name: "Film.mkv", bytes: 4 * GB }], '<meta type="password">pw</meta>'));
-    await expect(grabUsenet(client)).rejects.toThrow(/password/);
+    adapterServing(() => nzb([{ name: "Film.2020.1080p.mkv", bytes: 4 * GB }], '<meta type="password">pw</meta>'));
+    await expect(grabUsenet(client)).resolves.toBeDefined();
     adapterServing(() => nzb([{ name: "Film.mkv", bytes: 4 * GB }, { name: "Play.exe", bytes: 100_000 }]));
     await expect(grabUsenet(client)).rejects.toThrow(/program/);
   });

@@ -270,7 +270,7 @@ systemRouter.get(
       ).c
     );
     // Grabs Throttlearr keeps back until their download client has room: counted apart from the queue.
-    const heldCount = Number(((await db.prepare("SELECT COUNT(*) as c FROM queue WHERE gate_state = 'held'").get()) as { c: number | string }).c);
+    const heldCount = Number(((await db.prepare("SELECT COUNT(*) as c FROM queue WHERE gate_state = 'held' AND status = 'queued'").get()) as { c: number | string }).c);
 
     const indexerCount = Number(
       ((await db.prepare("SELECT COUNT(*) as c FROM indexers WHERE enabled = 1").get()) as { c: number }).c

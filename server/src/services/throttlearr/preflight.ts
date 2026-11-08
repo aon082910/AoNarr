@@ -31,6 +31,7 @@ export interface PreflightRejection {
 /** Where the title ends and the release tags begin: the year, an episode marker, a resolution or a source. A word like
  * "sample" or "trailer" counts as junk only after this point, so a film called "The Trailer" is not refused. */
 const BOUNDARY = /(?:^|[^a-z0-9])(?:(?:19|20)\d{2}|s\d{1,2}e\d{1,3}|(?:2160|1080|720|480)p|blu-?ray|web-?dl|web-?rip|hdtv|dvd-?rip|brrip)(?![a-z0-9])/i;
+const RELEASE_TAG = /(?:^|[^a-z0-9])(?:(?:2160|1080|720|480)p|blu-?ray|web-?dl|web-?rip|hdtv|dvd-?rip|brrip)(?![a-z0-9])/i;
 const JUNK_AFTER_TITLE: { re: RegExp; label: string }[] = [
   { re: /(?:^|[^a-z0-9])sample(?![a-z0-9])/i, label: "a sample clip" },
   { re: /(?:^|[^a-z0-9])(?:trailer|teaser)s?(?![a-z0-9])/i, label: "a trailer" },
@@ -38,10 +39,12 @@ const JUNK_AFTER_TITLE: { re: RegExp; label: string }[] = [
   { re: /(?:^|[^a-z0-9])behind[ ._-]the[ ._-]scenes(?![a-z0-9])/i, label: "behind-the-scenes extras" },
 ];
 const JUNK_ANYWHERE: { re: RegExp; label: string }[] = [
-  { re: /\.nfo(?![a-z0-9])/i, label: "an .nfo text file" },
+  // A file name ("Movie.nfo"), not the scene tag in "Movie.2020.1080p.READ.NFO-GRP", which is a whole release.
+  { re: /\.nfo(?:\s*\(\d+\)|\.\d+)?$/i, label: "an .nfo text file" },
   { re: /\(incomplete\)|\[incomplete\]|^incomplete[ ._-]/i, label: "marked incomplete" },
   { re: /(?<![a-z0-9])passworded(?![a-z0-9])/i, label: "passworded" },
   // A file name, not a release: an archive, an installer or a disc image as the whole name. "[NO.RAR]" ends in a bracket.
+  // (A real disc release is named "Movie.2020.BluRay.ISO-GRP", which does not end in the extension.)
   { re: /\.(?:iso|exe|scr|zip|rar)$/i, label: "a file, not a release" },
 ];
 
@@ -52,7 +55,14 @@ export function junkNameRejection(title: string): PreflightRejection | null {
   }
   const boundary = BOUNDARY.exec(title);
   if (!boundary) return null;
-  const tags = title.slice(boundary.index + boundary[0].length);
+  let tags = title.slice(boundary.index + boundary[0].length);
+  // After an episode marker comes the episode's own title ("Show.S02E05.The.Trailer.1080p"), which may hold any word. The
+  // junk words are read only after the first resolution or source tag; a name with none is not judged.
+  if (/s\d{1,2}e\d{1,3}/i.test(boundary[0])) {
+    const tag = RELEASE_TAG.exec(tags);
+    if (!tag) return null;
+    tags = tags.slice(tag.index + tag[0].length);
+  }
   for (const j of JUNK_AFTER_TITLE) {
     if (j.re.test(tags)) return { code: "junk-name", reason: `Its name says it is ${j.label}` };
   }
@@ -107,8 +117,8 @@ export function preflightRejection(
     if (junk) return junk;
   }
   if (p.sizeFloor && size != null && size > 0 && ctx.runtime) {
-    const floor = sizeFloorBytes(parsed.resolution, releaseRuntimeMinutes(parsed, ctx.runtime));
-    if (size < floor) {
+    const floor = floorBytesFor(parsed.resolution, parsed, ctx.runtime);
+    if (floor > 0 && size < floor) {
       return { code: "size-floor", reason: `It is ${Math.round(size / 1e6)} MB for ${parsed.resolution ?? "its quality"}, under the ${Math.round(floor / 1e6)} MB floor` };
     }
   }
@@ -120,8 +130,14 @@ export function preflightRejection(
 /** Never inspect more than this much text; a real NZB of a large release is a few megabytes. */
 const MAX_INSPECT_CHARS = 64 * 1024 * 1024;
 
-/** Samples under this are never a whole film or episode, whatever the floor says. */
-export const SAMPLE_MAX_BYTES = 70 * 1_000_000;
+export { SAMPLE_MAX_BYTES } from "./nzbInspect.js";
+
+/** The size floor for what a release covers, or 0 when the runtime is not known well enough to judge: an episode with no
+ * runtime on file may be an 11-minute cartoon, and the 45-minute default would refuse it. */
+function floorBytesFor(resolution: string | null, parsed: Parameters<typeof releaseRuntimeMinutes>[0], runtime: RuntimeContext): number {
+  if (runtime.episodic && !(runtime.runtimeMinutes != null && runtime.runtimeMinutes > 0)) return 0;
+  return sizeFloorBytes(resolution, releaseRuntimeMinutes(parsed, runtime));
+}
 
 /**
  * The inspector handed to a download client adapter with the release: given the NZB's bytes it returns the reason to
@@ -138,8 +154,8 @@ export async function nzbInspectorFor(
   if (release.protocol !== "usenet" || !usesQualityTiers(mediaType)) return undefined;
   const parsed = parseReleaseTitle(release.title);
   const runtime = await runtimeContextFor(mediaItemId, mediaType, { always: true });
-  const floor = settings.preflight.sizeFloor && runtime ? sizeFloorBytes(parsed.resolution, releaseRuntimeMinutes(parsed, runtime)) : 0;
-  const minPayloadBytes = Math.max(SAMPLE_MAX_BYTES, floor);
+  const floor = settings.preflight.sizeFloor && runtime ? floorBytesFor(parsed.resolution, parsed, runtime) : 0;
+  const minPayloadBytes = floor;
   return (nzb: Buffer) => {
     if (nzb.length > MAX_INSPECT_CHARS) return null; // too big to read here: left to the client
     const verdict = nzbVerdict(parseNzb(nzb.toString("utf-8")), { minPayloadBytes });

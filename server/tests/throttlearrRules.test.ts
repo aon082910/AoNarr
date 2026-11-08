@@ -113,9 +113,11 @@ describe("admit", () => {
 
   it("keeps free disk above the minimum, counting what the client still has to write", () => {
     const l = limits({ minFreeBytes: 100e9 });
-    expect(ok(l, state({ freeBytes: 500e9, bytesLeft: 200e9 }), cand(1, { size: 100e9 })).ok).toBe(true); // 500 - 200 - 100 = 200
-    expect(ok(l, state({ freeBytes: 500e9, bytesLeft: 350e9 }), cand(1, { size: 100e9 }))).toMatchObject({ ok: false, kind: "disk" });
-    expect(ok(l, state({ freeBytes: null, bytesLeft: 350e9 }), cand(1, { size: 100e9 })).ok).toBe(true); // unknown never blocks
+    expect(ok(l, state({ active: 1, freeBytes: 500e9, bytesLeft: 200e9 }), cand(1, { size: 100e9 })).ok).toBe(true); // 500 - 200 - 100 = 200
+    expect(ok(l, state({ active: 1, freeBytes: 500e9, bytesLeft: 350e9 }), cand(1, { size: 100e9 }))).toMatchObject({ ok: false, kind: "disk" });
+    expect(ok(l, state({ active: 1, freeBytes: null, bytesLeft: 350e9 }), cand(1, { size: 100e9 })).ok).toBe(true); // unknown never blocks
+    // An idle client takes one job whatever the disk says: the disk read is AoNarr's, not always the client's.
+    expect(ok(l, state({ active: 0, freeBytes: 120e9, bytesLeft: 0 }), cand(1, { size: 100e9 })).ok).toBe(true);
   });
 
   it("waits outside the hours, and says so", () => {
@@ -164,6 +166,16 @@ describe("selectReleases", () => {
   it("counts what the pass has already added against the adds per hour", () => {
     const r = run([cand(1), cand(2), cand(3)], limits({ addsPerHour: 60 }), state({ addsLastHour: 58 }));
     expect(r.selected.map((c) => c.id)).toEqual([1, 2]);
+  });
+
+  it("gives each grab that stays held its own reason, not the first one that was met", () => {
+    const p = { ...P, backlogOnlyAtNight: true };
+    // An old episode waits for the night (its own reason); the movie behind it waits for the job count.
+    const r = run([cand(1, { priorityClass: "backlog" }), cand(2, { priorityClass: "movie" }), cand(3, { priorityClass: "movie" })], limits({ maxActive: 1 }), state({ active: 1 }), { priority: p });
+    expect(r.selected).toEqual([]);
+    expect(r.waiting.get(1)).toMatch(/Old episodes wait for the night/);
+    expect(r.waiting.get(2)).toMatch(/Seedbox has 1 of 1 jobs/);
+    expect(r.waiting.get(3)).toMatch(/Seedbox has 1 of 1 jobs/);
   });
 
   it("skips a title that has its share and goes on to the next", () => {

@@ -415,7 +415,7 @@ export async function createApp(): Promise<Express> {
   app.use("/api/media", mediaRouter);
   // A saved change to what the health checks read drops the kept report (see middleware/healthStale.ts).
   app.use(
-    ["/api/indexers", "/api/download-clients", "/api/root-folders", "/api/import-lists", "/api/remote-path-mappings", "/api/settings", "/api/notifications"],
+    ["/api/indexers", "/api/download-clients", "/api/root-folders", "/api/import-lists", "/api/remote-path-mappings", "/api/settings", "/api/notifications", "/api/throttlearr"],
     healthStaleOnChange
   );
   app.use("/api/indexers", indexersRouter);

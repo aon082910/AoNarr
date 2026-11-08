@@ -80,12 +80,38 @@ export async function heldCount(clientId: number): Promise<number> {
   return Number(row.c);
 }
 
-/** Adds to the client in the last hour: its queue rows that have a download id, whatever became of them. */
-export async function addsLastHour(clientId: number): Promise<number> {
+/** When each add was made, by client, kept in memory: a queue row is deleted once its download is imported, so counting rows
+ * alone forgets the adds of a fast client (a cached debrid download imports in minutes) long before the hour is over. */
+const addLog = new Map<number, number[]>();
+const HOUR_MS = 3_600_000;
+
+/** Notes that a download was just added to the client. */
+export function recordAdd(clientId: number, now: number = Date.now()): void {
+  const log = (addLog.get(clientId) ?? []).filter((t) => now - t < HOUR_MS);
+  log.push(now);
+  addLog.set(clientId, log);
+}
+
+/** Test-only: forgets the log. */
+export function resetAddLog(): void {
+  addLog.clear();
+}
+
+/**
+ * Adds to the client in the last hour: the larger of what this process has sent and the queue rows that have a download id
+ * (the rows cover a restart, the log covers the rows that were imported and deleted).
+ */
+export async function addsLastHour(clientId: number, now: number = Date.now()): Promise<number> {
   const row = (await db
     .prepare(`SELECT COUNT(*) AS c FROM queue WHERE download_client_id = ? AND download_id IS NOT NULL AND added_at >= ${nowOffsetHoursExpr(db, -1)}`)
     .get(clientId)) as { c: number | string };
-  return Number(row.c);
+  const logged = (addLog.get(clientId) ?? []).filter((t) => now - t < HOUR_MS).length;
+  return Math.max(Number(row.c), logged);
+}
+
+/** Whether a grab from this source skips the hold (a hand-picked or forced release, with the setting on). */
+export function bypassesHold(settings: ThrottlearrSettings, source: string, forced: boolean): boolean {
+  return settings.enabled && settings.bypassManual && (source === "interactive" || forced);
 }
 
 export interface MeasuredState {
@@ -161,7 +187,7 @@ export function evaluateHold(input: HoldInput): HoldVerdict {
   const { settings, client, source, forced, state, heldAhead, candidate, now } = input;
   if (!settings.enabled) return { hold: false };
   // A grab someone chose by hand is wanted now.
-  if (settings.bypassManual && (source === "interactive" || forced)) return { hold: false };
+  if (bypassesHold(settings, source, forced)) return { hold: false };
   if (settings.holdAll) return { hold: true, reason: "All grabs are being held" };
   const limits = limitsFor(settings, client.id);
   if (!limitsActive(limits)) return { hold: false };

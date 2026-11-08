@@ -86,6 +86,19 @@ describe("Throttlearr: settings and status routes", () => {
     expect((await get("/api/throttlearr/settings")).body.clients["7"].maxActive).toBe(3);
   });
 
+  it("changes only what a partial body names, and refuses a body with no setting in it", async () => {
+    await put("/api/throttlearr/settings", { ...(await get("/api/throttlearr/settings")).body, enabled: true, holdAll: true, clients: { "7": { maxActive: 3 } }, preflight: { enabled: true, junkNames: false, sizeFloor: true, inspectNzb: true, strictIdentity: false } });
+    const partial = await put("/api/throttlearr/settings", { dryRun: true, preflight: { strictIdentity: true } });
+    expect(partial.status).toBe(200);
+    expect(partial.body).toMatchObject({ enabled: true, holdAll: true, dryRun: true });
+    expect(partial.body.clients["7"].maxActive).toBe(3);
+    expect(partial.body.preflight).toEqual({ enabled: true, junkNames: false, sizeFloor: true, inspectNzb: true, strictIdentity: true });
+
+    expect((await put("/api/throttlearr/settings", {})).status).toBe(400);
+    expect((await put("/api/throttlearr/settings", { colour: "red" })).status).toBe(400);
+    expect((await get("/api/throttlearr/settings")).body.clients["7"].maxActive).toBe(3); // nothing was reset
+  });
+
   it("refuses a body that is not an object, and needs an admin", async () => {
     expect((await put("/api/throttlearr/settings", [1, 2])).status).toBe(400);
     expect((await request(app).get("/api/throttlearr/settings")).status).toBe(401);
@@ -200,6 +213,25 @@ describe("Throttlearr: actions on a held grab", () => {
     expect(res.status).toBe(204);
     expect(adapter.removeDownload).not.toHaveBeenCalled();
     expect(await heldRows()).toHaveLength(0);
+  });
+});
+
+describe("Throttlearr: deleting a download client", () => {
+  it("takes its held grabs out of the gate with the failure, so nothing counts or releases them", async () => {
+    const client = await insertClient();
+    setGate({ enabled: true, clients: { [client.id]: { maxActive: 1 } } });
+    await grabMovie(client);
+    await grabMovie(client);
+    await grabMovie(client);
+    expect(await heldRows()).toHaveLength(2);
+
+    const res = await authed(request(app).delete(`/api/download-clients/${client.id}`));
+    expect(res.status).toBe(204);
+    const all = await rows();
+    expect(all.every((r) => r.status === "failed" && r.gate_state === null)).toBe(true);
+    expect((await get("/api/system/status")).body.heldCount).toBe(0);
+    expect((await get("/api/throttlearr/status")).body.held).toBe(0);
+    expect(await actions.throttlearrIssues()).toEqual([]);
   });
 });
 

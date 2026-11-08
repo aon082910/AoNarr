@@ -83,12 +83,16 @@ async function runRelease(now: Date): Promise<ReleaseSummary> {
   ).map((r) => Number(r.id));
 
   for (const clientId of clientIds) {
+    // What must wait until the client's lock is free (a refused release is searched for again, and that search ends in a
+    // grab() that takes the same lock).
+    const after: AfterGate = [];
     await withClientGate(clientId, async () => {
-      const one = await releaseForClient(clientId, settings, now);
+      const one = await releaseForClient(clientId, settings, now, after);
       summary.released += one.released;
       summary.failed += one.failed;
       if (one.skipped) summary.skippedClients++;
     });
+    await runAfterGate(after);
   }
   if (summary.released > 0 || summary.expired > 0 || summary.failed > 0) notifyQueueChanged();
   return summary;
@@ -97,7 +101,7 @@ async function runRelease(now: Date): Promise<ReleaseSummary> {
 async function expireOldHeldRows(settings: ThrottlearrSettings): Promise<number> {
   if (!settings.enabled) return 0;
   const rows = (await db
-    .prepare(`SELECT * FROM queue WHERE gate_state = 'held' AND gate_held_at IS NOT NULL AND gate_held_at <= ${nowOffsetHoursExpr(db, -settings.maxHeldAgeHours)}`)
+    .prepare(`SELECT * FROM queue WHERE gate_state = 'held' AND status = 'queued' AND gate_held_at IS NOT NULL AND gate_held_at <= ${nowOffsetHoursExpr(db, -settings.maxHeldAgeHours)}`)
     .all()) as any[];
   let expired = 0;
   for (const row of rows) {
@@ -112,7 +116,21 @@ async function expireOldHeldRows(settings: ThrottlearrSettings): Promise<number>
   return expired;
 }
 
-async function releaseForClient(clientId: number, settings: ThrottlearrSettings, now: Date): Promise<{ released: number; failed: number; skipped: boolean }> {
+/** Work to do once the client's lock is released. */
+export type AfterGate = Array<() => Promise<void>>;
+
+/** Runs the work left for after the lock; one that fails is logged and the rest still run. */
+export async function runAfterGate(after: AfterGate): Promise<void> {
+  for (const work of after) {
+    try {
+      await work();
+    } catch (err) {
+      log.warn("[throttlearr] could not finish a failed release:", (err as Error).message);
+    }
+  }
+}
+
+async function releaseForClient(clientId: number, settings: ThrottlearrSettings, now: Date, after: AfterGate): Promise<{ released: number; failed: number; skipped: boolean }> {
   const out = { released: 0, failed: 0, skipped: false };
   const clientRow = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(clientId);
   if (!clientRow) return out; // deleted: its rows were failed with it
@@ -154,16 +172,14 @@ async function releaseForClient(clientId: number, settings: ThrottlearrSettings,
     const pick = selectReleases(candidates, { clientName: client.name, limits, state, priority: settings.priority, perTitleLimit: settings.perTitleLimit, now });
     const chosen = new Set(pick.selected.map((c) => c.id));
     toSend = held.filter((r) => chosen.has(Number(r.id)));
-    // Say why the rest are waiting (written only when it changes, so a quiet minute writes nothing).
-    if (pick.blockedBy?.reason) {
-      await db
-        .prepare("UPDATE queue SET gate_reason = ? WHERE download_client_id = ? AND gate_state = 'held' AND (gate_reason IS NULL OR gate_reason <> ?)")
-        .run(pick.blockedBy.reason, client.id, pick.blockedBy.reason);
+    // Say why each of the rest is waiting (written only when it changes, so a quiet minute writes nothing).
+    for (const [id, reason] of pick.waiting) {
+      await db.prepare("UPDATE queue SET gate_reason = ? WHERE id = ? AND gate_state = 'held' AND (gate_reason IS NULL OR gate_reason <> ?)").run(reason, id, reason);
     }
   }
 
   for (const row of toSend) {
-    const result = await releaseOne(client, row);
+    const result = await releaseOne(client, row, after);
     if (result === "released") out.released++;
     else if (result === "failed") out.failed++;
     else if (result === "client-down") {
@@ -176,14 +192,14 @@ async function releaseForClient(clientId: number, settings: ThrottlearrSettings,
 
 export type ReleaseOutcome = "released" | "failed" | "client-down" | "gone";
 
-export async function releaseOne(client: DownloadClient, row: any): Promise<ReleaseOutcome> {
+export async function releaseOne(client: DownloadClient, row: any, after: AfterGate, opts: { ignoreBackoff?: boolean } = {}): Promise<ReleaseOutcome> {
   // Claim the row. Another pass, or a click on "Remove", may have taken it since the list was read.
   const claimed = await db.prepare("UPDATE queue SET gate_state = 'releasing' WHERE id = ? AND gate_state = 'held'").run(row.id);
   if (claimed.changes === 0) return "gone";
 
   const payload = parsePayload(row.gate_payload);
   if (!payload) {
-    await failRow(row, "Throttlearr could not read the held grab", { releaseAtFault: false });
+    await failRow(row, "Throttlearr could not read the held grab", { releaseAtFault: false }, after);
     return "failed";
   }
 
@@ -197,6 +213,7 @@ export async function releaseOne(client: DownloadClient, row: any): Promise<Rele
         protocol: payload.release.protocol,
         indexerId: payload.release.indexerId,
         category: payload.category,
+        ignoreBackoff: opts.ignoreBackoff,
         inspectNzb:
           payload.source === "interactive"
             ? undefined
@@ -213,64 +230,90 @@ export async function releaseOne(client: DownloadClient, row: any): Promise<Rele
     }
     const reason = err instanceof ReleaseRefusedError || err instanceof Error ? err.message : String(err);
     // The client refused this release (a dead link, an invalid NZB): blocklist it and search for the next one.
-    await failRow(row, reason, { releaseAtFault: true });
+    await failRow(row, reason, { releaseAtFault: true }, after);
     return "failed";
   }
 
-  const duplicate = await db
-    .prepare("SELECT id FROM queue WHERE download_client_id = ? AND download_id = ? AND status NOT IN ('failed') AND id <> ?")
-    .get(client.id, downloadId, row.id);
-  if (duplicate) {
-    // The client already holds this download for another queue row: this one adds nothing.
-    log.info(`[throttlearr] "${row.title}" is already being downloaded by "${client.name}" for another queue entry`);
-    await db.prepare("DELETE FROM queue WHERE id = ?").run(row.id);
-    return "gone";
+  const best = payload.release;
+  try {
+    const duplicate = await db
+      .prepare("SELECT id FROM queue WHERE download_client_id = ? AND download_id = ? AND status NOT IN ('failed') AND id <> ?")
+      .get(client.id, downloadId, row.id);
+    if (duplicate) {
+      // The client already holds this download for another queue row: this one adds nothing.
+      log.info(`[throttlearr] "${row.title}" is already being downloaded by "${client.name}" for another queue entry`);
+      await db.prepare("DELETE FROM queue WHERE id = ?").run(row.id);
+      return "gone";
+    }
+
+    const facts = {
+      source: payload.source,
+      quality: payload.quality,
+      client: { id: client.id, name: client.name },
+      forced: payload.forced,
+      releaseGroup: payload.releaseGroup,
+      downloadId,
+      heldForSeconds: heldSeconds(row),
+    };
+    let stillThere = true;
+    await db.transaction(async () => {
+      const moved = await db
+        .prepare(
+          `UPDATE queue SET download_id = ?, gate_state = 'released', gate_reason = NULL, added_at = ${nowExpr(db)}, updated_at = ${nowExpr(db)}, last_progress_at = NULL
+           WHERE id = ? AND gate_state = 'releasing'`
+        )
+        .run(downloadId, row.id);
+      // An admin removed the row while the grab was on its way: nothing tracks it now, so no history either.
+      if (moved.changes === 0) {
+        stillThere = false;
+        return;
+      }
+      if (payload.targetSubItemIds.length > 0) {
+        for (const id of payload.targetSubItemIds) await recordGrabbed(row.media_item_id, { episodeId: null, subItemId: id, seasonNumber: null }, best, facts);
+      } else {
+        await recordGrabbed(row.media_item_id, payload.history, best, facts);
+      }
+    });
+    if (!stillThere) {
+      // The client has the download but AoNarr no longer wants it: take it back (files too, nothing was imported).
+      try {
+        await getDownloadClientAdapter(client.type).removeDownload?.(client, downloadId, true);
+      } catch (err) {
+        log.warn(`[throttlearr] could not take "${best.title}" back from "${client.name}":`, (err as Error).message);
+      }
+      log.info(`[throttlearr] "${best.title}" was removed while it was being sent; taken back from "${client.name}"`);
+      return "gone";
+    }
+  } catch (err) {
+    // The client has the download but recording it failed (a database error): the row must still lead to it, or it would sit
+    // in "releasing" with a download nothing tracks, and be sent a second time after a restart.
+    return await trackAfterFailedRecord(client, row, downloadId, best.title, err);
   }
 
   const mediaRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(row.media_item_id)) as any;
-  const best = payload.release;
-  const facts = {
-    source: payload.source,
-    quality: payload.quality,
-    client: { id: client.id, name: client.name },
-    forced: payload.forced,
-    releaseGroup: payload.releaseGroup,
-    downloadId,
-    heldForSeconds: heldSeconds(row),
-  };
-  let stillThere = true;
-  await db.transaction(async () => {
-    const moved = await db
-      .prepare(
-        `UPDATE queue SET download_id = ?, gate_state = 'released', gate_reason = NULL, added_at = ${nowExpr(db)}, updated_at = ${nowExpr(db)}, last_progress_at = NULL
-         WHERE id = ? AND gate_state = 'releasing'`
-      )
-      .run(downloadId, row.id);
-    // An admin removed the row while the grab was on its way: nothing tracks it now, so no history either.
-    if (moved.changes === 0) {
-      stillThere = false;
-      return;
-    }
-    if (payload.targetSubItemIds.length > 0) {
-      for (const id of payload.targetSubItemIds) await recordGrabbed(row.media_item_id, { episodeId: null, subItemId: id, seasonNumber: null }, best, facts);
-    } else {
-      await recordGrabbed(row.media_item_id, payload.history, best, facts);
-    }
-  });
-  if (!stillThere) {
-    // The client has the download but AoNarr no longer wants it: take it back (files too, nothing was imported).
-    try {
-      await getDownloadClientAdapter(client.type).removeDownload?.(client, downloadId, true);
-    } catch (err) {
-      log.warn(`[throttlearr] could not take "${best.title}" back from "${client.name}":`, (err as Error).message);
-    }
-    log.info(`[throttlearr] "${best.title}" was removed while it was being sent; taken back from "${client.name}"`);
-    return "gone";
-  }
-
   await notifyReleased(client, row, payload, mediaRow, downloadId);
   log.info(`[throttlearr] released "${best.title}" to "${client.name}"`);
   return "released";
+}
+
+/** After a send, writing the result failed: save the least that keeps the download tracked, else take it back and hold the grab. */
+async function trackAfterFailedRecord(client: DownloadClient, row: any, downloadId: string, title: string, cause: unknown): Promise<ReleaseOutcome> {
+  log.error(`[throttlearr] "${title}" was sent to "${client.name}" but recording it failed:`, (cause as Error).message);
+  try {
+    await db
+      .prepare(`UPDATE queue SET download_id = ?, gate_state = 'released', gate_reason = NULL, added_at = ${nowExpr(db)}, updated_at = ${nowExpr(db)}, last_progress_at = NULL WHERE id = ? AND gate_state = 'releasing'`)
+      .run(downloadId, row.id);
+    return "released";
+  } catch (err) {
+    log.error(`[throttlearr] could not track "${title}" either; taking it back from "${client.name}":`, (err as Error).message);
+    try {
+      await getDownloadClientAdapter(client.type).removeDownload?.(client, downloadId, true);
+    } catch {
+      /* the next pass sends it again; the client drops a duplicate add */
+    }
+    await db.prepare("UPDATE queue SET gate_state = 'held', gate_reason = ? WHERE id = ? AND gate_state = 'releasing'").run("Could not be recorded; waiting to be sent again", row.id).catch(() => undefined);
+    return "client-down";
+  }
 }
 
 /** How long the row waited at the gate, in seconds (the hold time is stored as a UTC "YYYY-MM-DD HH:MM:SS" text). */
@@ -280,9 +323,11 @@ function heldSeconds(row: any, now: Date = new Date()): number | null {
   return Number.isFinite(since) ? Math.max(0, (now.getTime() - since) / 1000) : null;
 }
 
-async function failRow(row: any, reason: string, opts: { releaseAtFault: boolean }): Promise<void> {
+async function failRow(row: any, reason: string, opts: { releaseAtFault: boolean }, after: AfterGate): Promise<void> {
   await db.prepare(`UPDATE queue SET status = 'failed', gate_state = NULL, updated_at = ${nowExpr(db)} WHERE id = ?`).run(row.id);
-  await retryFailedGrab(queueItemFromRow({ ...row, status: "failed", gate_state: null }) as any, reason, opts);
+  // The blocklist entry and the search for another release come after the lock is released: that search ends in grab(),
+  // which waits for this same lock.
+  after.push(() => retryFailedGrab(queueItemFromRow({ ...row, status: "failed", gate_state: null }) as any, reason, opts));
 }
 
 async function notifyReleased(client: DownloadClient, row: any, payload: HeldPayload, mediaRow: any, downloadId: string): Promise<void> {

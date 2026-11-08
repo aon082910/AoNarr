@@ -68,9 +68,24 @@ export default function ThrottlearrPanel() {
   const [status, setStatus] = useState<Status | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [statusFailed, setStatusFailed] = useState(false);
+  // The client list when the status call fails, so the limits can still be edited.
+  const [plainClients, setPlainClients] = useState<{ id: number; name: string; type: string }[]>([]);
+  // The max-age box keeps what is typed; it is read as a number when the box is left.
+  const [maxAgeText, setMaxAgeText] = useState<string | null>(null);
 
   const loadStatus = useCallback(() => {
-    api.get<Status>("/throttlearr/status").then(setStatus).catch(() => setStatus(null));
+    api
+      .get<Status>("/throttlearr/status")
+      .then((s) => {
+        setStatus(s);
+        setStatusFailed(false);
+      })
+      .catch(() => {
+        setStatus(null);
+        setStatusFailed(true);
+        api.get<{ id: number; name: string; type: string }[]>("/download-clients").then(setPlainClients).catch(() => setPlainClients([]));
+      });
   }, []);
 
   useEffect(() => {
@@ -85,6 +100,8 @@ export default function ThrottlearrPanel() {
     setDirty(true);
   }
   const limitsOf = (id: number): ClientLimits => settings!.clients[String(id)] ?? NO_LIMITS;
+  const shownClients: ClientGateStatus[] =
+    status?.clients ?? plainClients.map((c) => ({ ...c, limited: false, held: 0, oldestHeldAt: null, active: null, bytesLeft: null, source: null }));
   function setLimits(id: number, patch: Partial<ClientLimits>) {
     change({ ...settings!, clients: { ...settings!.clients, [String(id)]: { ...limitsOf(id), ...patch } } });
   }
@@ -135,6 +152,7 @@ export default function ThrottlearrPanel() {
         </p>
       )}
       {status?.job?.lastError && <p style={{ color: "var(--danger)" }}>The release job's last run failed: {status.job.lastError}</p>}
+      {statusFailed && <p style={{ color: "var(--danger)" }}>The current load of the clients could not be read. The limits below can still be changed.</p>}
 
       <div className="form-panel">
         {check("Use Throttlearr", settings.enabled, (v) => change({ ...settings, enabled: v }), "Off: every grab goes to its download client at once.")}
@@ -150,8 +168,14 @@ export default function ThrottlearrPanel() {
               type="number"
               min={1}
               max={720}
-              value={settings.maxHeldAgeHours}
-              onChange={(e) => change({ ...settings, maxHeldAgeHours: Number(e.target.value) || 72 })}
+              value={maxAgeText ?? String(settings.maxHeldAgeHours)}
+              onChange={(e) => setMaxAgeText(e.target.value)}
+              onBlur={() => {
+                if (maxAgeText === null) return;
+                const n = Math.round(Number(maxAgeText));
+                setMaxAgeText(null);
+                if (Number.isFinite(n) && n >= 1 && n !== settings.maxHeldAgeHours) change({ ...settings, maxHeldAgeHours: Math.min(720, n) });
+              }}
               style={{ maxWidth: 120 }}
             />
           </div>
@@ -187,20 +211,24 @@ export default function ThrottlearrPanel() {
           {check("Run the checks", settings.preflight.enabled, (v) => change({ ...settings, preflight: { ...settings.preflight, enabled: v } }))}
           {check("Refuse samples, trailers, extras, .nfo files, incomplete and passworded names", settings.preflight.junkNames, (v) => change({ ...settings, preflight: { ...settings.preflight, junkNames: v } }))}
           {check("Refuse a release far smaller than its quality and runtime need", settings.preflight.sizeFloor, (v) => change({ ...settings, preflight: { ...settings.preflight, sizeFloor: v } }))}
-          {check("Read the NZB's file list and refuse one with no video, a password or a program", settings.preflight.inspectNzb, (v) => change({ ...settings, preflight: { ...settings.preflight, inspectNzb: v } }))}
-          {check(
-            "Judge a release by its name only, not by the id its indexer gives it",
-            settings.preflight.strictIdentity,
-            (v) => change({ ...settings, preflight: { ...settings.preflight, strictIdentity: v } }),
-            "Stops indexers vouching for the wrong film. A release under a title AoNarr has no alias for (a foreign title) is lost."
-          )}
+          {check("Read the NZB's file list and refuse one with no video, a program, or too little video", settings.preflight.inspectNzb, (v) => change({ ...settings, preflight: { ...settings.preflight, inspectNzb: v } }), "Done for SABnzbd and NZBGet only; TorBox and watch-folder clients fetch the NZB themselves and are not checked.")}
+          <div style={settings.preflight.enabled ? undefined : { opacity: 0.5 }}>
+            {check(
+              "Judge a release by its name only, not by the id its indexer gives it",
+              settings.preflight.strictIdentity,
+              (v) => change({ ...settings, preflight: { ...settings.preflight, strictIdentity: v } }),
+              settings.preflight.enabled
+                ? "Stops indexers vouching for the wrong film. A release under a title AoNarr has no alias for (a foreign title) is lost."
+                : "Works only while \"Run the checks\" is on."
+            )}
+          </div>
         </details>
       </div>
 
       <h3>Limits per download client</h3>
       <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>Leave a box empty for no limit. A client with no limit at all is never held.</p>
-      {(status?.clients ?? []).length === 0 && <p className="empty">No download clients yet.</p>}
-      {(status?.clients ?? []).map((c) => {
+      {shownClients.length === 0 && !statusFailed && <p className="empty">No download clients yet.</p>}
+      {shownClients.map((c) => {
         const l = limitsOf(c.id);
         return (
           <div key={c.id} className="form-panel" style={{ marginBottom: 12 }}>
@@ -239,15 +267,18 @@ export default function ThrottlearrPanel() {
                       <input
                         type="checkbox"
                         checked={w.days.includes(day)}
-                        onChange={(e) => setWindow(c.id, i, { days: e.target.checked ? [...w.days, day].sort() : w.days.filter((x) => x !== day) })}
+                        onChange={(e) => {
+                          const days = e.target.checked ? [...w.days, day].sort() : w.days.filter((x) => x !== day);
+                          if (days.length > 0) setWindow(c.id, i, { days }); // a window needs at least one day
+                        }}
                         aria-label={`${d} for window ${i + 1} of ${c.name}`}
                       />
                       {d}
                     </label>
                   ))}
-                  <input type="time" value={w.from} onChange={(e) => setWindow(c.id, i, { from: e.target.value })} aria-label={`From, window ${i + 1} of ${c.name}`} />
+                  <input type="time" value={w.from} onChange={(e) => e.target.value && setWindow(c.id, i, { from: e.target.value })} aria-label={`From, window ${i + 1} of ${c.name}`} />
                   <span>to</span>
-                  <input type="time" value={w.to} onChange={(e) => setWindow(c.id, i, { to: e.target.value })} aria-label={`To, window ${i + 1} of ${c.name}`} />
+                  <input type="time" value={w.to} onChange={(e) => e.target.value && setWindow(c.id, i, { to: e.target.value })} aria-label={`To, window ${i + 1} of ${c.name}`} />
                   <button type="button" className="secondary" onClick={() => setWindow(c.id, i, null)} aria-label={`Remove window ${i + 1} of ${c.name}`}>
                     Remove
                   </button>

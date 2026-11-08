@@ -42,12 +42,20 @@ describe("junk names (Fix 17 names)", () => {
     "Behind.the.Scenes.of.Life.2019.1080p.WEB-DL.x264-GRP", // the words are the title, before the year
     "Normal.Movie.2021.2160p.UHD.BluRay.x265-GRP",
     "Show.Name.S02E05.720p.HDTV.x264-GRP",
+    "Show.Name.S02E05.The.Trailer.1080p.WEB-DL.x264-GRP", // an episode called "The Trailer"
+    "Show.Name.S02E05.Sample.Day.720p.HDTV.x264-GRP",
+    "Movie.2020.1080p.BluRay.READ.NFO.x264-GRP", // the scene tag, not a text file
   ];
   for (const name of fine) {
     it(`leaves "${name}" alone`, () => {
       expect(junkNameRejection(name)).toBeNull();
     });
   }
+
+  it("still refuses a sample or trailer tagged after the resolution or source of an episode", () => {
+    expect(junkNameRejection("Show.Name.S02E05.1080p.WEB-DL.SAMPLE-GRP")?.code).toBe("junk-name");
+    expect(junkNameRejection("Show.Name.S02E05.720p.HDTV.Trailer")?.code).toBe("junk-name");
+  });
 
   it("does not read a word as junk when there is no year, episode, resolution or source to say the title has ended", () => {
     expect(junkNameRejection("Sample")).toBeNull();
@@ -91,6 +99,17 @@ describe("the size floor", () => {
     // A pack of ten episodes needs ten times the floor.
     expect(check("Show.S01.1080p.WEB-DL.x264-GRP", 800_000_000, tv)?.code).toBe("size-floor");
     expect(check("Show.S01.1080p.WEB-DL.x264-GRP", 5_000_000_000, tv)).toBeNull();
+  });
+
+  it("does not judge an episode whose runtime is not on file: it may be an 11-minute cartoon", () => {
+    const unknown: PreflightContext = { settings: ctx().settings, runtime: { runtimeMinutes: null, episodic: true } };
+    expect(check("Cartoon.S01E01.1080p.WEB-DL.x264-GRP", 60_000_000, unknown)).toBeNull();
+    const short: PreflightContext = { settings: ctx().settings, runtime: { runtimeMinutes: 11, episodic: true } };
+    expect(check("Cartoon.S01E01.1080p.WEB-DL.x264-GRP", 60_000_000, short)).toBeNull(); // 11 x 3 = 33 MB
+    expect(check("Cartoon.S01E01.1080p.WEB-DL.x264-GRP", 20_000_000, short)?.code).toBe("size-floor");
+    // A film with no runtime still gets the 110-minute default.
+    const film: PreflightContext = { settings: ctx().settings, runtime: { runtimeMinutes: null, episodic: false } };
+    expect(check("500.Days.of.Summer.2009.1080p.BluRay.x264-GRP", 146_000_000, film)?.code).toBe("size-floor");
   });
 
   it("each rule has its own switch", () => {
@@ -144,10 +163,45 @@ describe("NZB inspection", () => {
     expect(nzbVerdict(parseNzb(nzb(old)))).toBeNull();
   });
 
-  it("refuses a password, saying so", () => {
+  it("reads a password from the NZB but does not refuse it: SABnzbd and NZBGet unpack with it", () => {
     const info = parseNzb(nzb([{ name: "Film.mkv", bytes: 4 * GB }], '<meta type="password">secret</meta>'));
     expect(info.password).toBe("secret");
-    expect(nzbVerdict(info)).toMatchObject({ code: "password" });
+    expect(nzbVerdict(info)).toBeNull();
+  });
+
+  it("does not refuse a post whose file names are obfuscated, and still judges its size", () => {
+    const obfuscated = [
+      { name: "9f3c1a2b7d4e", bytes: 3 * GB },
+      { name: "a81c5e0f2b93", bytes: GB },
+      { name: "abc.vol01+02.par2", bytes: 20_000_000 },
+    ];
+    const info = parseNzb(nzb(obfuscated));
+    expect(nzbVerdict(info, { minPayloadBytes: 300_000_000 })).toBeNull();
+    expect(payloadBytes(info)).toBe(4 * GB);
+    expect(nzbVerdict(parseNzb(nzb([{ name: "9f3c1a2b7d4e", bytes: 40_000_000 }])), { minPayloadBytes: 300_000_000 })).toMatchObject({ code: "too-small" });
+  });
+
+  it("calls a file a sample only when it is small: a film with the word in its title is whole", () => {
+    const whole = parseNzb(nzb([{ name: "Sample.Size.2019.1080p.mkv", bytes: 4 * GB }]));
+    expect(nzbVerdict(whole, { minPayloadBytes: 300_000_000 })).toBeNull();
+    expect(payloadBytes(whole)).toBe(4 * GB);
+    const clip = parseNzb(nzb([{ name: "Film.2020.1080p.mkv", bytes: 4 * GB }, { name: "film-sample.mkv", bytes: 40_000_000 }]));
+    expect(payloadBytes(clip)).toBe(4 * GB);
+  });
+
+  it("reads a hostile file in one pass: thousands of unclosed tags cost no more than a normal NZB", () => {
+    const hostile = "<file subject=\"x\" ".repeat(50_000) + "<segment bytes=\"1\" ".repeat(50_000) + " ".repeat(200_000) + '<meta type="password">';
+    const started = Date.now();
+    const info = parseNzb(hostile);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(info.files).toEqual([]);
+  });
+
+  it("reads the same files as before from a large well-formed NZB", () => {
+    const files = Array.from({ length: 2000 }, (_, i) => ({ name: `Film.part${String(i).padStart(4, "0")}.rar`, bytes: 50_000_000, segments: 20 }));
+    const info = parseNzb(nzb(files));
+    expect(info.files).toHaveLength(2000);
+    expect(info.files[1999].bytes).toBe(50_000_000);
   });
 
   it("refuses a program in the post", () => {

@@ -115,7 +115,9 @@ export function admit(input: AdmitInput): Admission {
   if (limits.addsPerHour !== null && state.addsLastHour >= limits.addsPerHour) {
     return { ok: false, kind: "adds", reason: `${clientName} took ${state.addsLastHour} of ${limits.addsPerHour} adds this hour` };
   }
-  if (limits.minFreeBytes !== null && state.freeBytes !== null && state.freeBytes - (state.bytesLeft ?? 0) - size < limits.minFreeBytes) {
+  // An idle client takes one job whatever the disk says: the free space is read where AoNarr downloads, which is not
+  // always where this client writes, and a client with nothing to do would otherwise wait for ever.
+  if (limits.minFreeBytes !== null && state.freeBytes !== null && state.active > 0 && state.freeBytes - (state.bytesLeft ?? 0) - size < limits.minFreeBytes) {
     return { ok: false, kind: "disk", reason: `Free disk would drop under ${gb(limits.minFreeBytes)}` };
   }
   if (perTitleLimit !== null && (state.titleActive.get(candidate.mediaItemId) ?? 0) >= perTitleLimit) {
@@ -140,8 +142,10 @@ export function afterSend(state: ClientState, candidate: Pick<Candidate, "mediaI
 
 export interface Selection {
   selected: Candidate[];
-  /** Why the head of the queue is still waiting (the first rule that stopped the pass), or null when all were chosen. */
+  /** Why the head of the queue is still waiting (the first rule that said no), or null when all were chosen. */
   blockedBy: Admission | null;
+  /** Each grab that stays held and its own reason: a skipped one has its own, the ones behind a client-wide stop share it. */
+  waiting: Map<number, string>;
 }
 
 /**
@@ -157,7 +161,9 @@ export function selectReleases(
   const selected: Candidate[] = [];
   let state = args.state;
   let blockedBy: Admission | null = null;
-  for (const c of candidates) {
+  const waiting = new Map<number, string>();
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
     const verdict = admit({ ...args, state, candidate: c });
     if (verdict.ok) {
       selected.push(c);
@@ -165,7 +171,12 @@ export function selectReleases(
       continue;
     }
     blockedBy ??= verdict;
-    if (verdict.kind !== "title" && verdict.kind !== "night") break;
+    if (verdict.kind !== "title" && verdict.kind !== "night") {
+      // A rule about the client as a whole: this grab and every one behind it wait for it.
+      for (let j = i; j < candidates.length; j++) waiting.set(candidates[j].id, verdict.reason ?? "Waiting for room in the download client");
+      break;
+    }
+    waiting.set(c.id, verdict.reason ?? "Waiting for room in the download client");
   }
-  return { selected, blockedBy };
+  return { selected, blockedBy, waiting };
 }
