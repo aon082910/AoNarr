@@ -519,6 +519,19 @@ describe("queue, history, calendar and wanted", () => {
     expect((await get("/lidarr/api/v1/queue")).body.totalRecords).toBe(0);
   });
 
+  it("shows a grab Throttlearr is holding as queued with a Held message, and not as a problem", async () => {
+    const s = await seed();
+    await db
+      .prepare("UPDATE queue SET status = 'queued', download_id = NULL, progress = 0, eta_seconds = NULL, size_left = NULL, gate_state = 'held', gate_reason = 'Seedbox has 3 of 3 jobs' WHERE id = ?")
+      .run(s.downloading);
+    const record = (await get("/sonarr/api/v3/queue")).body.records[0];
+    expect(record).toMatchObject({ id: s.downloading, status: "queued", trackedDownloadStatus: "ok", trackedDownloadState: "downloading", sizeleft: 1000 });
+    expect(record.statusMessages[0].messages).toEqual(["Held: Seedbox has 3 of 3 jobs"]);
+    expect(record.downloadId).toBeUndefined();
+    expect(record.timeleft).toBeUndefined();
+    expect((await get("/sonarr/api/v3/queue/status")).body).toMatchObject({ errors: false, warnings: false });
+  });
+
   it("pages the queue, embeds the title and part on request, and counts it", async () => {
     const s = await seed();
     const embedded = (await get("/sonarr/api/v3/queue?includeSeries=true&includeEpisode=true")).body.records[0];

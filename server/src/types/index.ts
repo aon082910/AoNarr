@@ -231,7 +231,7 @@ export interface QueueItem {
 export interface HistoryEvent {
   id: number;
   mediaItemId: number;
-  eventType: "grabbed" | "imported" | "failed" | "deleted" | "subtitleDownloaded";
+  eventType: "grabbed" | "held" | "imported" | "failed" | "deleted" | "subtitleDownloaded";
   data: string | null; // JSON blob
   createdAt: string;
 }

@@ -30,6 +30,7 @@ interface RecentlyChangedEntry {
 
 const RECENT_EVENT_LABELS: Record<string, string> = {
   grabbed: "Grabbed",
+  held: "Held",
   imported: "Imported",
   failed: "Failed",
   auto_archived: "Auto-archived",

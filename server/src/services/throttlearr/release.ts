@@ -229,24 +229,55 @@ async function releaseOne(client: DownloadClient, row: any): Promise<ReleaseOutc
 
   const mediaRow = (await db.prepare("SELECT * FROM media_items WHERE id = ?").get(row.media_item_id)) as any;
   const best = payload.release;
-  const facts = { source: payload.source, quality: payload.quality, client: { id: client.id, name: client.name }, forced: payload.forced, releaseGroup: payload.releaseGroup, downloadId };
+  const facts = {
+    source: payload.source,
+    quality: payload.quality,
+    client: { id: client.id, name: client.name },
+    forced: payload.forced,
+    releaseGroup: payload.releaseGroup,
+    downloadId,
+    heldForSeconds: heldSeconds(row),
+  };
+  let stillThere = true;
   await db.transaction(async () => {
-    await db
+    const moved = await db
       .prepare(
         `UPDATE queue SET download_id = ?, gate_state = 'released', gate_reason = NULL, added_at = ${nowExpr(db)}, updated_at = ${nowExpr(db)}, last_progress_at = NULL
          WHERE id = ? AND gate_state = 'releasing'`
       )
       .run(downloadId, row.id);
+    // An admin removed the row while the grab was on its way: nothing tracks it now, so no history either.
+    if (moved.changes === 0) {
+      stillThere = false;
+      return;
+    }
     if (payload.targetSubItemIds.length > 0) {
       for (const id of payload.targetSubItemIds) await recordGrabbed(row.media_item_id, { episodeId: null, subItemId: id, seasonNumber: null }, best, facts);
     } else {
       await recordGrabbed(row.media_item_id, payload.history, best, facts);
     }
   });
+  if (!stillThere) {
+    // The client has the download but AoNarr no longer wants it: take it back (files too, nothing was imported).
+    try {
+      await getDownloadClientAdapter(client.type).removeDownload?.(client, downloadId, true);
+    } catch (err) {
+      log.warn(`[throttlearr] could not take "${best.title}" back from "${client.name}":`, (err as Error).message);
+    }
+    log.info(`[throttlearr] "${best.title}" was removed while it was being sent; taken back from "${client.name}"`);
+    return "gone";
+  }
 
   await notifyReleased(client, row, payload, mediaRow, downloadId);
   log.info(`[throttlearr] released "${best.title}" to "${client.name}"`);
   return "released";
+}
+
+/** How long the row waited at the gate, in seconds (the hold time is stored as a UTC "YYYY-MM-DD HH:MM:SS" text). */
+function heldSeconds(row: any, now: Date = new Date()): number | null {
+  if (!row.gate_held_at) return null;
+  const since = Date.parse(`${String(row.gate_held_at).replace(" ", "T").replace(/Z?$/, "Z")}`);
+  return Number.isFinite(since) ? Math.max(0, (now.getTime() - since) / 1000) : null;
 }
 
 async function failRow(row: any, reason: string, opts: { releaseAtFault: boolean }): Promise<void> {

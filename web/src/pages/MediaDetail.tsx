@@ -725,6 +725,7 @@ export default function MediaDetail() {
         : parsed?.title ?? parsed?.releaseTitle ?? parsed?.fileName ?? parsed?.reason ?? null;
     const labels: Record<string, string> = {
       grabbed: "Grabbed",
+      held: "Held",
       imported: "Imported",
       failed: "Failed",
       subtitleDownloaded: "Subtitle downloaded",

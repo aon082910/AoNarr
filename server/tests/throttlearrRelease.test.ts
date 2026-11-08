@@ -129,6 +129,44 @@ describe("Throttlearr: the release worker", () => {
     expect(row.last_progress_at).toBeNull();
   });
 
+  it("says in the grabbed row how long the grab was held, after the held row", async () => {
+    const client = await insertClient();
+    setGate({ enabled: true, clients: { [client.id]: { maxActive: 1 } } });
+    await grabMovie(client);
+    const itemId = await grabMovie(client); // held
+    const ago = new Date(Date.now() - 90 * 60_000).toISOString().slice(0, 19).replace("T", " ");
+    await db.prepare("UPDATE queue SET gate_held_at = ? WHERE gate_state = 'held'").run(ago);
+    await finishDownloads();
+    await release.releaseHeldGrabs();
+
+    const events = (await db.prepare("SELECT event_type, data FROM history WHERE media_item_id = ? ORDER BY id").all(itemId)) as any[];
+    expect(events.map((e) => e.event_type)).toEqual(["held", "grabbed"]);
+    const grabbed = JSON.parse(events[1].data);
+    expect(grabbed.heldForSeconds).toBeGreaterThanOrEqual(5400);
+    expect(grabbed.heldForSeconds).toBeLessThan(5400 + 120);
+    expect(grabbed.downloadId).toBe("hash2");
+  });
+
+  it("takes a download back from the client when an admin removes the row while it is being sent", async () => {
+    const client = await insertClient();
+    setGate({ enabled: true, clients: { [client.id]: { maxActive: 1 } } });
+    await grabMovie(client);
+    const itemId = await grabMovie(client); // held
+    await finishDownloads();
+    adapter.removeDownload = vi.fn(async () => undefined);
+    adapter.addDownload.mockImplementationOnce(async () => {
+      // The admin clicks Remove while the client is still answering.
+      await db.prepare("DELETE FROM queue WHERE media_item_id = ?").run(itemId);
+      fake.active.add("hashX");
+      return { downloadId: "hashX" };
+    });
+    const summary = await release.releaseHeldGrabs();
+
+    expect(summary.released).toBe(0);
+    expect(adapter.removeDownload).toHaveBeenCalledWith(expect.anything(), "hashX", true);
+    expect(await count(`SELECT COUNT(*) AS c FROM history WHERE event_type = 'grabbed' AND media_item_id = ${itemId}`)).toBe(0);
+  });
+
   it("releases the highest priority first, then the oldest", async () => {
     const client = await insertClient();
     setGate({ enabled: true, clients: { [client.id]: { maxActive: 1 } } });

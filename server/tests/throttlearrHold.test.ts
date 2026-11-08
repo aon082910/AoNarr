@@ -104,6 +104,23 @@ describe("Throttlearr: holding a grab in grab()", () => {
       expect(payload?.history).toEqual({ episodeId: null, subItemId: null, seasonNumber: null });
     }
     expect(await grabbedHistory()).toBe(2); // only the two that were sent
+    // The held ones leave a `held` row that says why, not a `grabbed` one.
+    const heldEvents = (await db.prepare("SELECT media_item_id, data FROM history WHERE event_type = 'held' ORDER BY id").all()) as any[];
+    expect(heldEvents).toHaveLength(3);
+    const data = JSON.parse(heldEvents[0].data);
+    expect(data).toMatchObject({ clientName: "Seedbox", quality: "WEBDL-1080p", grabSource: "auto" });
+    expect(data.reason).toMatch(/Seedbox has 2 of 2 jobs|Waiting behind/);
+    expect(data.title).toMatch(/^Film\.\d+\.2020\.1080p$/);
+    expect(data.heldForSeconds).toBeUndefined();
+    expect(heldEvents.map((e) => Number(e.media_item_id))).toEqual(h.map((r) => Number(r.media_item_id)));
+  });
+
+  it("writes no history in a dry run, and none when nothing is held", async () => {
+    const client = await insertClient();
+    setGate({ enabled: true, dryRun: true, clients: { [client.id]: { maxActive: 1 } } });
+    for (let i = 0; i < 3; i++) await grabMovie(client);
+    expect(await grabbedHistory()).toBe(3);
+    expect(Number(((await db.prepare("SELECT COUNT(*) AS c FROM history WHERE event_type = 'held'").get()) as any).c)).toBe(0);
   });
 
   it("counts a held grab as covering its target, so the target is not grabbed again", async () => {

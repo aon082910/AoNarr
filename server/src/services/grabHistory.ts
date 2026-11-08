@@ -18,6 +18,10 @@ export interface GrabHistoryExtras {
   releaseGroup?: string | null;
   /** The id the client knows the download by, so the history row can be linked back to it. */
   downloadId?: string | null;
+  /** Throttlearr held this grab back before sending it: the seconds it waited. */
+  heldForSeconds?: number | null;
+  /** Throttlearr's reason for holding the grab (a `held` row). */
+  heldReason?: string | null;
 }
 
 export function grabHistoryData(best: SearchResult, extras: GrabHistoryExtras): string {
@@ -28,6 +32,8 @@ export function grabHistoryData(best: SearchResult, extras: GrabHistoryExtras): 
     clientId: extras.client?.id ?? null,
     clientName: extras.client?.name ?? null,
     ...(extras.downloadId ? { downloadId: extras.downloadId } : {}),
+    ...(extras.heldForSeconds != null ? { heldForSeconds: Math.max(0, Math.round(extras.heldForSeconds)) } : {}),
+    ...(extras.heldReason ? { reason: extras.heldReason } : {}),
     ...(extras.forced ? { forced: true } : {}),
     ...(extras.formatScore != null ? { formatScore: extras.formatScore } : {}),
     ...(extras.releaseGroup ? { releaseGroup: extras.releaseGroup } : {}),
@@ -42,5 +48,21 @@ export async function recordGrabbed(
 ): Promise<void> {
   await db
     .prepare(`INSERT INTO history (media_item_id, event_type, data, episode_id, sub_item_id, season_number) VALUES (?, 'grabbed', ?, ?, ?, ?)`)
+    .run(mediaItemId, grabHistoryData(best, extras), target.episodeId, target.subItemId, target.seasonNumber);
+}
+
+/**
+ * Throttlearr kept a grab back until its download client has room. One row per grab, written when it is held, so a
+ * title's history says what happened and why before the `grabbed` row that follows once the grab is sent. A failure
+ * to send (a refused release, a hold that ran out) is the ordinary `failed` row.
+ */
+export async function recordHeld(
+  mediaItemId: number,
+  target: { episodeId: number | null; subItemId: number | null; seasonNumber: number | null },
+  best: SearchResult,
+  extras: GrabHistoryExtras & { heldReason: string }
+): Promise<void> {
+  await db
+    .prepare(`INSERT INTO history (media_item_id, event_type, data, episode_id, sub_item_id, season_number) VALUES (?, 'held', ?, ?, ?, ?)`)
     .run(mediaItemId, grabHistoryData(best, extras), target.episodeId, target.subItemId, target.seasonNumber);
 }

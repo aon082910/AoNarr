@@ -25,6 +25,7 @@ interface HistoryResponse {
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   grabbed: "Grabbed",
+  held: "Held",
   imported: "Imported",
   failed: "Failed",
   subtitleDownloaded: "Subtitle downloaded",

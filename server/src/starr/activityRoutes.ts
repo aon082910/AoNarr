@@ -43,6 +43,11 @@ function formatTimeLeft(seconds: number | null): string | undefined {
 function trackedStateOf(row: any): { status: string; state: string; trackedStatus: "ok" | "warning" | "error"; message: string | null } {
   const note = row.status_message ? String(row.status_message) : null;
   const clientState = String(row.client_state ?? "");
+  // Throttlearr is keeping the grab back until its download client has room: it is queued, waiting, and nothing is wrong.
+  if (row.status === "queued" && (row.gate_state === "held" || row.gate_state === "releasing")) {
+    const why = row.gate_reason ? String(row.gate_reason) : "Waiting for room in the download client";
+    return { status: "queued", state: "downloading", trackedStatus: "ok", message: `Held: ${why}` };
+  }
   switch (row.status) {
     case "completed":
       if (row.import_started_at) return { status: "completed", state: "importing", trackedStatus: "ok", message: null };

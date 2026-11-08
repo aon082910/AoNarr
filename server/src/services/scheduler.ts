@@ -32,7 +32,7 @@ import { compareRevisions, formatCutoffNotMet, judgeUpgrade, propersMode, upgrad
 import { existingFileRecord } from "./fileRelease.js";
 import { editionlessTitle, FORMAT_UPGRADE_STEP, formatUpgradeFloor, nonVideoPreference, nonVideoRejection } from "./nonVideoMatch.js";
 import { freeBytesForItem, freeSpaceCheckEnabled, freeSpaceReason, freeSpaceReserveBytes } from "./freeSpace.js";
-import { recordGrabbed } from "./grabHistory.js";
+import { recordGrabbed, recordHeld } from "./grabHistory.js";
 import { getThrottlearrSettings, limitsFor } from "./throttlearr/settings.js";
 import { classifyGrab, priorityFor, type PriorityClass } from "./throttlearr/rules.js";
 import { nzbInspectorFor, preflightContextFor, preflightRejection } from "./throttlearr/preflight.js";
@@ -1683,8 +1683,8 @@ export async function grab(
 
       const grabFacts = { source, quality, client: { id: client.id, name: client.name }, forced: options.forced, releaseGroup: parsedBest.releaseGroup, downloadId: downloadId ?? "" };
       // The row, the albums it is for and the history are written together: the client already has the download, and
-      // a row with some of its albums, or none, would be a download nothing tracks properly. A held grab has no history
-      // yet: it is written when the grab is sent.
+      // a row with some of its albums, or none, would be a download nothing tracks properly. A held grab writes a `held`
+      // history row now and its `grabbed` row when it is sent.
       await db.transaction(async () => {
         const inserted = await db
           .prepare(
@@ -1719,9 +1719,12 @@ export async function grab(
           for (const id of targets) {
             await db.prepare("INSERT INTO queue_targets (queue_id, sub_item_id) VALUES (?, ?)").run(queueId, id);
             if (heldReason === null) await recordGrabbed(mediaItem.id, { episodeId: null, subItemId: id, seasonNumber: null }, best, grabFacts);
+            else await recordHeld(mediaItem.id, { episodeId: null, subItemId: id, seasonNumber: null }, best, { ...grabFacts, heldReason });
           }
         } else if (heldReason === null) {
           await recordGrabbed(mediaItem.id, { episodeId, subItemId, seasonNumber: packSeason }, best, grabFacts);
+        } else {
+          await recordHeld(mediaItem.id, { episodeId, subItemId, seasonNumber: packSeason }, best, { ...grabFacts, heldReason });
         }
       });
       return heldReason === null ? { kind: "sent" as const, downloadId: downloadId! } : { kind: "held" as const, reason: heldReason };

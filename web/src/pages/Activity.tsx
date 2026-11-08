@@ -97,6 +97,7 @@ function formatReady(minutes: number | null): string {
 
 const TIMELINE_LABELS: Record<string, string> = {
   grabbed: "Grabbed",
+  held: "Held",
   imported: "Imported",
   failed: "Failed",
   deleted: "Deleted",
