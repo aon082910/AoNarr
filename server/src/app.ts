@@ -20,6 +20,7 @@ import { log } from "./services/logger.js";
 import { mediaRouter } from "./routes/media.js";
 import { indexersRouter } from "./routes/indexers.js";
 import { downloadClientsRouter } from "./routes/downloadClients.js";
+import { throttlearrRouter } from "./routes/throttlearr.js";
 import { qualityProfilesRouter } from "./routes/qualityProfiles.js";
 import { metadataProfilesRouter } from "./routes/metadataProfiles.js";
 import { delayProfilesRouter } from "./routes/delayProfiles.js";
@@ -419,6 +420,7 @@ export async function createApp(): Promise<Express> {
   );
   app.use("/api/indexers", indexersRouter);
   app.use("/api/download-clients", downloadClientsRouter);
+  app.use("/api/throttlearr", throttlearrRouter);
   app.use("/api/quality-profiles", qualityProfilesRouter);
   app.use("/api/metadata-profiles", metadataProfilesRouter);
   app.use("/api/delay-profiles", delayProfilesRouter);

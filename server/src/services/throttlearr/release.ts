@@ -174,9 +174,9 @@ async function releaseForClient(clientId: number, settings: ThrottlearrSettings,
   return out;
 }
 
-type ReleaseOutcome = "released" | "failed" | "client-down" | "gone";
+export type ReleaseOutcome = "released" | "failed" | "client-down" | "gone";
 
-async function releaseOne(client: DownloadClient, row: any): Promise<ReleaseOutcome> {
+export async function releaseOne(client: DownloadClient, row: any): Promise<ReleaseOutcome> {
   // Claim the row. Another pass, or a click on "Remove", may have taken it since the list was read.
   const claimed = await db.prepare("UPDATE queue SET gate_state = 'releasing' WHERE id = ? AND gate_state = 'held'").run(row.id);
   if (claimed.changes === 0) return "gone";

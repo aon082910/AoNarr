@@ -2,8 +2,7 @@ import { db } from "../db/index.js";
 import { nowOffsetHoursExpr } from "../db/asyncDb.js";
 import { downloadClientFromRow, indexerFromRow } from "../db/mappers.js";
 import { attachIndexerHealth } from "./indexerHealth.js";
-import { notWaitingAtGate } from "./throttlearr/gate.js";
-import { checkIndexerHealth } from "./indexerClient.js";
+import { notWaitingAtGate } from "./throttlearr/gate.js";import { checkIndexerHealth } from "./indexerClient.js";
 import { getDownloadClientAdapter } from "./downloadClient.js";
 import { findRepeatedImports } from "./duplicates.js";
 import { findUpgradeCandidates } from "./upgradeCandidates.js";
@@ -677,6 +676,7 @@ async function buildHealthReport(): Promise<HealthReport> {
     safely("restore-rolled-back", restoreRolledBackIssues),
     safely("network-security", networkSecurityIssues),
     safely("paused-downloads", pausedQueueIssues),
+    safely("throttlearr", async () => (await import("./throttlearr/actions.js")).throttlearrIssues()),
     safely("notifications", notificationIssues),
     safely("proxy", proxyIssues),
     safely("download-paths", downloadPathIssues),

@@ -404,6 +404,12 @@ export interface QueueItem {
   statusMessage?: string | null;
   /** The live note for an active row (kept in memory; statusMessage is the same text, kept in the database). */
   clientNote?: string | null;
+  /** Throttlearr: set while the grab is held back (or being sent) until its download client has room. */
+  gateState?: "held" | "releasing";
+  gateReason?: string | null;
+  gateHeldAt?: string | null;
+  gatePriority?: number;
+  gateClass?: "movie" | "recentTv" | "backlog" | null;
 }
 
 export interface User {

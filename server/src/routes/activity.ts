@@ -27,6 +27,8 @@ import { judgeMappedRelease } from "../services/rssSync.js";
 import { cleanTitle, storeAliases } from "../services/releaseAliases.js";
 import { resetSearchBackoff } from "../services/searchBackoff.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
+import { parsePayload } from "../services/throttlearr/gate.js";
+import { moveHeldToTop, releaseHeldNow, resetHeldPriority } from "../services/throttlearr/actions.js";
 
 export const activityRouter = Router();
 
@@ -63,6 +65,18 @@ async function tagIdsByMediaItem(mediaItemIds: number[]): Promise<Map<number, nu
   return byItem;
 }
 
+/** What the page needs to show a grab Throttlearr holds (or is sending): why, since when, how important. Nothing for any other row. */
+function gateFieldsOf(row: any): Record<string, unknown> {
+  if (row.gate_state !== "held" && row.gate_state !== "releasing") return {};
+  return {
+    gateState: row.gate_state,
+    gateReason: row.gate_reason ?? null,
+    gateHeldAt: row.gate_held_at ?? null,
+    gatePriority: Number(row.gate_priority ?? 0),
+    gateClass: parsePayload(row.gate_payload)?.priorityClass ?? null,
+  };
+}
+
 activityRouter.get(
   "/queue",
   asyncHandler(async (req, res) => {
@@ -92,7 +106,7 @@ activityRouter.get(
         const queueId = Number((row as { id: number }).id);
         const albums = albumsByQueue.get(queueId);
         const targetKind = albums && typeById.get(Number((row as { media_item_id: number }).media_item_id))?.type === "author" ? "book" : "album";
-        return { ...queueItemFromRow(row), clientNote: queueClientNote(queueId), ...(albums ? { albums, targetKind } : {}) };
+        return { ...queueItemFromRow(row), clientNote: queueClientNote(queueId), ...(albums ? { albums, targetKind } : {}), ...gateFieldsOf(row) };
       }),
       total: Number(total),
     });
@@ -437,6 +451,15 @@ activityRouter.post(
     const priority = req.body?.priority === "top" ? "top" : "normal";
     const queueRow = (await db.prepare("SELECT * FROM queue WHERE id = ?").get(req.params.id)) as any;
     if (!queueRow) throw new HttpError(404, "Queue item not found");
+    // A grab Throttlearr is holding has no download at the client yet: "top" puts it first in line to be sent.
+    if (queueRow.gate_state === "held") {
+      const done = priority === "top" ? await moveHeldToTop(Number(queueRow.id)) : await resetHeldPriority(Number(queueRow.id));
+      if (done === "not-held") throw new HttpError(409, "This grab has just been sent or removed");
+      notifyQueueChanged();
+      res.json({ ok: true });
+      return;
+    }
+    if (queueRow.gate_state === "releasing") throw new HttpError(409, "This grab is being sent to its download client");
     if (!queueRow.download_client_id || !queueRow.download_id) {
       throw new HttpError(400, "This queue item has no associated download client");
     }
@@ -451,6 +474,24 @@ activityRouter.post(
     await adapter.setPriority(client, queueRow.download_id, priority);
     notifyQueueChanged();
     res.json({ ok: true });
+  })
+);
+
+/**
+ * Sends a grab Throttlearr is holding now, whatever its client's limits say. A client that is down keeps the grab
+ * held (503); a release the client refuses is failed, blocklisted and searched for again like any refused grab.
+ */
+activityRouter.post(
+  "/queue/:id/release-now",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) throw new HttpError(404, "Queue item not found");
+    const outcome = await releaseHeldNow(id);
+    if (outcome === "not-held") throw new HttpError(409, "This grab is not being held");
+    if (outcome === "client-off") throw new HttpError(409, "Its download client is switched off or gone");
+    if (outcome === "client-down") throw new HttpError(503, "The download client did not answer; the grab stays held");
+    if (outcome === "failed") throw new HttpError(422, "The download client refused this release; it was blocklisted and another is searched for");
+    res.json({ ok: true, released: outcome === "released" });
   })
 );
 

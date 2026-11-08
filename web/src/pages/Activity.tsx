@@ -115,7 +115,7 @@ const PROTOCOL_LABELS: Record<Indexer["protocol"], string> = {
   ddl: "DDL",
 };
 
-type QueueStatusFilter = "all" | "queued" | "downloading" | "failed";
+type QueueStatusFilter = "all" | "queued" | "held" | "downloading" | "failed";
 type QueueProtocolFilter = "all" | Indexer["protocol"];
 type QueueSortKey = "title" | "season" | "indexer" | "protocol" | "downloadClient" | "status" | "progress" | "quality" | "size";
 type HistorySortKey = "when" | "event" | "title" | "detail";
@@ -124,6 +124,7 @@ const QUEUE_STATUS_OPTIONS: { value: QueueStatusFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "downloading", label: "Downloading" },
   { value: "queued", label: "Queued" },
+  { value: "held", label: "Held" },
   { value: "failed", label: "Failed" },
 ];
 
@@ -140,6 +141,18 @@ const QUEUE_STATUS_RANK: Record<string, number> = { downloading: 0, importing: 1
 /** The Queue table's own status badge printed q.status raw ("downloading", "completed", ...)
  * instead of a proper label, unlike TIMELINE_LABELS/PROTOCOL_LABELS above for the same kind of
  * fact elsewhere on this page. */
+const GATE_CLASS_LABELS: Record<string, string> = { movie: "movie", recentTv: "recent episode", backlog: "backlog" };
+
+/** How long ago a held grab was held: "5 min", "3 h", "2 d". `since` is the server's UTC "YYYY-MM-DD HH:MM:SS". */
+function heldFor(since: string): string {
+  const t = Date.parse(since.includes("T") ? since : `${since.replace(" ", "T")}Z`);
+  if (!Number.isFinite(t)) return "a while";
+  const minutes = Math.max(0, Math.round((Date.now() - t) / 60000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`;
+}
+
 const QUEUE_STATUS_LABELS: Record<string, string> = {
   queued: "Queued",
   downloading: "Downloading",
@@ -442,6 +455,16 @@ export default function Activity() {
     }
   }
 
+  async function releaseNow(id: number) {
+    try {
+      await api.post(`/activity/queue/${id}/release-now`, {});
+    } catch (e) {
+      notify.error((e as Error).message);
+    } finally {
+      load();
+    }
+  }
+
   async function retryImport(id: number) {
     setRetrying(id);
     try {
@@ -547,7 +570,14 @@ export default function Activity() {
   }
 
   const visibleQueue = useMemo(() => {
-    let filtered = queueStatusFilter === "all" ? queue : queue.filter((q) => q.status === queueStatusFilter);
+    // A grab Throttlearr holds is "queued" in the database but waits at AoNarr, not at a client: its own filter.
+    const heldRow = (q: QueueItem) => q.gateState === "held" || q.gateState === "releasing";
+    let filtered =
+      queueStatusFilter === "all"
+        ? queue
+        : queueStatusFilter === "held"
+        ? queue.filter(heldRow)
+        : queue.filter((q) => q.status === queueStatusFilter && !heldRow(q));
     if (queueProtocolFilter !== "all") filtered = filtered.filter((q) => protocolFor(q.indexerId) === queueProtocolFilter);
     return sortQueueRows(filtered, (a, b, key) => {
       if (key === "title") return a.title.localeCompare(b.title);
@@ -800,7 +830,14 @@ export default function Activity() {
                         retry {q.retryCount}
                       </span>
                     )}
-                    {(q.clientNote ?? q.statusMessage) && (
+                    {q.gateState && (
+                      <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+                        {q.gateState === "releasing" ? "Being sent to the download client" : `Held: ${q.gateReason ?? "waiting for room in the download client"}`}
+                        {q.gateHeldAt ? ` · waiting ${heldFor(q.gateHeldAt)}` : ""}
+                        {q.gateClass ? ` · ${GATE_CLASS_LABELS[q.gateClass] ?? q.gateClass}` : ""}
+                      </div>
+                    )}
+                    {!q.gateState && (q.clientNote ?? q.statusMessage) && (
                       <div style={{ fontSize: "0.75rem", color: q.clientState === "warning" || q.status === "failed" ? "var(--danger)" : "var(--muted)" }}>
                         {q.clientNote ?? q.statusMessage}
                       </div>
@@ -823,13 +860,17 @@ export default function Activity() {
                       title={q.status === "completed" && q.importSkippedReason ? `Not imported: ${q.importSkippedReason}` : undefined}
                     >
                       <StatusIcon status={q.status} />
-                      {QUEUE_STATUS_LABELS[q.status] ?? q.status}
+                      {q.gateState ? "Held" : QUEUE_STATUS_LABELS[q.status] ?? q.status}
                     </span>
                   </td>
                   <td>
-                    <div className="progress-bar">
-                      <div style={{ width: `${Math.round(q.progress * 100)}%` }} />
-                    </div>
+                    {q.gateState ? (
+                      <span style={{ color: "var(--muted)" }}>-</span>
+                    ) : (
+                      <div className="progress-bar">
+                        <div style={{ width: `${Math.round(q.progress * 100)}%` }} />
+                      </div>
+                    )}
                     {q.status === "downloading" && (q.etaSeconds != null || q.sizeLeft != null) && (
                       <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
                         {[q.etaSeconds != null && q.clientState !== "paused" ? `ETA ${formatEta(q.etaSeconds)}` : null, q.sizeLeft != null ? `${formatSize(q.sizeLeft)} left` : null].filter(Boolean).join(" · ")}
@@ -839,8 +880,19 @@ export default function Activity() {
                   <td>{q.quality ?? "-"}</td>
                   <td>{q.size ? formatSize(q.size) : "-"}</td>
                   <td className="toolbar">
-                    {(q.status === "queued" || q.status === "downloading") && (
-                      <button type="button" className="icon-button" onClick={() => setPriority(q.id, "top")} title="Prioritize" aria-label="Prioritize">
+                    {q.gateState === "held" && (
+                      <button type="button" className="icon-button" onClick={() => releaseNow(q.id)} title="Release now (ignores the client's limits)" aria-label="Release now">
+                        <DownloadIcon />
+                      </button>
+                    )}
+                    {(q.status === "queued" || q.status === "downloading") && q.gateState !== "releasing" && (
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={() => setPriority(q.id, "top")}
+                        title={q.gateState === "held" ? "Move to the top of the held grabs" : "Prioritize"}
+                        aria-label={q.gateState === "held" ? "Move to top" : "Prioritize"}
+                      >
                         <ArrowUpCircleIcon />
                       </button>
                     )}

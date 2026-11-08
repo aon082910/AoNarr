@@ -9,6 +9,7 @@ import { useSortableTable } from "../hooks/useSortableTable.js";
 import { PlusCircleIcon, ZapIcon } from "../components/NavIcons.js";
 import { TrashIcon } from "../components/ActionIcons.js";
 import { PageToolbar, ToolbarButton } from "../components/PageToolbar.js";
+import ThrottlearrPanel from "../components/ThrottlearrPanel.js";
 
 type ClientType = "qbittorrent" | "sabnzbd" | "nzbget" | "transmission" | "deluge" | "http" | "ytdlp" | "realdebrid" | "alldebrid" | "torbox" | "blackhole" | "slskd";
 
@@ -376,6 +377,8 @@ export default function DownloadClients() {
           </form>
         </div>
       )}
+
+      <ThrottlearrPanel />
 
       {mode !== null && (mode === "add" || editingClient) && (
         <Modal title={mode === "add" ? "Add Download Client" : `Edit — ${editingClient!.name}`} onClose={() => setMode(null)}>

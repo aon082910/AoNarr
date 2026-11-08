@@ -38,6 +38,8 @@ interface SystemStatus {
   uptimeSeconds: number;
   libraryCounts: Record<string, number>;
   queueCount: number;
+  /** Grabs Throttlearr is holding back until their download client has room. */
+  heldCount?: number;
   indexerCount: number;
   downloadClientCount: number;
   diskSpace: DiskSpaceEntry[];
@@ -781,6 +783,12 @@ export default function System() {
             <th>Active queue items</th>
             <td>{status.queueCount}</td>
           </tr>
+          {(status.heldCount ?? 0) > 0 && (
+            <tr>
+              <th>Held by Throttlearr</th>
+              <td>{status.heldCount}</td>
+            </tr>
+          )}
         </tbody>
       </table>
 

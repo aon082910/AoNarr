@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import { db } from "../db/index.js";
 import { nowOffsetHoursExpr } from "../db/asyncDb.js";
+import { notWaitingAtGate } from "../services/throttlearr/gate.js";
 // The SQLite restore path below needs the raw better-sqlite3 handle directly (.close(), file-swap)
 // — replacing a live SQLite file only works from outside the async wrapper. Everything else in
 // this file, including backups on both dialects, uses the async `db`/services/scheduledBackup.ts.
@@ -263,11 +264,13 @@ systemRouter.get(
 
     const queueCount = Number(
       (
-        (await db.prepare("SELECT COUNT(*) as c FROM queue WHERE status IN ('queued','downloading')").get()) as {
+        (await db.prepare(`SELECT COUNT(*) as c FROM queue WHERE status IN ('queued','downloading') AND ${notWaitingAtGate()}`).get()) as {
           c: number;
         }
       ).c
     );
+    // Grabs Throttlearr keeps back until their download client has room: counted apart from the queue.
+    const heldCount = Number(((await db.prepare("SELECT COUNT(*) as c FROM queue WHERE gate_state = 'held'").get()) as { c: number | string }).c);
 
     const indexerCount = Number(
       ((await db.prepare("SELECT COUNT(*) as c FROM indexers WHERE enabled = 1").get()) as { c: number }).c
@@ -306,6 +309,7 @@ systemRouter.get(
       uncaughtErrors: uncaughtErrorStats(),
       libraryCounts,
       queueCount,
+      heldCount,
       indexerCount,
       downloadClientCount,
       diskSpace,
