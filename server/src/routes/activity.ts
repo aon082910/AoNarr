@@ -28,6 +28,9 @@ import { cleanTitle, storeAliases } from "../services/releaseAliases.js";
 import { resetSearchBackoff } from "../services/searchBackoff.js";
 import { auditActor, logAuditEvent } from "../services/audit.js";
 import { parsePayload } from "../services/throttlearr/gate.js";
+import { identityTargetFor } from "../services/releaseAliases.js";
+import { identityModeFor, releaseIdentifiesTarget } from "../services/releaseIdentity.js";
+import { usesQualityTiers } from "../services/quality.js";
 import { moveHeldToTop, releaseHeldNow, resetHeldPriority } from "../services/throttlearr/actions.js";
 
 export const activityRouter = Router();
@@ -65,6 +68,83 @@ async function tagIdsByMediaItem(mediaItemIds: number[]): Promise<Map<number, nu
   return byItem;
 }
 
+/** The library item a queue row is for, in words: the title, its year, and the part of it the grab covers. */
+interface LibraryMatch {
+  mediaItemId: number;
+  title: string;
+  year: number | null;
+  type: string;
+  /** The episode ("S02E05 · Title"), the album or book, or the season a pack covers; null when the grab is for the whole title. */
+  label: string | null;
+  /** Why the release's own name does not name this library item (judged by the name alone, whatever an indexer's id said), or
+   * null when it does, or when the type is not judged by name. A wrong film or show grabbed on an indexer's say-so shows here. */
+  nameMismatch: string | null;
+}
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** The library item (and part of it) of each queue row, by queue id, in three queries per page. */
+async function libraryMatchesFor(rows: any[]): Promise<Map<number, LibraryMatch>> {
+  const items = await rowsById<{ id: number; title: string; year: number | null; type: string; external_ids: string | null }>(
+    "media_items",
+    "id, title, year, type, external_ids",
+    "id",
+    rows.map((r) => Number(r.media_item_id))
+  );
+  const episodes = await rowsById<{ id: number; season_number: number; episode_number: number; title: string | null }>(
+    "episodes",
+    "id, season_number, episode_number, title",
+    "id",
+    rows.filter((r) => r.episode_id != null).map((r) => Number(r.episode_id))
+  );
+  const parts = await rowsById<{ id: number; title: string | null }>(
+    "sub_items",
+    "id, title",
+    "id",
+    rows.filter((r) => r.sub_item_id != null).map((r) => Number(r.sub_item_id))
+  );
+  const out = new Map<number, LibraryMatch>();
+  // The identity target of each library item is built once, however many queue rows are for it.
+  const targets = new Map<number, Awaited<ReturnType<typeof identityTargetFor>> | null>();
+  const nameMismatchOf = async (row: any, item: { id: number; title: string; year: number | null; type: string; external_ids: string | null }): Promise<string | null> => {
+    if (!usesQualityTiers(item.type) || identityModeFor(item.type) === "off") return null;
+    try {
+      let target = targets.get(Number(item.id));
+      if (target === undefined) {
+        target = await identityTargetFor({ id: Number(item.id), type: item.type, title: item.title, year: item.year == null ? null : Number(item.year), externalIds: item.external_ids });
+        targets.set(Number(item.id), target);
+      }
+      if (!target) return null;
+      const verdict = releaseIdentifiesTarget({ title: String(row.title) }, parseReleaseTitle(String(row.title)), target);
+      return verdict.ok ? null : verdict.detail;
+    } catch {
+      return null; // a row that cannot be judged is shown without a flag
+    }
+  };
+  for (const row of rows) {
+    const item = items.get(Number(row.media_item_id));
+    if (!item) continue;
+    let label: string | null = null;
+    if (row.episode_id != null) {
+      const ep = episodes.get(Number(row.episode_id));
+      if (ep) label = `S${pad2(Number(ep.season_number))}E${pad2(Number(ep.episode_number))}${ep.title ? ` · ${ep.title}` : ""}`;
+    } else if (row.sub_item_id != null) {
+      label = parts.get(Number(row.sub_item_id))?.title ?? null;
+    } else if (row.season_number != null) {
+      label = `Season ${Number(row.season_number)}`;
+    }
+    out.set(Number(row.id), {
+      mediaItemId: Number(item.id),
+      title: item.title,
+      year: item.year == null ? null : Number(item.year),
+      type: item.type,
+      label,
+      nameMismatch: await nameMismatchOf(row, item),
+    });
+  }
+  return out;
+}
+
 /** What the page needs to show a grab Throttlearr holds (or is sending): why, since when, how important. Nothing for any other row. */
 function gateFieldsOf(row: any): Record<string, unknown> {
   if (row.gate_state !== "held" && row.gate_state !== "releasing") return {};
@@ -88,6 +168,7 @@ activityRouter.get(
     const rows = await db.prepare("SELECT * FROM queue ORDER BY added_at DESC, id DESC LIMIT ? OFFSET ?").all(limit, offset);
     // The albums a queued discography (or the books a queued collection) is for, by queue row.
     const ids = rows.map((row) => Number((row as { id: number }).id));
+    const libraryByQueue = await libraryMatchesFor(rows as any[]);
     const albumsByQueue = new Map<number, { id: number; title: string }[]>();
     if (ids.length > 0) {
       const links = (await db
@@ -106,7 +187,7 @@ activityRouter.get(
         const queueId = Number((row as { id: number }).id);
         const albums = albumsByQueue.get(queueId);
         const targetKind = albums && typeById.get(Number((row as { media_item_id: number }).media_item_id))?.type === "author" ? "book" : "album";
-        return { ...queueItemFromRow(row), clientNote: queueClientNote(queueId), ...(albums ? { albums, targetKind } : {}), ...gateFieldsOf(row) };
+        return { ...queueItemFromRow(row), clientNote: queueClientNote(queueId), ...(albums ? { albums, targetKind } : {}), ...gateFieldsOf(row), library: libraryByQueue.get(queueId) ?? null };
       }),
       total: Number(total),
     });

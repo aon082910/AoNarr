@@ -404,6 +404,11 @@ export interface QueueItem {
   statusMessage?: string | null;
   /** The live note for an active row (kept in memory; statusMessage is the same text, kept in the database). */
   clientNote?: string | null;
+  /** How the release was confirmed to be this item when it was grabbed: "id" (the indexer's id), "title", "alias", ... or null. */
+  matchType?: string | null;
+  /** The library item this grab is for (null when the item is gone): its title and year, and the episode, album, book or
+   * season the grab covers. */
+  library?: { mediaItemId: number; title: string; year: number | null; type: string; label: string | null; nameMismatch: string | null } | null;
   /** Throttlearr: set while the grab is held back (or being sent) until its download client has room. */
   gateState?: "held" | "releasing";
   gateReason?: string | null;

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, openEventStream } from "../api/client.js";
 import Modal from "../components/Modal.js";
 import { useSortableTable } from "../hooks/useSortableTable.js";
@@ -115,9 +116,9 @@ const PROTOCOL_LABELS: Record<Indexer["protocol"], string> = {
   ddl: "DDL",
 };
 
-type QueueStatusFilter = "all" | "queued" | "held" | "downloading" | "failed";
+type QueueStatusFilter = "all" | "queued" | "held" | "downloading" | "failed" | "mismatch";
 type QueueProtocolFilter = "all" | Indexer["protocol"];
-type QueueSortKey = "title" | "season" | "indexer" | "protocol" | "downloadClient" | "status" | "progress" | "quality" | "size";
+type QueueSortKey = "title" | "library" | "season" | "indexer" | "protocol" | "downloadClient" | "status" | "progress" | "quality" | "size";
 type HistorySortKey = "when" | "event" | "title" | "detail";
 
 const QUEUE_STATUS_OPTIONS: { value: QueueStatusFilter; label: string }[] = [
@@ -126,6 +127,7 @@ const QUEUE_STATUS_OPTIONS: { value: QueueStatusFilter; label: string }[] = [
   { value: "queued", label: "Queued" },
   { value: "held", label: "Held" },
   { value: "failed", label: "Failed" },
+  { value: "mismatch", label: "Name doesn't match" },
 ];
 
 const QUEUE_PROTOCOL_OPTIONS: { value: QueueProtocolFilter; label: string }[] = [
@@ -141,6 +143,11 @@ const QUEUE_STATUS_RANK: Record<string, number> = { downloading: 0, importing: 1
 /** The Queue table's own status badge printed q.status raw ("downloading", "completed", ...)
  * instead of a proper label, unlike TIMELINE_LABELS/PROTOCOL_LABELS above for the same kind of
  * fact elsewhere on this page. */
+/** The library item of a queue row as one string, for sorting: "Title (year) label". */
+function libraryText(q: QueueItem): string {
+  return q.library ? `${q.library.title} ${q.library.year ?? ""} ${q.library.label ?? ""}` : "";
+}
+
 const GATE_CLASS_LABELS: Record<string, string> = { movie: "movie", recentTv: "recent episode", backlog: "backlog" };
 
 /** How long ago a held grab was held: "5 min", "3 h", "2 d". `since` is the server's UTC "YYYY-MM-DD HH:MM:SS". */
@@ -586,10 +593,13 @@ export default function Activity() {
         ? queue
         : queueStatusFilter === "held"
         ? queue.filter(heldRow)
+        : queueStatusFilter === "mismatch"
+        ? queue.filter((q) => !!q.library?.nameMismatch)
         : queue.filter((q) => q.status === queueStatusFilter && !heldRow(q));
     if (queueProtocolFilter !== "all") filtered = filtered.filter((q) => protocolFor(q.indexerId) === queueProtocolFilter);
     return sortQueueRows(filtered, (a, b, key) => {
       if (key === "title") return a.title.localeCompare(b.title);
+      if (key === "library") return libraryText(a).localeCompare(libraryText(b));
       if (key === "season") return (a.seasonNumber ?? -1) - (b.seasonNumber ?? -1);
       if (key === "indexer") return indexerName(a.indexerId).localeCompare(indexerName(b.indexerId));
       if (key === "protocol") return (protocolFor(a.indexerId) ?? "").localeCompare(protocolFor(b.indexerId) ?? "");
@@ -806,6 +816,7 @@ export default function Activity() {
             <tr>
               {selectMode && <th></th>}
               {queueSortableHeader("title", "Title")}
+              {queueSortableHeader("library", "Library item")}
               {queueSortableHeader("season", "Season")}
               {queueSortableHeader("indexer", "Indexer")}
               {queueSortableHeader("protocol", "Protocol")}
@@ -850,6 +861,31 @@ export default function Activity() {
                       <div style={{ fontSize: "0.75rem", color: q.clientState === "warning" || q.status === "failed" ? "var(--danger)" : "var(--muted)" }}>
                         {q.clientNote ?? q.statusMessage}
                       </div>
+                    )}
+                  </td>
+                  <td>
+                    {q.library ? (
+                      <>
+                        <Link to={`/media/${q.library.mediaItemId}`}>
+                          {q.library.title}
+                          {q.library.year ? ` (${q.library.year})` : ""}
+                        </Link>
+                        {q.library.label && <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>{q.library.label}</div>}
+                        {q.library.nameMismatch && (
+                          <div
+                            className="badge danger"
+                            style={{ marginTop: 2, display: "inline-flex", alignItems: "center", gap: 4 }}
+                            title={`${q.library.nameMismatch}${q.matchType ? ` (accepted by: ${q.matchType})` : ""}`}
+                          >
+                            <AlertTriangleIcon />
+                            Name doesn't match
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <span style={{ color: "var(--muted)" }} title="The library item this grab was for has been removed">
+                        -
+                      </span>
                     )}
                   </td>
                   <td>{q.seasonNumber != null ? `S${q.seasonNumber}` : "-"}</td>
