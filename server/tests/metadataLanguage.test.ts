@@ -105,6 +105,24 @@ describe("metadataLanguage setting", () => {
     }
   });
 
+  it("asks TheTVDB for English only for a series first made in another language: its default record is in that language", () => {
+    for (const code of ["", "en", "en-GB"]) {
+      setSetting("metadataLanguage", code);
+      expect(language.tvdbLanguageFor("jpn"), code).toBe("eng");
+      expect(language.tvdbLanguageFor("kor"), code).toBe("eng");
+      expect(language.tvdbLanguageFor("eng"), code).toBeNull();
+      // An unknown original language keeps the request it always made: none.
+      expect(language.tvdbLanguageFor(null), code).toBeNull();
+      expect(language.tvdbLanguageFor(undefined), code).toBeNull();
+    }
+    // Any other language is asked for as before, whatever the original.
+    setSetting("metadataLanguage", "de");
+    expect(language.tvdbLanguageFor("jpn")).toBe("deu");
+    expect(language.tvdbLanguageFor("eng")).toBe("deu");
+    setSetting("metadataLanguage", "xx");
+    expect(language.tvdbLanguageFor("jpn")).toBeNull();
+  });
+
   it("validates only the shape of the code, through the settings route", async () => {
     const put = (value: string) => request(app).put("/api/settings/metadataLanguage").set("X-Api-Key", apiKey).send({ value });
     for (const good of ["en", "de", "pt-BR", "zh-CN", "fr", ""]) expect((await put(good)).status, good).toBe(200);
@@ -528,6 +546,127 @@ describe("TheTVDB in the metadata language", () => {
     const calls = stubFetch(tvdbApi((url) => (url.pathname === "/v4/series/81189/episodes/default" ? episodePage("Pilot", "First default") : undefined)));
     await metadata.fetchSeriesEpisodesFor({ tvdb: "81189" });
     expect(asked(calls, "/episodes/default")).toHaveLength(1);
+  });
+
+  // A series first made in Japanese: TheTVDB's default record (series and episode listing) is in Japanese, not English.
+  const anime = { id: 421855, name: "シャングリラ・フロンティア", originalLanguage: "jpn", year: "2023", overview: "日本語のあらすじ", image: "https://img", status: { name: "Continuing" } };
+
+  describe("in English, for a series first made in another language", () => {
+    it("reads the series overview from TheTVDB's English translation and leaves its name alone", async () => {
+      const calls = stubFetch(
+        tvdbApi((url) => {
+          if (url.pathname === "/v4/series/421855/extended") return { data: anime };
+          if (url.pathname === "/v4/series/421855/translations/eng") return { data: { name: "Shangri-La Frontier", overview: "A shit game hunter" } };
+          return undefined;
+        })
+      );
+      const show = await metadata.fetchByExternalId("anime", "tvdb", "421855");
+      expect(show).toMatchObject({ title: "シャングリラ・フロンティア", overview: "A shit game hunter", status: "Continuing" });
+      expect(asked(calls, "/translations/eng")).toHaveLength(1);
+    });
+
+    it("keeps the original-language overview when TheTVDB has no English translation", async () => {
+      stubFetch(tvdbApi((url) => (url.pathname === "/v4/series/421855/extended" ? { data: anime } : { __status: 404 })));
+      expect((await metadata.fetchByExternalId("anime", "tvdb", "421855")).overview).toBe("日本語のあらすじ");
+    });
+
+    it("asks nothing extra for a series first made in English", async () => {
+      const calls = stubFetch(tvdbApi((url) => (url.pathname === "/v4/series/81189/extended" ? { data: { ...extended.data, originalLanguage: "eng" } } : undefined)));
+      expect((await metadata.fetchByExternalId("series", "tvdb", "81189")).overview).toBe("A chemistry teacher");
+      expect(asked(calls, "/translations/")).toHaveLength(0);
+    });
+
+    it("reads a search hit's English overview from the hit itself and keeps its name", async () => {
+      const hit = { name: anime.name, tvdb_id: "421855", year: "2023", primary_language: "jpn", overview: "日本語のあらすじ", overviews: { jpn: "日本語のあらすじ", eng: "A shit game hunter" } };
+      const calls = stubFetch(tvdbApi(() => ({ data: [hit] })));
+      const [result] = await metadata.searchMetadata("anime", "shangri-la", "tvdb");
+      expect(result).toMatchObject({ title: anime.name, overview: "A shit game hunter" });
+      expect(calls.filter((c) => !c.includes("/v4/login"))).toHaveLength(1);
+    });
+
+    const listing = (originalLanguage: string, episodes: { number: number; name: string | null; overview: string | null }[]) => ({
+      data: { series: { id: 421855, originalLanguage }, episodes: episodes.map((e) => ({ seasonNumber: 1, aired: "2023-10-01", ...e })) },
+      links: { next: null },
+    });
+
+    it("takes episode titles and overviews from the English listing, keeping the default where English has none or only a placeholder", async () => {
+      const calls = stubFetch(
+        tvdbApi((url) => {
+          if (url.pathname === "/v4/series/421855/episodes/default")
+            return listing("jpn", [
+              { number: 1, name: "貴方はなんのためにゲームをしますか？", overview: "ゲーム" },
+              { number: 2, name: "特異なる者", overview: "鳥頭" },
+              { number: 3, name: "世界の真理書", overview: null },
+            ]);
+          if (url.pathname === "/v4/series/421855/episodes/default/eng")
+            return listing("jpn", [
+              { number: 1, name: "What Do You Play Games For?", overview: "What makes you game?" },
+              { number: 2, name: null, overview: null },
+              { number: 3, name: "TBA", overview: null },
+            ]);
+          return undefined;
+        })
+      );
+      const episodes = await metadata.fetchSeriesEpisodesFor({ tvdb: "421855" });
+      expect(episodes.map((e) => [e.title, e.overview])).toEqual([
+        ["What Do You Play Games For?", "What makes you game?"],
+        ["特異なる者", "鳥頭"],
+        ["世界の真理書", null],
+      ]);
+      expect(asked(calls, "/episodes/default/eng")).toHaveLength(1);
+    });
+
+    it("keeps the default episodes when the English listing fails, and asks for none for a show first made in English", async () => {
+      stubFetch(
+        tvdbApi((url) => (url.pathname === "/v4/series/421855/episodes/default" ? listing("jpn", [{ number: 1, name: "特異なる者", overview: "鳥頭" }]) : { __status: 500 }))
+      );
+      expect((await metadata.fetchSeriesEpisodesFor({ tvdb: "421855" })).map((e) => [e.title, e.overview])).toEqual([["特異なる者", "鳥頭"]]);
+
+      const calls = stubFetch(
+        tvdbApi((url) => (url.pathname === "/v4/series/421855/episodes/default" ? listing("eng", [{ number: 1, name: "Pilot", overview: "First" }]) : undefined))
+      );
+      await metadata.fetchSeriesEpisodesFor({ tvdb: "421855" });
+      expect(asked(calls, "/episodes/default")).toHaveLength(1);
+    });
+
+    it("follows every page of the English listing", async () => {
+      const page = (number: number, name: string, next: string | null) => ({
+        data: { series: { id: 421855, originalLanguage: "jpn" }, episodes: [{ seasonNumber: 1, number, name, aired: "2023-10-01", overview: null }] },
+        links: { next },
+      });
+      stubFetch(
+        tvdbApi((url) => {
+          const second = url.searchParams.get("page") === "1";
+          if (url.pathname === "/v4/series/421855/episodes/default") return second ? page(2, "特異なる者", null) : page(1, "ゲーム", "next");
+          if (url.pathname === "/v4/series/421855/episodes/default/eng") return second ? page(2, "A Peculiar One", null) : page(1, "What Do You Play Games For?", "next");
+          return undefined;
+        })
+      );
+      expect((await metadata.fetchSeriesEpisodesFor({ tvdb: "421855" })).map((e) => e.title)).toEqual(["What Do You Play Games For?", "A Peculiar One"]);
+    });
+
+    it("keeps a search hit's default overview when it has no English one", async () => {
+      const hit = { name: anime.name, tvdb_id: "421855", primary_language: "jpn", overview: "日本語のあらすじ", overviews: { jpn: "日本語のあらすじ" } };
+      stubFetch(tvdbApi(() => ({ data: [hit] })));
+      expect((await metadata.searchMetadata("anime", "shangri-la", "tvdb"))[0].overview).toBe("日本語のあらすじ");
+    });
+  });
+
+  it("in another language, keeps the default episode titles of a series first made in a third one", async () => {
+    setSetting("metadataLanguage", "de");
+    const listing = (name: string, overview: string) => ({
+      data: { series: { id: 421855, originalLanguage: "jpn" }, episodes: [{ seasonNumber: 1, number: 1, name, aired: "2023-10-01", overview }] },
+      links: { next: null },
+    });
+    const calls = stubFetch(
+      tvdbApi((url) => {
+        if (url.pathname === "/v4/series/421855/episodes/default") return listing("特異なる者", "鳥頭");
+        if (url.pathname === "/v4/series/421855/episodes/default/deu") return listing("Ein Besonderer", "Vogelkopf");
+        return undefined;
+      })
+    );
+    expect((await metadata.fetchSeriesEpisodesFor({ tvdb: "421855" })).map((e) => [e.title, e.overview])).toEqual([["特異なる者", "Vogelkopf"]]);
+    expect(asked(calls, "/episodes/default/eng")).toHaveLength(0);
   });
 });
 

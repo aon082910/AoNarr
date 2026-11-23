@@ -19,8 +19,9 @@ import {
   preferLocalized,
   tmdbLanguage,
   traktLanguage,
-  tvdbLanguage,
+  tvdbLanguageFor,
 } from "./metadataLanguage.js";
+import { hasRealEpisodeTitle } from "./episodeTitleRule.js";
 import type { MediaType } from "../types/index.js";
 
 /** Keeps a provider's raw certification string only if it's an exact match for this app's own
@@ -749,54 +750,65 @@ async function tvdbFetch(path: string, params: Record<string, string> = {}, time
 async function searchSeriesTvdb(query: string): Promise<MetadataSearchResult[]> {
   const body = await tvdbFetch("/v4/search", { query, type: "series" });
   // A search hit carries its overview in every language TheTVDB has it in ("overviews", keyed by the
-  // three-letter code), so the metadata language costs no extra request here.
-  const language = tvdbLanguage();
-  return (body.data ?? []).map((s: any) => ({
-    title: s.name,
-    year: s.year ? Number(s.year) : null,
-    overview: preferLocalized(s.overview, language ? s.overviews?.[language] : null),
-    posterUrl: s.image_url || s.thumbnail || null,
-    externalIds: { tvdb: String(s.tvdb_id ?? s.id) },
-  }));
+  // three-letter code), so the metadata language costs no extra request here. Its default overview is
+  // in the series' original language (primary_language), which for an anime is not English.
+  return (body.data ?? []).map((s: any) => {
+    const language = tvdbLanguageFor(s.primary_language);
+    return {
+      title: s.name,
+      year: s.year ? Number(s.year) : null,
+      overview: preferLocalized(s.overview, language ? s.overviews?.[language] : null),
+      posterUrl: s.image_url || s.thumbnail || null,
+      externalIds: { tvdb: String(s.tvdb_id ?? s.id) },
+    };
+  });
 }
 
-/** Every page of one TheTVDB episode listing. */
-async function tvdbEpisodePages(path: string): Promise<any[]> {
+/** Every page of one TheTVDB episode listing, with the series record the first page carries. */
+async function tvdbEpisodePages(path: string): Promise<{ series: any; episodes: any[] }> {
   // This endpoint is paged (500 episodes per page); without following links.next, a long-running
   // show's later seasons are never created. The page cap only guards against a runaway `next`.
   const episodes: any[] = [];
+  let series: any = null;
   for (let page = 0; page < 100; page++) {
     const body = await tvdbFetch(path, { page: String(page) });
+    series ??= body.data?.series ?? null;
     const pageEpisodes: any[] = body.data?.episodes ?? [];
     episodes.push(...pageEpisodes);
     if (!body.links?.next || pageEpisodes.length === 0) break;
   }
-  return episodes;
+  return { series, episodes };
 }
 
 async function fetchSeriesEpisodesTvdb(tvdbId: string): Promise<MetadataEpisode[]> {
-  const episodes = await tvdbEpisodePages(`/v4/series/${tvdbId}/episodes/default`);
+  const { series, episodes } = await tvdbEpisodePages(`/v4/series/${tvdbId}/episodes/default`);
 
-  // The same listing in the metadata language supplies the overviews only: the episode title stays
-  // the one the default listing gives (the episodes table keeps a single title, which naming and
-  // release matching read). A language TheTVDB has no translation for just leaves the default text.
+  // The same listing in the metadata language supplies the overviews. The episode title stays the one
+  // the default listing gives (the episodes table keeps a single title, which naming and release
+  // matching read), except in English for a series first made in another language: there the default
+  // title is in that language (Japanese for an anime), which neither release names nor Sonarr use, so
+  // the English title is taken when TheTVDB has a real one. A missing translation leaves the default.
+  const key = (e: any) => `${e.seasonNumber}:${e.number}`;
   const overviews = new Map<string, string>();
-  const language = tvdbLanguage();
+  const titles = new Map<string, string>();
+  const language = tvdbLanguageFor(series?.originalLanguage);
   if (language) {
+    const englishTitles = language === "eng";
     try {
-      for (const e of await tvdbEpisodePages(`/v4/series/${tvdbId}/episodes/default/${language}`)) {
-        if (e.overview) overviews.set(`${e.seasonNumber}:${e.number}`, e.overview);
+      for (const e of (await tvdbEpisodePages(`/v4/series/${tvdbId}/episodes/default/${language}`)).episodes) {
+        if (e.overview) overviews.set(key(e), e.overview);
+        if (englishTitles && hasRealEpisodeTitle(e.name)) titles.set(key(e), e.name);
       }
     } catch {
-      // the default overviews stand
+      // the default text stands
     }
   }
   return episodes.map((e: any) => ({
     seasonNumber: e.seasonNumber,
     episodeNumber: e.number,
-    title: e.name || null,
+    title: titles.get(key(e)) || e.name || null,
     airDate: e.aired || null,
-    overview: preferLocalized(e.overview, overviews.get(`${e.seasonNumber}:${e.number}`)),
+    overview: preferLocalized(e.overview, overviews.get(key(e))),
     ...(typeof e.image === "string" && /^https:\/\//.test(e.image) ? { thumbUrl: e.image } : {}),
   }));
 }
@@ -3004,8 +3016,9 @@ export async function fetchByExternalId(type: MediaType, provider: string, id: s
       const s = body?.data;
       if (!s) throw new Error(`No TVDB series found for id "${id}"`);
       // The overview in the metadata language, from TheTVDB's translation of the series (its name is
-      // left alone: it is what the item is matched by). Without a translation the default stays.
-      const language = tvdbLanguage();
+      // left alone: it is what the item is matched by). Without a translation the default stays. The
+      // default is in the series' original language, so English asks for "eng" when that isn't English.
+      const language = tvdbLanguageFor(s.originalLanguage);
       const translated = language
         ? await tvdbFetch(`/v4/series/${encodeURIComponent(id)}/translations/${language}`).catch(() => null)
         : null;

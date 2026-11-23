@@ -6,6 +6,8 @@ import { log } from "./logger.js";
  * text and artwork follow it: a stored title, original title, sort title or alias stays what the provider calls
  * the title by default, because matching, duplicate detection and the importer compare those against release and
  * folder names (Rounds 355 and 357 were bugs where a provider's title replaced the one the item was found by).
+ * The one exception is TheTVDB in English for a series first made in another language: there its episode titles are
+ * read in English too (see tvdbLanguageFor()), since the default ones are in that language.
  */
 
 /** An ISO 639-1 language with an optional ISO 3166-1 region: de, pt-BR, zh-CN. */
@@ -28,7 +30,8 @@ export function metadataLanguageProblem(value: string): string | null {
     : null;
 }
 
-/** English is every provider's own default, so asking for it changes nothing and costs no extra request. */
+/** English is TMDB's and Trakt's own default, so asking them for it changes nothing and costs no extra request. TheTVDB's
+ * default is the series' original language instead: tvdbLanguageFor() handles English there. */
 export function isEnglishLanguage(code: string): boolean {
   return code === "en" || code.startsWith("en-");
 }
@@ -138,6 +141,22 @@ export function tvdbLanguage(): string | null {
   if (code === "pt-BR") return "pt";
   if (code === "zh-TW") return "zhtw";
   return TVDB_LANGUAGE_CODES[baseLanguage(code)] ?? null;
+}
+
+/**
+ * The TheTVDB language to read one series' descriptive text in, given the series' `originalLanguage` (a three-letter
+ * TheTVDB code), or null when its default record already is in that language.
+ *
+ * TheTVDB is not like TMDB here: its default record is in the language the series was first made in, not in English,
+ * so an English install reading the default of an anime or a K-drama got Japanese or Korean text. For English, a series
+ * first made in another language is read in "eng"; one first made in English (or of unknown origin) asks nothing extra,
+ * as before. Every other language is tvdbLanguage(), unchanged.
+ */
+export function tvdbLanguageFor(originalLanguage: string | null | undefined): string | null {
+  const language = tvdbLanguage();
+  if (language || !isEnglishLanguage(metadataLanguage())) return language;
+  const original = (originalLanguage ?? "").trim().toLowerCase();
+  return original === "" || original === TVDB_LANGUAGE_CODES.en ? null : TVDB_LANGUAGE_CODES.en;
 }
 
 /** The language to request from Trakt's translation endpoints (two letters), or null for English. */
