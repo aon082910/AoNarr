@@ -2204,8 +2204,9 @@ export default function Settings() {
         <p style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 0 }}>
           The language descriptions are fetched in: overviews, episode overviews, posters and trailers, from TMDB,
           TheTVDB, Trakt, MangaDex, ScreenScraper and fanart.tv. Whatever a provider has no translation for stays in
-          English. Titles, episode titles and alternate titles are never translated, because matching releases,
-          finding duplicates and naming files depend on them. Use a language code with an optional region, such as{" "}
+          English (on TheTVDB, in the show's original language). Titles, episode titles and alternate titles are never
+          translated, because matching releases, finding duplicates and naming files depend on them; the exception is
+          an English install's TheTVDB shows first made in another language, whose episode titles are read in English. Use a language code with an optional region, such as{" "}
           <code>en</code>, <code>de</code>, <code>fr</code>, <code>pt-BR</code> or <code>zh-CN</code>; blank is English.
           Changing it does not re-fetch your library: run Refresh on a title, or on the whole library, to pull its
           descriptions again in the new language.
