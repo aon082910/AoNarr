@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { nowExpr } from "../db/asyncDb.js";
-import { downloadClientFromRow } from "../db/mappers.js";
+import { downloadClientFromRow, redactDownloadClient, SECRET_MASK } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { getDownloadClientAdapter, normalizeUrlBase, testDownloadClientConnection } from "../services/downloadClient.js";
 import { isValidMediaType } from "../services/mediaTypes.js";
@@ -66,7 +66,7 @@ downloadClientsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
     const rows = await db.prepare("SELECT * FROM download_clients").all();
-    res.json(rows.map(downloadClientFromRow));
+    res.json(rows.map((row) => redactDownloadClient(downloadClientFromRow(row))));
   })
 );
 
@@ -110,7 +110,7 @@ downloadClientsRouter.post(
     await resetSearchBackoff();
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "download_client_added", `${b.name} (${b.type})`);
-    res.status(201).json(downloadClientFromRow(row));
+    res.status(201).json(redactDownloadClient(downloadClientFromRow(row)));
   })
 );
 
@@ -145,6 +145,8 @@ downloadClientsRouter.patch(
     const values: any[] = [];
     const secretKeys = new Set(["password", "apiKey"]);
     for (const [key, col] of Object.entries(map)) {
+      // The masked placeholder means "unchanged": the form echoes back what the API showed it.
+      if (secretKeys.has(key) && b[key] === SECRET_MASK) continue;
       if (b[key] !== undefined) {
         sets.push(`${col} = ?`);
         // Postgres (like better-sqlite3) rejects binding a raw JS boolean to an INTEGER column —
@@ -179,7 +181,7 @@ downloadClientsRouter.patch(
     }
     const row = await db.prepare("SELECT * FROM download_clients WHERE id = ?").get(req.params.id);
     if (!row) throw new HttpError(404, "Download client not found");
-    res.json(downloadClientFromRow(row));
+    res.json(redactDownloadClient(downloadClientFromRow(row)));
   })
 );
 
