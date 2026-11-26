@@ -64,7 +64,7 @@ function toLimit(text: string, scale = 1): number | null {
 const fromLimit = (v: number | null, scale = 1) => (v === null ? "" : String(Math.round((v / scale) * 100) / 100));
 
 export default function ThrottlearrPanel() {
-  const [settings, setSettings] = useState<ThrottlearrSettings | null>(null);
+  const [gate, setGate] = useState<ThrottlearrSettings | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -89,21 +89,21 @@ export default function ThrottlearrPanel() {
   }, []);
 
   useEffect(() => {
-    api.get<ThrottlearrSettings>("/throttlearr/settings").then(setSettings).catch((e) => notify.error((e as Error).message));
+    api.get<ThrottlearrSettings>("/throttlearr/settings").then(setGate).catch((e) => notify.error((e as Error).message));
     loadStatus();
   }, [loadStatus]);
 
-  if (!settings) return null;
+  if (!gate) return null;
 
   function change(next: ThrottlearrSettings) {
-    setSettings(next);
+    setGate(next);
     setDirty(true);
   }
-  const limitsOf = (id: number): ClientLimits => settings!.clients[String(id)] ?? NO_LIMITS;
+  const limitsOf = (id: number): ClientLimits => gate!.clients[String(id)] ?? NO_LIMITS;
   const shownClients: ClientGateStatus[] =
     status?.clients ?? plainClients.map((c) => ({ ...c, limited: false, held: 0, oldestHeldAt: null, active: null, bytesLeft: null, source: null }));
   function setLimits(id: number, patch: Partial<ClientLimits>) {
-    change({ ...settings!, clients: { ...settings!.clients, [String(id)]: { ...limitsOf(id), ...patch } } });
+    change({ ...gate!, clients: { ...gate!.clients, [String(id)]: { ...limitsOf(id), ...patch } } });
   }
   function setWindow(id: number, index: number, patch: Partial<ThrottleWindow> | null) {
     const windows = limitsOf(id).windows.slice();
@@ -115,8 +115,8 @@ export default function ThrottlearrPanel() {
   async function save() {
     setSaving(true);
     try {
-      const saved = await api.put<ThrottlearrSettings>("/throttlearr/settings", settings);
-      setSettings(saved);
+      const saved = await api.put<ThrottlearrSettings>("/throttlearr/settings", gate);
+      setGate(saved);
       setDirty(false);
       notify.success("Throttlearr settings saved.");
       loadStatus();
@@ -155,10 +155,10 @@ export default function ThrottlearrPanel() {
       {statusFailed && <p style={{ color: "var(--danger)" }}>The current load of the clients could not be read. The limits below can still be changed.</p>}
 
       <div className="form-panel">
-        {check("Use Throttlearr", settings.enabled, (v) => change({ ...settings, enabled: v }), "Off: every grab goes to its download client at once.")}
-        {check("Dry run", settings.dryRun, (v) => change({ ...settings, dryRun: v }), "Only write to the log what would be held. Nothing is held.")}
-        {check("Hold everything", settings.holdAll, (v) => change({ ...settings, holdAll: v }), "Nothing is sent to any client until this is off. For maintenance on the client.")}
-        {check("Let hand-picked grabs through", settings.bypassManual, (v) => change({ ...settings, bypassManual: v }), "A release you choose in Interactive Search, or force with Grab anyway, is never held.")}
+        {check("Use Throttlearr", gate.enabled, (v) => change({ ...gate, enabled: v }), "Off: every grab goes to its download client at once.")}
+        {check("Dry run", gate.dryRun, (v) => change({ ...gate, dryRun: v }), "Only write to the log what would be held. Nothing is held.")}
+        {check("Hold everything", gate.holdAll, (v) => change({ ...gate, holdAll: v }), "Nothing is sent to any client until this is off. For maintenance on the client.")}
+        {check("Let hand-picked grabs through", gate.bypassManual, (v) => change({ ...gate, bypassManual: v }), "A release you choose in Interactive Search, or force with Grab anyway, is never held.")}
 
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 8 }}>
           <div>
@@ -168,13 +168,13 @@ export default function ThrottlearrPanel() {
               type="number"
               min={1}
               max={720}
-              value={maxAgeText ?? String(settings.maxHeldAgeHours)}
+              value={maxAgeText ?? String(gate.maxHeldAgeHours)}
               onChange={(e) => setMaxAgeText(e.target.value)}
               onBlur={() => {
                 if (maxAgeText === null) return;
                 const n = Math.round(Number(maxAgeText));
                 setMaxAgeText(null);
-                if (Number.isFinite(n) && n >= 1 && n !== settings.maxHeldAgeHours) change({ ...settings, maxHeldAgeHours: Math.min(720, n) });
+                if (Number.isFinite(n) && n >= 1 && n !== gate.maxHeldAgeHours) change({ ...gate, maxHeldAgeHours: Math.min(720, n) });
               }}
               style={{ maxWidth: 120 }}
             />
@@ -186,8 +186,8 @@ export default function ThrottlearrPanel() {
               type="number"
               min={0}
               placeholder="no limit"
-              value={settings.perTitleLimit ?? ""}
-              onChange={(e) => change({ ...settings, perTitleLimit: toLimit(e.target.value) })}
+              value={gate.perTitleLimit ?? ""}
+              onChange={(e) => change({ ...gate, perTitleLimit: toLimit(e.target.value) })}
               style={{ maxWidth: 120 }}
             />
           </div>
@@ -195,12 +195,12 @@ export default function ThrottlearrPanel() {
 
         <details style={{ marginTop: 8 }}>
           <summary>Backlog at night</summary>
-          {check("Send old episodes (aired over a year ago) only at night", settings.priority.backlogOnlyAtNight, (v) => change({ ...settings, priority: { ...settings.priority, backlogOnlyAtNight: v } }))}
+          {check("Send old episodes (aired over a year ago) only at night", gate.priority.backlogOnlyAtNight, (v) => change({ ...gate, priority: { ...gate.priority, backlogOnlyAtNight: v } }))}
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <label htmlFor="throttlearr-night-from">From</label>
-            <input id="throttlearr-night-from" type="time" value={settings.priority.nightFrom} onChange={(e) => change({ ...settings, priority: { ...settings.priority, nightFrom: e.target.value } })} />
+            <input id="throttlearr-night-from" type="time" value={gate.priority.nightFrom} onChange={(e) => change({ ...gate, priority: { ...gate.priority, nightFrom: e.target.value } })} />
             <label htmlFor="throttlearr-night-to">to</label>
-            <input id="throttlearr-night-to" type="time" value={settings.priority.nightTo} onChange={(e) => change({ ...settings, priority: { ...settings.priority, nightTo: e.target.value } })} />
+            <input id="throttlearr-night-to" type="time" value={gate.priority.nightTo} onChange={(e) => change({ ...gate, priority: { ...gate.priority, nightTo: e.target.value } })} />
             <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>server time</span>
           </div>
         </details>
@@ -208,16 +208,16 @@ export default function ThrottlearrPanel() {
         <details style={{ marginTop: 8 }}>
           <summary>Checks before a release takes a slot</summary>
           <p style={{ color: "var(--muted)", fontSize: "0.8rem" }}>Run only while Throttlearr is on, for films and series. A refused release is skipped and the next best one is tried.</p>
-          {check("Run the checks", settings.preflight.enabled, (v) => change({ ...settings, preflight: { ...settings.preflight, enabled: v } }))}
-          {check("Refuse samples, trailers, extras, .nfo files, incomplete and passworded names", settings.preflight.junkNames, (v) => change({ ...settings, preflight: { ...settings.preflight, junkNames: v } }))}
-          {check("Refuse a release far smaller than its quality and runtime need", settings.preflight.sizeFloor, (v) => change({ ...settings, preflight: { ...settings.preflight, sizeFloor: v } }))}
-          {check("Read the NZB's file list and refuse one with no video, a program, or too little video", settings.preflight.inspectNzb, (v) => change({ ...settings, preflight: { ...settings.preflight, inspectNzb: v } }), "Done for SABnzbd and NZBGet only; TorBox and watch-folder clients fetch the NZB themselves and are not checked.")}
-          <div style={settings.preflight.enabled ? undefined : { opacity: 0.5 }}>
+          {check("Run the checks", gate.preflight.enabled, (v) => change({ ...gate, preflight: { ...gate.preflight, enabled: v } }))}
+          {check("Refuse samples, trailers, extras, .nfo files, incomplete and passworded names", gate.preflight.junkNames, (v) => change({ ...gate, preflight: { ...gate.preflight, junkNames: v } }))}
+          {check("Refuse a release far smaller than its quality and runtime need", gate.preflight.sizeFloor, (v) => change({ ...gate, preflight: { ...gate.preflight, sizeFloor: v } }))}
+          {check("Read the NZB's file list and refuse one with no video, a program, or too little video", gate.preflight.inspectNzb, (v) => change({ ...gate, preflight: { ...gate.preflight, inspectNzb: v } }), "Done for SABnzbd and NZBGet only; TorBox and watch-folder clients fetch the NZB themselves and are not checked.")}
+          <div style={gate.preflight.enabled ? undefined : { opacity: 0.5 }}>
             {check(
               "Judge a release by its name only, not by the id its indexer gives it",
-              settings.preflight.strictIdentity,
-              (v) => change({ ...settings, preflight: { ...settings.preflight, strictIdentity: v } }),
-              settings.preflight.enabled
+              gate.preflight.strictIdentity,
+              (v) => change({ ...gate, preflight: { ...gate.preflight, strictIdentity: v } }),
+              gate.preflight.enabled
                 ? "Stops indexers vouching for the wrong film. A release under a title AoNarr has no alias for (a foreign title) is lost."
                 : "Works only while \"Run the checks\" is on."
             )}

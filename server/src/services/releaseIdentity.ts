@@ -247,6 +247,72 @@ function mainTitleVariants(base: string): string[] {
   return variants;
 }
 
+/** The two names of a dual-title film release joined by a bare hyphen, as Turkish and Italian
+ * uploads write them ("Straw.Dogs-Kopekler.1971", "Va.e.uccidi-The.Manchurian.Candidate.1962",
+ * "Wrong Turn 2 Dead End- Korku Kapani 2"). Only where the side before the hyphen is two words or
+ * more, so a hyphenated name at the start ("Spider-Man", "X-Men", "Ant-Man") is never cut. */
+function hyphenDualHalves(title: string): string[] {
+  const halves: string[] = [];
+  const re = /\s*[-–]\s*/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(title))) {
+    const left = title.slice(0, m.index).trim();
+    const right = title.slice(m.index + m[0].length).trim();
+    const words = (s: string) => s.split(/\s+/).filter(Boolean).length;
+    // A one-word half is never used on its own ("Chip-Wrecked" is not the film "Wrecked").
+    if (words(left) >= 2) {
+      halves.push(left);
+      if (words(right) >= 2) halves.push(right);
+    }
+  }
+  return halves;
+}
+
+// A word after the film's title that makes it another film: a sequel number or a part.
+const SEQUEL_WORD = /^(?:\d{1,3}|part|chapter|kapitel|teil|parte|capitulo|returns|reloaded|revenge|rises)$/;
+// Short words of the languages release subtitles are translated into (German, Italian, Spanish,
+// French, Dutch, Portuguese, Turkish). A subtitle with none of them may be the English title of
+// another film ("Green.Lantern.Emerald.Knights.2011.German.DL" is not Green Lantern).
+// An English word that continues a title ("Prey.for.the.Devil" is not Prey with an Italian subtitle).
+const ENGLISH_LEAD = /^(?:for|the|of|and|in|on|to|a|an|with|from|at|by|vs|versus|is|are)$/;
+const FOREIGN_FUNCTION_WORD =
+  /^(?:der|die|das|den|dem|des|und|ein|eine|einer|ist|im|vom|zum|zur|um|mit|von|fur|fuer|auf|aus|nach|nicht|du|wir|il|lo|gli|le|la|di|del|della|dei|degli|negli|nel|per|che|un|una|el|los|las|en|con|por|para|les|du|et|au|aux|sur|het|een|van|voor|os|da|dos|ve|bir|ile)$/;
+
+/**
+ * Film names Radarr's grab history showed releases using that the title rules miss, each only with the
+ * release year equal to the film's:
+ * - a foreign release that keeps the original title and adds its translated subtitle
+ *   ("Annapolis.Kampf.um.Anerkennung.2006.German.DL" for Annapolis, "Deep.Fear.Squali.Negli.Abissi.2023.iTA-ENG"),
+ *   when the release carries a non-English language tag, the word after the title is neither a
+ *   sequel number nor an English word, and the rest has a word of that other language;
+ * - a franchise number the metadata title leaves out ("Anacondas.4.Trail.Of.Blood.2009" for
+ *   "Anacondas: Trail of Blood", "Children.Of.The.Corn.VIII.Genesis.2011").
+ */
+function filmTitleExtras(candidates: string[], target: IdentityTarget, parsed: ParsedRelease): IdentityMatchType {
+  const releaseYear = parsed.titleYear ?? null;
+  const itemYear = target.year ?? titleVariants(target.title).qualifierYear;
+  if (releaseYear == null || itemYear == null || releaseYear !== itemYear) return "none";
+  const names = [titleVariants(target.title).base, ...(target.aliases ?? [])].map((t) => identityKey(t)).filter((k) => k.split(" ").length >= 1 && k.length >= 3);
+  const foreign = (parsed.languages ?? []).some((l) => l !== "english" && l !== "multi");
+  for (const c of candidates) {
+    const key = identityKey(c);
+    if (!key) continue;
+    const words = key.split(" ");
+    for (const name of names) {
+      if (foreign && key.startsWith(`${name} `)) {
+        const rest = key.slice(name.length + 1).split(" ");
+        if (!SEQUEL_WORD.test(rest[0]) && !ENGLISH_LEAD.test(rest[0]) && rest.some((w) => FOREIGN_FUNCTION_WORD.test(w))) return "title-main";
+      }
+      // The number sits inside the title: one at the end is a sequel ("Terror.Train.2.2022" is not Terror Train).
+      for (let i = 1; i < words.length - 1; i++) {
+        if (!/^\d{1,2}$/.test(words[i]) || name.split(" ").includes(words[i])) continue;
+        if ([...words.slice(0, i), ...words.slice(i + 1)].join(" ") === name) return "title-main";
+      }
+    }
+  }
+  return "none";
+}
+
 /** "The Flash" without its article, when what remains is still a title ("Flash"), not a bare
  * number ("The 100" -> "100"). */
 function withoutLeadingArticle(title: string): string | null {
@@ -383,9 +449,64 @@ export function releaseIdentifiesTarget(release: IdentityRelease, parsed: Parsed
   // match (so `id` means "by id ONLY", which the import side holds for review).
   const byId = idMatch(release, parsed, target);
   const verdict = titleVerdict(release, parsed, target);
+  if (verdict.ok && multiFilmRelease(release, target)) {
+    return { ok: false, matchType: "none", reason: "title", detail: `the release is several films (a collection or a year range), not "${target.title}"` };
+  }
   if (verdict.ok) return byId ? { ...verdict, detail: `${verdict.detail}; indexer id matches too (${byId})` } : verdict;
-  if (byId) return { ok: true, matchType: "id", reason: null, detail: `indexer id matches the item's (${byId}) though the title doesn't: ${verdict.detail}` };
+  if (byId) {
+    const doubt = indexerIdDoubt(release, parsed, target);
+    if (doubt) return { ok: false, matchType: "none", reason: verdict.reason ?? "title", detail: `indexer id matches the item's (${byId}) but ${doubt}: ${verdict.detail}` };
+    return { ok: true, matchType: "id", reason: null, detail: `indexer id matches the item's (${byId}) though the title doesn't: ${verdict.detail}` };
+  }
   return verdict;
+}
+
+// Words that make a release several films at once ("Nightmare.on.Elm.Street.Collection.1984-2010",
+// "Cloudy...Meatballs.Duology"), and a year range doing the same.
+// "Criterion.Collection" is one film's edition, not a pack; "saga" is left out as a release group's name.
+const MULTI_FILM = /(?<!criterion[\s.]|arrow[\s.])\b(?:collection|trilogy|duology|quadrilogy|pentalogy|hexalogy|boxset|box set)\b/i;
+const YEAR_RANGE = /\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/;
+
+/**
+ * Why an indexer's id should not settle a film whose title does not match, or null when it may.
+ *
+ * Radarr's grab history (2026-11, 11,750 grabs) showed indexers tagging releases with the wrong film's
+ * IMDb/TMDB id: "Splice.2010" grabbed as Knight and Day, "Heaven.2002" as Miracles from Heaven (2016),
+ * "Beast.2017" as Beauty and the Beast, "Mimic.1997" as The Godfather. Labelled (by a model, spot-checked), 109 of the 322
+ * id-only film matches were another film. The right ones were nearly all the film under its translated
+ * title ("Auf.der.Flucht.1993.German.DL" for The Fugitive), so an id-only match now needs: the year
+ * within one of the film's, a non-English language tag (the reason the title differs), a title that is
+ * not just some of the film's words ("Society" for Dead Poets Society), and a single film, not a pack.
+ * An IMDb id the release group wrote into the name itself is the group's claim, not the indexer's
+ * guess, and still settles it. Shows keep the id: a show's id-only matches were nearly all right
+ * (numbering and translated show names).
+ */
+function indexerIdDoubt(release: IdentityRelease, parsed: ParsedRelease, target: IdentityTarget): string | null {
+  if (!SINGLE_SHAPE(target.type)) return null;
+  const embedded = parsed.imdbId && target.externalIds?.imdb && parsed.imdbId.toLowerCase() === target.externalIds.imdb.toLowerCase();
+  if (embedded) return null;
+  if (multiFilmRelease(release, target)) return "the release is several films (a collection or a year range)";
+  const releaseYear = parsed.titleYear ?? null;
+  const itemYear = target.year ?? titleVariants(target.title).qualifierYear;
+  if (releaseYear != null && itemYear != null && Math.abs(releaseYear - itemYear) > 1) return `the release year ${releaseYear} isn't within a year of ${itemYear}`;
+  const foreign = (parsed.languages ?? []).some((l) => l !== "english");
+  if (!foreign) return "the release has no language tag that would explain a different title";
+  const item = new Set(identityKey(titleVariants(target.title).base).split(" ").filter(Boolean));
+  for (const t of [parsed.title, ...(parsed.titleAlternates ?? [])]) {
+    if (!t) continue;
+    const rel = identityKey(t).split(" ").filter(Boolean);
+    if (rel.length > 0 && rel.length < item.size && rel.every((w) => item.has(w))) return `the title is only part of "${target.title}"`;
+  }
+  return null;
+}
+
+/** A film release that is several films ("A.Nightmare.On.Elm.Street.The.Complete.Collection.1984-2010"),
+ * which the parser cuts back to the first film's title, unless the film's own title has the word. */
+function multiFilmRelease(release: IdentityRelease, target: IdentityTarget): boolean {
+  if (target.type !== "movie") return false;
+  const m = release.title.match(MULTI_FILM);
+  if (m && !new RegExp(`\\b${m[0]}\\b`, "i").test(target.title)) return true;
+  return YEAR_RANGE.test(release.title.replace(/\b(?:19|20)\d{2}[-.](?:0[1-9]|1[0-2])[-.](?:0[1-9]|[12]\d|3[01])\b/g, ""));
 }
 
 function titleVerdict(release: IdentityRelease, parsed: ParsedRelease, target: IdentityTarget): IdentityVerdict {
@@ -396,9 +517,27 @@ function titleVerdict(release: IdentityRelease, parsed: ParsedRelease, target: I
   // The title as the parser isolated it, the shorter titles it can also be read as (with a trailing
   // language or edition tag taken off), and each half of a dual title.
   const whole = [releaseTitle, ...(parsed.titleAlternates ?? [])];
-  const candidates = Array.from(new Set(whole.flatMap((t) => [t, ...t.split(DUAL_TITLE).map((p) => p.trim()).filter(Boolean)])));
+  const split = whole.flatMap((t) => [t, ...t.split(DUAL_TITLE).map((p) => p.trim()).filter(Boolean)]);
+  // "Millers.In.Marriage.2024.2024": the year written twice leaves one in the title.
+  if (parsed.titleYear != null) {
+    const tail = ` ${parsed.titleYear}`;
+    split.push(...split.filter((t) => t.endsWith(tail) && t.length > tail.length).map((t) => t.slice(0, -tail.length).trim()));
+  }
+  const candidates = Array.from(new Set(split));
 
   let matchType = matchTitle(candidates, target, parsed);
+  if (matchType === "none" && SINGLE_SHAPE(target.type)) {
+    // A half of a bare-hyphen dual title counts only as the film's exact title or an alias: through the
+    // looser rules "Kill.Bill.-.Vol.1" would read as "Kill Bill", the part before "Kill Bill: Vol. 2"'s subtitle.
+    // Only a release tagged with another language: an English " - " is a subtitle ("Air Bud - Golden Receiver").
+    // Turkish uploads mark it only as DUAL or by their group (TSRG, turkseed).
+    const tagged = (parsed.languages ?? []).some((l) => l !== "english") || /\b(?:dual|tsrg|turkseed|animasyon)\b/i.test(release.title);
+    const halves = tagged ? candidates.flatMap(hyphenDualHalves) : [];
+    const { exact } = titleVariants(target.title);
+    if (halves.some((h) => exact.some((t) => sameTitle(h, t)))) matchType = "title";
+    else if (halves.some((h) => (target.aliases ?? []).some((a) => sameTitle(h, a)))) matchType = "alias";
+    else matchType = filmTitleExtras(candidates, target, parsed);
+  }
   // titleYear never comes from an air date, so a daily show's release has none and skips the year
   // check by construction; one that names the show's year too ("Show.Name.2018.2024.08.25") is checked.
   let releaseYear = parsed.titleYear;

@@ -165,7 +165,8 @@ export default function DownloadClients() {
       // Blank password on edit means "leave unchanged" — a real client's password never round-trips
       // back into this field, so clearing it and re-submitting would otherwise wipe it out.
       ...(mode === "add" || password ? { password: password || null } : {}),
-      apiKey: apiKey || null,
+      // The saved key is shown masked; sending the mask back would mean "unchanged", so leave it out.
+      ...(apiKey === "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" ? {} : { apiKey: apiKey || null }),
       category,
       audioOnly,
       // Only TorBox genuinely caches more than one protocol — everyone else always sends the

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.js";
 import { db } from "../db/index.js";
-import { indexerFromRow } from "../db/mappers.js";
+import { indexerFromRow, redactIndexer, SECRET_MASK } from "../db/mappers.js";
 import { asyncHandler, HttpError } from "../middleware/errorHandler.js";
 import { clearFailureBackoff, DEFAULT_INDEXER_MEDIA_TYPES, INDEXER_MEDIA_TYPES, searchIndexer } from "../services/indexerClient.js";
 import { attachIndexerHealth } from "../services/indexerHealth.js";
@@ -22,7 +22,7 @@ indexersRouter.get(
     const rows = await db.prepare("SELECT * FROM indexers ORDER BY priority").all();
     const indexers = rows.map(indexerFromRow);
     await attachIndexerHealth(indexers);
-    res.json(indexers);
+    res.json(indexers.map((i) => redactIndexer(i)));
   })
 );
 
@@ -136,7 +136,7 @@ indexersRouter.post(
     await resetSearchBackoff();
     const actor = auditActor(req);
     logAuditEvent(actor.userId, actor.username, "indexer_added", `${b.name} (${b.protocol})`);
-    res.status(201).json(indexerFromRow(row));
+    res.status(201).json(redactIndexer(indexerFromRow(row)));
   })
 );
 
@@ -174,6 +174,8 @@ indexersRouter.patch(
     const sets: string[] = [];
     const values: any[] = [];
     for (const [key, col] of Object.entries(map)) {
+      // The masked placeholder means "unchanged": the form echoes back what the API showed it.
+      if (secretKeys.has(key) && b[key] === SECRET_MASK) continue;
       if (b[key] !== undefined) {
         sets.push(`${col} = ?`);
         // Postgres (like better-sqlite3) rejects binding a raw JS boolean to an INTEGER column —
@@ -204,7 +206,7 @@ indexersRouter.patch(
       clearFailureBackoff(Number(req.params.id));
       await resetSearchBackoff();
     }
-    res.json(indexerFromRow(row));
+    res.json(redactIndexer(indexerFromRow(row)));
   })
 );
 

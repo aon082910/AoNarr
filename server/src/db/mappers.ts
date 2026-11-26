@@ -184,6 +184,25 @@ export function downloadClientFromRow(row: any) {
   };
 }
 
+/** Shown in place of a saved secret. Secrets are decrypted only inside the server; the API never returns them. */
+export const SECRET_MASK = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
+
+/** A download client as the API shows it: the password is never sent back, the API key is masked, and *Set says whether one is saved. */
+export function redactDownloadClient<T extends { password?: unknown; apiKey?: unknown }>(client: T) {
+  return {
+    ...client,
+    password: null,
+    passwordSet: !!client.password,
+    apiKey: client.apiKey ? SECRET_MASK : null,
+    apiKeySet: !!client.apiKey,
+  };
+}
+
+/** An indexer as the API shows it: the API key is masked, and apiKeySet says whether one is saved. */
+export function redactIndexer<T extends { apiKey?: unknown }>(indexer: T) {
+  return { ...indexer, apiKey: indexer.apiKey ? SECRET_MASK : null, apiKeySet: !!indexer.apiKey };
+}
+
 export function qualityProfileFromRow(row: any) {
   return {
     id: row.id,

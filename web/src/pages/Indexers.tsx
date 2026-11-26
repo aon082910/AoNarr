@@ -158,7 +158,8 @@ export default function Indexers() {
       name,
       protocol,
       url,
-      apiKey: apiKey || null,
+      // The saved key is shown masked; sending the mask back would mean "unchanged", so leave it out.
+      ...(apiKey === "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" ? {} : { apiKey: apiKey || null }),
       config,
       useFlareSolverr,
       enableRss,
