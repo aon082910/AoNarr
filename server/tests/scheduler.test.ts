@@ -3956,8 +3956,8 @@ describe("chooseBestResult — identity gate for tiered types", () => {
     expect((await choose([fakeResult({ title: "Heat.1995.1080p.BluRay-GRP" })], movie("Heat", null), "enforce"))?.identity).toMatchObject({ matchType: "title-noyear" });
   });
 
-  it("lets an indexer-reported id confirm a release whose title differs", async () => {
-    const byId = fakeResult({ title: "Some.Other.Name.2021.1080p.WEB-GRP", imdbId: "tt1160419" });
+  it("lets an indexer-reported id confirm a translated release whose title differs", async () => {
+    const byId = fakeResult({ title: "Some.Other.Name.2021.German.DL.1080p.WEB-GRP", imdbId: "tt1160419" });
     const best = await choose([byId], movie("Dune", 2021, { imdb: "tt1160419" }), "enforce");
     expect(best?.identity).toMatchObject({ ok: true, matchType: "id" });
   });

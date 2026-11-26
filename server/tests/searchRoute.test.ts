@@ -375,7 +375,7 @@ describe("manual grab with indexer ids", () => {
     const res = await request(app)
       .post(`/api/search/${movieId}/grab`)
       .set("X-Api-Key", apiKey)
-      .send({ title: "Dune.Part.One.2021.1080p.WEB-GRP", imdbId: "tt1160419", downloadUrl: "magnet:?xt=urn:btih:part1", protocol: "torrent" });
+      .send({ title: "Dune.Part.One.2021.German.DL.1080p.WEB-GRP", imdbId: "tt1160419", downloadUrl: "magnet:?xt=urn:btih:part1", protocol: "torrent" });
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({ matchType: "id", grabSource: "interactive" });

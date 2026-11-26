@@ -89,12 +89,13 @@ describe("pre-flight in chooseBestResult", () => {
   });
 
   it("with strictIdentity, an indexer's id no longer vouches for a release whose name is another film's", async () => {
-    const wrongFilm = fakeResult({ title: "Other.Film.2020.1080p.BluRay.x264-DDD", imdbId: "tt1234567" });
+    // A translated release (the language tag explains the other name), so the default gate lets the id settle it.
+    const wrongFilm = fakeResult({ title: "Other.Film.2020.German.DL.1080p.BluRay.x264-DDD", imdbId: "tt1234567" });
     const identity = { year: 2020, externalIds: { imdb: "tt1234567" } };
     const opts = { name: { title: "Some Movie" }, identityMode: "enforce" };
 
     setGate({ enabled: true });
-    expect((await choose([wrongFilm], opts, identity))?.result.title).toBe(wrongFilm.title); // today's behaviour: the id settles it
+    expect((await choose([wrongFilm], opts, identity))?.result.title).toBe(wrongFilm.title); // the default gate: the id settles a translated film
 
     setGate({ enabled: true, preflight: { strictIdentity: true } });
     expect(await choose([wrongFilm], opts, identity)).toBeNull();

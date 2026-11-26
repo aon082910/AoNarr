@@ -6,7 +6,7 @@ function item(overrides: Partial<IdentityTarget> & Pick<IdentityTarget, "title">
   return { type: "movie", year: null, externalIds: {}, ...overrides };
 }
 
-function verdict(releaseTitle: string, target: IdentityTarget, ids: { imdbId?: string; tmdbId?: string } = {}) {
+function verdict(releaseTitle: string, target: IdentityTarget, ids: { imdbId?: string; tmdbId?: string; tvdbId?: string } = {}) {
   return releaseIdentifiesTarget({ title: releaseTitle, ...ids }, parseReleaseTitle(releaseTitle), target);
 }
 
@@ -127,12 +127,16 @@ describe("releaseIdentifiesTarget", () => {
     expect(verdict("Shingeki.no.Kyojin.S04E01.1080p.WEB-GRP", item({ ...aot, aliases: [] }))).toMatchObject({ ok: false, reason: "title" });
   });
 
-  it("lets an indexer-reported or title-embedded id settle it regardless of the title", () => {
-    expect(verdict("Some.Other.Name.2021.1080p.WEB-GRP", dune2021, { imdbId: "TT1160419" })).toMatchObject({ ok: true, matchType: "id" });
+  it("lets a title-embedded id settle it regardless of the title, and an indexer id only for a translated film", () => {
+    // The release group's own claim in the name settles it.
     expect(verdict("Some.Other.Name.2021.1080p.WEB-GRP[tt1160419]", dune2021)).toMatchObject({ ok: true, matchType: "id" });
+    // An indexer's id alone does not for an English release: indexers tag the wrong film (grab history 2026-11).
+    expect(verdict("Some.Other.Name.2021.1080p.WEB-GRP", dune2021, { imdbId: "TT1160419" })).toMatchObject({ ok: false, reason: "title" });
+    // It does for a release whose language tag explains the different title.
+    expect(verdict("Some.Other.Name.2021.German.DL.1080p.WEB-GRP", dune2021, { imdbId: "TT1160419" })).toMatchObject({ ok: true, matchType: "id" });
     expect(verdict("Some.Other.Name.2021.1080p.WEB-GRP", dune2021)).toMatchObject({ ok: false, reason: "title" });
     expect(verdict("Some.Other.Name.2021.1080p.WEB-GRP", dune2021, { imdbId: "tt0000001" })).toMatchObject({ ok: false, reason: "title" });
-    expect(verdict("Some.Other.Name.2021.1080p.WEB-GRP", item({ title: "Dune", year: 2021, externalIds: { tmdb: "438631" } }), { tmdbId: "438631" })).toMatchObject({
+    expect(verdict("Some.Other.Name.2021.German.DL.1080p.WEB-GRP", item({ title: "Dune", year: 2021, externalIds: { tmdb: "438631" } }), { tmdbId: "438631" })).toMatchObject({
       ok: true,
       matchType: "id",
     });
@@ -204,9 +208,66 @@ describe("releaseIdentifiesTarget — id means id only", () => {
   it("reports a title match when both the title and the indexer id match, and 'id' only when the title doesn't", () => {
     const matrix = item({ title: "The Matrix", year: 1999, externalIds: { imdb: "tt0133093" } });
     expect(verdict("The.Matrix.1999.1080p.BluRay-GRP", matrix, { imdbId: "tt0133093" })).toMatchObject({ ok: true, matchType: "title" });
-    expect(verdict("Some.Other.Name.1999.1080p.BluRay-GRP", matrix, { imdbId: "tt0133093" })).toMatchObject({ ok: true, matchType: "id" });
-    // The id settles a year contradiction too: the indexer knows better than a mis-scraped year.
-    expect(verdict("The.Matrix.2010.1080p.BluRay-GRP", matrix, { imdbId: "tt0133093" })).toMatchObject({ ok: true, matchType: "id" });
+    expect(verdict("Some.Other.Name.1999.German.DL.1080p.BluRay-GRP", matrix, { imdbId: "tt0133093" })).toMatchObject({ ok: true, matchType: "id" });
+    // An indexer id no longer overrides a year more than one off: "Heaven.2002" tagged as Miracles from
+    // Heaven (2016), "Jurassic.Park.1993" as Jurassic World (2015) were both imported by Radarr that way.
+    expect(verdict("The.Matrix.2010.1080p.BluRay-GRP", matrix, { imdbId: "tt0133093" })).toMatchObject({ ok: false, reason: "year" });
+  });
+  it("keeps a show's indexer id as it was: a show's id-only matches are numbering and translated names", () => {
+    const show = item({ type: "series", title: "Pokémon", year: 1997, externalIds: { tvdb: "76703" } });
+    expect(verdict("Pokemon.a.Serie.Sol.e.Lua.S20E43.1080p.GLBO.WEB-DL.AAC2.0.H.264-OLYMPUS", show, { tvdbId: "76703" })).toMatchObject({ ok: true, matchType: "id" });
+  });
+});
+
+describe("releaseIdentifiesTarget — lessons from Radarr's grab history (2026-11)", () => {
+  const film = (title: string, year: number) => item({ title, year, externalIds: { imdb: "tt9999999" } });
+  const id = { imdbId: "tt9999999" };
+  it("refuses an English release an indexer tagged with another film's id", () => {
+    expect(verdict("Splice.2010.1080p.BluRay.DD5.1.x264-TayTO", film("Knight and Day", 2010), id)).toMatchObject({ ok: false });
+    expect(verdict("The.Witch.2015.BluRay.1080p.DDP.5.1.x264-hallowed", film("The Last Witch Hunter", 2015), id)).toMatchObject({ ok: false });
+    expect(verdict("Heaven.2002.German.AC3D.DL.1080p.BluRay.x264-KLASSiGERHD", film("Miracles from Heaven", 2016), id)).toMatchObject({ ok: false });
+  });
+  it("refuses a release whose title is only some of the film's words, even with a language tag", () => {
+    expect(verdict("Beginners.German.DL.1080p.BluRay.x264-RSG", film("Adult Beginners", 2014), id)).toMatchObject({ ok: false });
+    expect(verdict("Society.1989.German.DL.1080p.BluRay.x264-GRP", film("Dead Poets Society", 1989), id)).toMatchObject({ ok: false });
+  });
+  it("refuses a collection or a year range tagged with one film's id", () => {
+    expect(verdict("A.Nightmare.On.Elm.Street.The.Complete.Collection.1984-2010.German.DL.1080p.BluRay-GRP", film("A Nightmare on Elm Street", 2010), id)).toMatchObject({ ok: false });
+    expect(verdict("Cloudy.With.A.Chance.Of.Meatballs.Duology.2009-2013.MULTi.1080p.BluRay-GRP", film("Cloudy with a Chance of Meatballs", 2009), id)).toMatchObject({ ok: false });
+  });
+  it("still takes a translated film by its indexer id", () => {
+    expect(verdict("Auf.der.Flucht.1993.German.AC3.DL.1080p.BluRay.x264-LeetHD", film("The Fugitive", 1993), id)).toMatchObject({ ok: true, matchType: "id" });
+    expect(verdict("Die.Dolmetscherin.2005.German.DL.1080p.BluRay.x264.iNTERNAL-FiSSiON", film("The Interpreter", 2005), id)).toMatchObject({ ok: true, matchType: "id" });
+  });
+  it("reads a dual title joined by a bare hyphen", () => {
+    expect(verdict("Straw.Dogs-Kopekler.1971.1080p.BRRip.x264.AAC.turkseed", item({ title: "Straw Dogs", year: 1971 }))).toMatchObject({ ok: true });
+    expect(verdict("Va.e.uccidi-The.Manchurian.Candidate.1962.1080p.BDmux.H264.ITA.Ac3-GRP", item({ title: "The Manchurian Candidate", year: 1962 }))).toMatchObject({ ok: true });
+    // A hyphenated word is not a dual title.
+    expect(verdict("Spider-Man.2002.1080p.BluRay.x264-GRP", item({ title: "Spider", year: 2002 }))).toMatchObject({ ok: false });
+  });
+  it("takes a foreign release that adds a translated subtitle to the original title, in the film's own year only", () => {
+    expect(verdict("Pulse.Du.bist.tot.bevor.du.stirbst.2006.German.DL.1080p.BluRay.x264-GRP", item({ title: "Pulse", year: 2006 }))).toMatchObject({ ok: true, matchType: "title-main" });
+    expect(verdict("Pulse.Du.bist.tot.bevor.du.stirbst.2007.German.DL.1080p.BluRay.x264-GRP", item({ title: "Pulse", year: 2006 }))).toMatchObject({ ok: false });
+    // Not without a language tag, not when the rest reads as English ("Green Lantern: Emerald Knights" is
+    // another film of the same year), not for a one-word title, and not when the next word is a sequel number.
+    expect(verdict("Pulse.Du.bist.tot.bevor.du.stirbst.2006.1080p.BluRay.x264-GRP", item({ title: "Pulse", year: 2006 }))).toMatchObject({ ok: false });
+    expect(verdict("Green.Lantern.Emerald.Knights.2011.German.DL.1080p.BluRay.x264-ENCOUNTERS", item({ title: "Green Lantern", year: 2011 }))).toMatchObject({ ok: false });
+    expect(verdict("Prey-for-the-Devil-(2022)-Gli-Occhi-del-Diavolo-BluRay-1080p-H264-Ita-Eng-AC3", item({ title: "Prey", year: 2022 }))).toMatchObject({ ok: false });
+    expect(verdict("The.Jester.2.Trick.or.Treat.2025.German.DL.1080p.BluRay.x264-GRP", item({ title: "The Jester", year: 2025 }))).toMatchObject({ ok: false });
+  });
+  it("never reads a sibling film's release as this one", () => {
+    expect(verdict("Kill.Bill.-.Vol.1.2003.1080p.BluRay-GRP", item({ title: "Kill Bill: Vol. 2", year: 2004 }))).toMatchObject({ ok: false });
+    expect(verdict("Harry.Potter.and.the.Deathly.Hallows.-.Part.1.2010.1080p-GRP", item({ title: "Harry Potter and the Deathly Hallows: Part 2", year: 2011 }))).toMatchObject({ ok: false });
+    expect(verdict("The.Hunger.Games.Mockingjay.-.Part.1.2014.1080p-GRP", item({ title: "The Hunger Games: Mockingjay - Part 2", year: 2015 }))).toMatchObject({ ok: false });
+    expect(verdict("Pirates.of.the.Caribbean.-.Dead.Mans.Chest.2006.1080p-GRP", item({ title: "Pirates of the Caribbean: At World's End", year: 2007 }))).toMatchObject({ ok: false });
+    expect(verdict("Terror.Train.2.2022.1080p.PCOK.WEB-DL.DDP5.1.H.264-NYXIS", item({ title: "Terror Train", year: 2022 }))).toMatchObject({ ok: false });
+    expect(verdict("Air Bud - Golden Receiver (1998) [x264-WEBDL-1080p]", item({ title: "Air Bud", year: 1997 }))).toMatchObject({ ok: false });
+    expect(verdict("Alvin.and.the.Chipmunks.Chip-Wrecked.2011.1080p.BluRay.H264.AC3.DD5.1", item({ title: "Wrecked", year: 2010 }))).toMatchObject({ ok: false });
+  });
+  it("takes a franchise number the stored title leaves out, and a year written twice", () => {
+    expect(verdict("Anacondas.4.Trail.Of.Blood.2009.STV.1080p.BluRay.H264.AAC", item({ title: "Anacondas: Trail of Blood", year: 2009 }))).toMatchObject({ ok: true });
+    expect(verdict("Children.Of.The.Corn.VIII.Genesis.2011.1080p.BluRay.H264.AAC", item({ title: "Children of the Corn: Genesis", year: 2011 }))).toMatchObject({ ok: true });
+    expect(verdict("Millers In Marriage 2024 2024 NORDiC 1080p WEB-DL H 264 DDP5 1-ADDICTiON", item({ title: "Millers in Marriage", year: 2024 }))).toMatchObject({ ok: true });
   });
 });
 

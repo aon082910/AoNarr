@@ -333,7 +333,7 @@ describe("resolveReleaseItem (library-wide, with aliases)", () => {
   it("lets an indexer id claim an item whose title differs, and survives bad external ids", () => {
     const dune = itemRow(1, "movie", "Dune", 2021, { imdb: "tt1160419" });
     const broken = { ...itemRow(2, "movie", "Other", 2000), externalIds: "{oops" };
-    const outcome = aliases.resolveReleaseItem({ title: "Some.Other.Name.2021.1080p.WEB-GRP", imdbId: "tt1160419" } as any, parseReleaseTitle("Some.Other.Name.2021.1080p.WEB-GRP"), [broken, dune], new Map());
+    const outcome = aliases.resolveReleaseItem({ title: "Some.Other.Name.2021.German.DL.1080p.WEB-GRP", imdbId: "tt1160419" } as any, parseReleaseTitle("Some.Other.Name.2021.German.DL.1080p.WEB-GRP"), [broken, dune], new Map());
     expect(outcome).toMatchObject({ kind: "one", item: { id: 1 }, verdict: { matchType: "id" } });
   });
 });
